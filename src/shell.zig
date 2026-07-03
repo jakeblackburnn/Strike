@@ -24,9 +24,11 @@ pub const Shell = struct {
     home_href: []const u8,
     repo_url: []const u8,
     nav_html: []const u8,
-    /// Site default theme/width used as the pre-paint fallback when the reader
-    /// has no `localStorage` preference yet. "" means "no default".
-    theme: []const u8 = "",
+    /// Site default theme (season + time) and width, used as the pre-paint
+    /// fallback when the reader has no `localStorage` preference yet.
+    /// "" means "no default" (winter season, system-preference time).
+    season: []const u8 = "",
+    time: []const u8 = "",
     width: []const u8 = "",
 };
 
@@ -56,10 +58,12 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     errdefer out.deinit();
     const w = &out.writer;
     try w.writeAll(head_pre_a);
-    try escapeAttrInto(w, shell.theme);
+    try escapeAttrInto(w, shell.season);
     try w.writeAll(head_pre_b);
-    try escapeAttrInto(w, shell.width);
+    try escapeAttrInto(w, shell.time);
     try w.writeAll(head_pre_c);
+    try escapeAttrInto(w, shell.width);
+    try w.writeAll(head_pre_d);
     try escapeInto(w, shell.title);
     try w.writeAll(head_post_a);
     try escapeAttrInto(w, shell.home_href);
@@ -79,61 +83,112 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     return out.toOwnedSlice();
 }
 
-// The no-flash bootstrap: it restores theme/width/sidebar before first paint.
-// `wrapPage` splices the site default theme then width into the two `||"…"`
-// fallbacks so an unset reader gets the site default (still overridable).
+// The no-flash bootstrap: it restores season/time/width/sidebar before first
+// paint. `wrapPage` splices the site default season, time, then width into the
+// three `||"…"` fallbacks so an unset reader gets the site default (still
+// overridable). The legacy `theme` key ("light"/"dark") migrates to a time.
 const head_pre_a =
     \\<!doctype html>
     \\<html lang="en">
     \\<head>
     \\<meta charset="utf-8">
     \\<meta name="viewport" content="width=device-width, initial-scale=1">
-    \\<script>(function(){try{var d=document.documentElement;var t=localStorage.getItem("theme")||"
+    \\<script>(function(){try{var d=document.documentElement;var s=localStorage.getItem("season")||"
 ;
 const head_pre_b =
-    \\";if(t==="light"||t==="dark")d.dataset.theme=t;var w=localStorage.getItem("width")||"
+    \\";var t=localStorage.getItem("time")||"
 ;
 const head_pre_c =
-    \\";if(w)d.style.setProperty("--content-width",w+"rem");var s=localStorage.getItem("sidebar");if(s==="collapsed")d.dataset.sidebar="collapsed";}catch(e){}})();</script>
+    \\";if(!t){var l=localStorage.getItem("theme");if(l==="dark")t="evening";else if(l==="light")t="morning";}
+    \\if(s==="fall"||s==="winter"||s==="spring"||s==="summer")d.dataset.season=s;
+    \\if(t==="morning"||t==="evening")d.dataset.time=t;var w=localStorage.getItem("width")||"
+;
+const head_pre_d =
+    \\";if(w)d.style.setProperty("--content-width",w+"rem");var v=localStorage.getItem("sidebar");if(v==="collapsed")d.dataset.sidebar="collapsed";}catch(e){}})();</script>
     \\<title>
 ;
 
+// The seasonal palettes: four themes, each a "morning" (light) and "evening"
+// (dark) token set. `seasonRules` splices each pair into three rules — the
+// season's base (morning), its system-dark fallback when no explicit time is
+// chosen, and its explicit-evening override. Winter is the default season, so
+// its tokens also fill the bare `:root` rules (pages with no attributes set —
+// JS disabled, static export before the bootstrap runs).
+const fall_morning =
+    \\    color-scheme: light;
+    \\    --bg: #faf6ef; --fg: #3d2f23; --muted: #8a7360; --accent: #d97a2b;
+    \\    --code-bg: rgba(120,90,60,.12); --border: rgba(120,90,60,.28);
+    \\    --sidebar-bg: #f3ead9;
+;
+const fall_evening =
+    \\    color-scheme: dark;
+    \\    --bg: #16211a; --fg: #e6e4d6; --muted: #a3a888; --accent: #a8b968;
+    \\    --code-bg: rgba(255,255,255,.07); --border: rgba(168,185,104,.25);
+    \\    --sidebar-bg: #101a14;
+;
+const winter_morning =
+    \\    color-scheme: light;
+    \\    --bg: #ffffff; --fg: #1d2a3a; --muted: #5b6b7f; --accent: #4a9edb;
+    \\    --code-bg: rgba(90,130,170,.12); --border: rgba(90,130,170,.30);
+    \\    --sidebar-bg: #f2f7fc;
+;
+const winter_evening =
+    \\    color-scheme: dark;
+    \\    --bg: #0d1626; --fg: #dce7f5; --muted: #8fa3c0; --accent: #7fb2ff;
+    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(220,231,245,.16);
+    \\    --sidebar-bg: #0a111e;
+;
+const spring_morning =
+    \\    color-scheme: light;
+    \\    --bg: #fdf3f6; --fg: #43324a; --muted: #8b7392; --accent: #8a6fd1;
+    \\    --code-bg: rgba(150,110,180,.12); --border: rgba(150,110,180,.26);
+    \\    --sidebar-bg: #f6ecf9;
+;
+const spring_evening =
+    \\    color-scheme: dark;
+    \\    --bg: #23262a; --fg: #e2e6e0; --muted: #9aa79b; --accent: #6fbf82;
+    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(111,191,130,.22);
+    \\    --sidebar-bg: #1b1e21;
+;
+const summer_morning =
+    \\    color-scheme: light;
+    \\    --bg: #f0f7ec; --fg: #2c3a2c; --muted: #6b7d6b; --accent: #7d4fc9;
+    \\    --code-bg: rgba(90,130,90,.12); --border: rgba(90,130,90,.28);
+    \\    --sidebar-bg: #e6f0e0;
+;
+const summer_evening =
+    \\    color-scheme: dark;
+    \\    --bg: #170c0e; --fg: #ead9d9; --muted: #a88b8b; --accent: #c96a6a;
+    \\    --code-bg: rgba(255,255,255,.07); --border: rgba(234,217,217,.14);
+    \\    --sidebar-bg: #120809;
+;
+
+fn seasonRules(comptime name: []const u8, comptime morning: []const u8, comptime evening: []const u8) []const u8 {
+    return "  :root[data-season=\"" ++ name ++ "\"] {\n" ++ morning ++ "\n  }\n" ++
+        "  @media (prefers-color-scheme: dark) { :root[data-season=\"" ++ name ++ "\"]:not([data-time]) {\n" ++ evening ++ "\n  } }\n" ++
+        "  :root[data-season=\"" ++ name ++ "\"][data-time=\"evening\"] {\n" ++ evening ++ "\n  }\n";
+}
+
+const theme_rules =
+    "  :root {\n" ++ winter_morning ++ "\n  }\n" ++
+    "  @media (prefers-color-scheme: dark) { :root:not([data-time]) {\n" ++ winter_evening ++ "\n  } }\n" ++
+    "  :root[data-time=\"evening\"] {\n" ++ winter_evening ++ "\n  }\n" ++
+    seasonRules("fall", fall_morning, fall_evening) ++
+    seasonRules("winter", winter_morning, winter_evening) ++
+    seasonRules("spring", spring_morning, spring_evening) ++
+    seasonRules("summer", summer_morning, summer_evening);
+
 // Everything from `</title>` through the opening of `<main>`. Includes the
-// MathJax loader, the themed stylesheet, and the fixed-rail sidebar (which holds
-// the light/dark toggle button). Color tokens are defined for a light `:root`,
-// with dark values applied either by the system preference (when the reader has
-// not chosen) or by an explicit `[data-theme]` override set from `localStorage`.
+// MathJax loader, the seasonal stylesheet (`theme_rules`), and the sidebar.
+// Season/time attributes are set from `localStorage` by the head bootstrap;
+// with no explicit time, the system color-scheme preference decides.
 const head_post_a =
     \\</title>
     \\<script>MathJax = { tex: { inlineMath: [['\\(','\\)']], displayMath: [['\\[','\\]']] } };</script>
     \\<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     \\<style>
-    \\  :root {
-    \\    color-scheme: light;
-    \\    --bg: #ffffff; --fg: #1a1a1a; --muted: #5c5c5c; --accent: #2563eb;
-    \\    --code-bg: rgba(127,127,127,.14); --border: rgba(127,127,127,.30);
-    \\    --sidebar-bg: #f6f7f9;
-    \\  }
-    \\  @media (prefers-color-scheme: dark) {
-    \\    :root:not([data-theme]) {
-    \\      color-scheme: dark;
-    \\      --bg: #0f1419; --fg: #e6e6e6; --muted: #9aa4b2; --accent: #60a5fa;
-    \\      --code-bg: rgba(255,255,255,.08); --border: rgba(255,255,255,.14);
-    \\      --sidebar-bg: #11161d;
-    \\    }
-    \\  }
-    \\  :root[data-theme="light"] {
-    \\    color-scheme: light;
-    \\    --bg: #ffffff; --fg: #1a1a1a; --muted: #5c5c5c; --accent: #2563eb;
-    \\    --code-bg: rgba(127,127,127,.14); --border: rgba(127,127,127,.30);
-    \\    --sidebar-bg: #f6f7f9;
-    \\  }
-    \\  :root[data-theme="dark"] {
-    \\    color-scheme: dark;
-    \\    --bg: #0f1419; --fg: #e6e6e6; --muted: #9aa4b2; --accent: #60a5fa;
-    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(255,255,255,.14);
-    \\    --sidebar-bg: #11161d;
-    \\  }
+    \\
+++ theme_rules ++
     \\  * { box-sizing: border-box; }
     \\  body {
     \\    margin: 0; padding-left: 14rem;
@@ -183,46 +238,55 @@ const head_post_a =
     \\  .nav-folder > summary::-webkit-details-marker { display: none; }
     \\  .nav-folder > summary::before { content: "\25B8"; display: inline-block; width: 1em; color: var(--muted); transition: transform .12s; }
     \\  .nav-folder[open] > summary::before { transform: rotate(90deg); }
-    \\  .project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; margin-top: 2rem; }
-    \\  .project-card { display: flex; flex-direction: column; gap: .35rem; padding: 1.1rem 1.25rem; border: 1px solid var(--border); border-radius: 12px; text-decoration: none; color: var(--fg); background: var(--sidebar-bg); transition: border-color .12s, transform .12s; }
-    \\  .project-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-    \\  .project-icon { font-size: 1.6rem; }
-    \\  .project-title { font-weight: 600; font-size: 1.1rem; }
-    \\  .project-desc { color: var(--muted); font-size: .9rem; }
-    \\  .theme-toggle {
-    \\    display: flex; align-items: center; justify-content: center; gap: .5rem;
-    \\    width: 100%; padding: .5rem .75rem; font: inherit; font-size: .9rem;
-    \\    color: var(--fg); background: transparent;
-    \\    border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+    \\  .sidebar-toggle {
+    \\    padding: .1rem .45rem; font: inherit; font-size: .95rem;
+    \\    color: var(--muted); background: transparent;
+    \\    border: none; border-radius: 6px; cursor: pointer;
     \\  }
-    \\  .theme-toggle:hover { background: var(--code-bg); }
-    \\  .sidebar-controls { display: flex; flex-direction: column; gap: .75rem; }
+    \\  .sidebar-toggle:hover { background: var(--code-bg); color: var(--fg); }
+    \\  /* Collapsed: the sidebar is fully gone; only a small reopen button floats. */
+    \\  .sidebar-open {
+    \\    display: none; position: fixed; top: .75rem; left: .75rem; z-index: 10;
+    \\    padding: .2rem .55rem; font: inherit; font-size: .95rem;
+    \\    color: var(--muted); background: var(--sidebar-bg);
+    \\    border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+    \\  }
+    \\  .sidebar-open:hover { color: var(--fg); }
+    \\  :root[data-sidebar="collapsed"] body { padding-left: 0; }
+    \\  :root[data-sidebar="collapsed"] .sidebar { display: none; }
+    \\  :root[data-sidebar="collapsed"] .sidebar-open { display: block; }
+    \\  /* Settings: two plain-text triggers; each panel pops out OVER the sidebar
+    \\     (absolutely positioned above the trigger row), keeping nav uncluttered. */
+    \\  .sidebar-settings { position: relative; display: flex; gap: 1rem; }
+    \\  .settings-toggle {
+    \\    padding: 0; font: inherit; font-size: .85rem;
+    \\    color: var(--muted); background: none; border: none; cursor: pointer;
+    \\  }
+    \\  .settings-toggle:hover, .settings-toggle[aria-expanded="true"] { color: var(--accent); }
+    \\  .settings-panel {
+    \\    position: absolute; bottom: calc(100% + .5rem); left: 0; right: 0; z-index: 5;
+    \\    display: flex; flex-direction: column; gap: .75rem; padding: .75rem;
+    \\    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    \\    box-shadow: 0 2px 12px rgba(0,0,0,.15);
+    \\  }
+    \\  .settings-panel[hidden] { display: none; }
+    \\  .opt-group { display: flex; flex-wrap: wrap; gap: .25rem .6rem; align-items: baseline; font-size: .8rem; }
+    \\  .opt-label { width: 100%; color: var(--muted); }
+    \\  .opt {
+    \\    padding: 0; font: inherit; font-size: .85rem; background: none; border: none;
+    \\    color: var(--accent); text-decoration: underline; cursor: pointer;
+    \\  }
+    \\  .opt.active { color: var(--fg); text-decoration: none; font-weight: 600; cursor: default; }
     \\  .control { display: flex; flex-direction: column; gap: .35rem; font-size: .8rem; color: var(--muted); }
     \\  .control-label { display: flex; justify-content: space-between; }
     \\  .width-range { width: 100%; accent-color: var(--accent); cursor: pointer; }
-    \\  .sidebar-toggle {
-    \\    display: flex; align-items: center; justify-content: center; gap: .5rem;
-    \\    width: 100%; padding: .4rem .75rem; font: inherit; font-size: .85rem;
-    \\    color: var(--muted); background: transparent;
-    \\    border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
-    \\  }
-    \\  .sidebar-toggle:hover { background: var(--code-bg); color: var(--fg); }
-    \\  /* Collapsed: shrink to a thin rail showing only the toggle. */
-    \\  :root[data-sidebar="collapsed"] body { padding-left: 3rem; }
-    \\  :root[data-sidebar="collapsed"] .sidebar { width: 3rem; padding: 1.25rem .5rem; gap: .5rem; }
-    \\  :root[data-sidebar="collapsed"] .sidebar-brand,
-    \\  :root[data-sidebar="collapsed"] .sidebar-nav,
-    \\  :root[data-sidebar="collapsed"] .sidebar-controls,
-    \\  :root[data-sidebar="collapsed"] .theme-toggle { display: none; }
-    \\  :root[data-sidebar="collapsed"] .sidebar-toggle { padding: .4rem; }
     \\  @media (max-width: 50rem) {
     \\    body { padding-left: 0; }
     \\    .sidebar {
     \\      position: static; width: auto; height: auto;
     \\      flex-direction: row; align-items: center; justify-content: space-between;
     \\    }
-    \\    .sidebar-nav, .sidebar-controls, .sidebar-toggle { display: none; }
-    \\    .theme-toggle { width: auto; }
+    \\    .sidebar-nav, .sidebar-settings, .sidebar-toggle, .sidebar-open { display: none; }
     \\    .content { margin-top: 1.5rem; }
     \\  }
     \\</style>
@@ -255,20 +319,39 @@ const repo_link_post =
 ;
 
 const head_post_d =
+    \\    <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Hide sidebar" title="Hide sidebar">&lsaquo;</button>
     \\  </div>
     \\  <nav class="sidebar-nav">
 ;
 const head_post_e =
     \\</nav>
-    \\  <div class="sidebar-controls">
-    \\    <label class="control" for="width-range">
-    \\      <span class="control-label"><span>Width</span><span id="width-value">44rem</span></span>
-    \\      <input id="width-range" class="width-range" type="range" min="30" max="72" step="1" value="44">
-    \\    </label>
+    \\  <div class="sidebar-settings">
+    \\    <button id="theme-toggle" class="settings-toggle" type="button" aria-expanded="false">Theme</button>
+    \\    <button id="text-toggle" class="settings-toggle" type="button" aria-expanded="false">Text</button>
+    \\    <div id="theme-panel" class="settings-panel" hidden>
+    \\      <div class="opt-group" id="season-opts">
+    \\        <span class="opt-label">Season</span>
+    \\        <button class="opt" type="button" data-v="fall">Fall</button>
+    \\        <button class="opt" type="button" data-v="winter">Winter</button>
+    \\        <button class="opt" type="button" data-v="spring">Spring</button>
+    \\        <button class="opt" type="button" data-v="summer">Summer</button>
+    \\      </div>
+    \\      <div class="opt-group" id="time-opts">
+    \\        <span class="opt-label">Time</span>
+    \\        <button class="opt" type="button" data-v="">Auto</button>
+    \\        <button class="opt" type="button" data-v="morning">Morning</button>
+    \\        <button class="opt" type="button" data-v="evening">Evening</button>
+    \\      </div>
+    \\    </div>
+    \\    <div id="text-panel" class="settings-panel" hidden>
+    \\      <label class="control" for="width-range">
+    \\        <span class="control-label"><span>Width</span><span id="width-value">44rem</span></span>
+    \\        <input id="width-range" class="width-range" type="range" min="30" max="72" step="1" value="44">
+    \\      </label>
+    \\    </div>
     \\  </div>
-    \\  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme"></button>
-    \\  <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Hide sidebar"></button>
     \\</aside>
+    \\<button id="sidebar-open" class="sidebar-open" type="button" aria-label="Show sidebar" title="Show sidebar">&rsaquo;</button>
     \\<main class="content">
     \\
 ;
@@ -277,23 +360,65 @@ const page_tail =
     \\</main>
     \\<script>
     \\(function(){
-    \\  var btn = document.getElementById("theme-toggle");
-    \\  if (!btn) return;
-    \\  function effective(){
-    \\    var t = document.documentElement.dataset.theme;
-    \\    if (t === "light" || t === "dark") return t;
-    \\    return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    \\  var d = document.documentElement;
+    \\  var stog = document.getElementById("sidebar-toggle");
+    \\  var sopen = document.getElementById("sidebar-open");
+    \\  if (stog && sopen) {
+    \\    stog.addEventListener("click", function(){
+    \\      d.dataset.sidebar = "collapsed";
+    \\      try { localStorage.setItem("sidebar", "collapsed"); } catch (e) {}
+    \\    });
+    \\    sopen.addEventListener("click", function(){
+    \\      delete d.dataset.sidebar;
+    \\      try { localStorage.setItem("sidebar", "expanded"); } catch (e) {}
+    \\    });
     \\  }
-    \\  function refresh(){
-    \\    btn.textContent = effective() === "dark" ? "☀ Light" : "☾ Dark";
-    \\  }
-    \\  btn.addEventListener("click", function(){
-    \\    var next = effective() === "dark" ? "light" : "dark";
-    \\    document.documentElement.dataset.theme = next;
-    \\    try { localStorage.setItem("theme", next); } catch (e) {}
-    \\    refresh();
+    \\
+    \\  // Two settings pop-outs (theme, text); opening one closes the other.
+    \\  var panels = [
+    \\    [document.getElementById("theme-toggle"), document.getElementById("theme-panel")],
+    \\    [document.getElementById("text-toggle"), document.getElementById("text-panel")]
+    \\  ];
+    \\  panels.forEach(function(pair){
+    \\    if (!pair[0] || !pair[1]) return;
+    \\    pair[0].addEventListener("click", function(){
+    \\      var show = pair[1].hidden;
+    \\      panels.forEach(function(q){
+    \\        if (!q[0] || !q[1]) return;
+    \\        q[1].hidden = true;
+    \\        q[0].setAttribute("aria-expanded", "false");
+    \\      });
+    \\      pair[1].hidden = !show;
+    \\      pair[0].setAttribute("aria-expanded", show ? "true" : "false");
+    \\    });
     \\  });
-    \\  refresh();
+    \\
+    \\  // Theme options are plain text links; the current choice is marked active.
+    \\  function optGroup(id, current, apply){
+    \\    var wrap = document.getElementById(id);
+    \\    if (!wrap) return;
+    \\    var opts = wrap.querySelectorAll(".opt");
+    \\    function mark(v){
+    \\      for (var i = 0; i < opts.length; i++)
+    \\        opts[i].classList.toggle("active", opts[i].dataset.v === v);
+    \\    }
+    \\    mark(current);
+    \\    for (var i = 0; i < opts.length; i++)
+    \\      (function(o){
+    \\        o.addEventListener("click", function(){ apply(o.dataset.v); mark(o.dataset.v); });
+    \\      })(opts[i]);
+    \\  }
+    \\  optGroup("season-opts", d.dataset.season || "winter", function(v){
+    \\    d.dataset.season = v;
+    \\    try { localStorage.setItem("season", v); } catch (e) {}
+    \\  });
+    \\  optGroup("time-opts", d.dataset.time || "", function(v){
+    \\    if (v) d.dataset.time = v; else delete d.dataset.time;
+    \\    try {
+    \\      if (v) localStorage.setItem("time", v); else localStorage.removeItem("time");
+    \\      localStorage.removeItem("theme");
+    \\    } catch (e) {}
+    \\  });
     \\
     \\  var range = document.getElementById("width-range");
     \\  var wval = document.getElementById("width-value");
@@ -302,7 +427,7 @@ const page_tail =
     \\    try { saved = localStorage.getItem("width"); } catch (e) {}
     \\    if (saved) range.value = saved;
     \\    function applyWidth(v){
-    \\      document.documentElement.style.setProperty("--content-width", v + "rem");
+    \\      d.style.setProperty("--content-width", v + "rem");
     \\      if (wval) wval.textContent = v + "rem";
     \\    }
     \\    applyWidth(range.value);
@@ -310,25 +435,6 @@ const page_tail =
     \\      applyWidth(range.value);
     \\      try { localStorage.setItem("width", range.value); } catch (e) {}
     \\    });
-    \\  }
-    \\
-    \\  var stog = document.getElementById("sidebar-toggle");
-    \\  if (stog) {
-    \\    function collapsed(){ return document.documentElement.dataset.sidebar === "collapsed"; }
-    \\    function srefresh(){
-    \\      var c = collapsed();
-    \\      stog.textContent = c ? "›" : "‹ Hide";
-    \\      stog.setAttribute("aria-label", c ? "Show sidebar" : "Hide sidebar");
-    \\      stog.setAttribute("title", c ? "Show sidebar" : "Hide sidebar");
-    \\    }
-    \\    stog.addEventListener("click", function(){
-    \\      var next = collapsed() ? "expanded" : "collapsed";
-    \\      if (next === "collapsed") document.documentElement.dataset.sidebar = "collapsed";
-    \\      else delete document.documentElement.dataset.sidebar;
-    \\      try { localStorage.setItem("sidebar", next); } catch (e) {}
-    \\      srefresh();
-    \\    });
-    \\    srefresh();
     \\  }
     \\
     \\  // Persist each sidebar folder's open/closed state under nav:<project>/<path>.
@@ -351,7 +457,7 @@ const page_tail =
 
 // ---- tests ------------------------------------------------------------------
 
-test "wrapPage emits sidebar, theme toggle and content body" {
+test "wrapPage emits sidebar, settings panel and content body" {
     const shell: Shell = .{
         .title = "Doc",
         .brand = "Data Mining",
@@ -369,22 +475,30 @@ test "wrapPage emits sidebar, theme toggle and content body" {
     try std.testing.expect(std.mem.indexOf(u8, page, "<nav class=\"sidebar-nav\"><ul class=\"nav-tree\"></ul></nav>") != null);
     // The fragment body is wrapped in the content region.
     try std.testing.expect(std.mem.indexOf(u8, page, "<main class=\"content\">\n<p>hi</p>\n") != null);
-    // Sidebar with the theme toggle button and the width control.
+    // Separate theme and text pop-outs; theme options are text-link buttons.
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"sidebar\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"theme-toggle\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"text-toggle\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"theme-panel\" class=\"settings-panel\" hidden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"text-panel\" class=\"settings-panel\" hidden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"spring\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"evening\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"width-range\"") != null);
-    // Collapse control plus the no-flash bootstrap that restores its state.
+    // Collapse fully hides the sidebar; a floating reopen button remains.
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-toggle\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-open\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar { display: none; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"sidebar\")") != null);
     // Repository link with the external-link icon next to the brand.
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"repo-link\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "target=\"_blank\"") != null);
     // Content width is driven by the CSS variable the slider sets.
     try std.testing.expect(std.mem.indexOf(u8, page, "max-width: var(--content-width, 44rem)") != null);
-    // Both the dark override rule and the no-flash bootstrap are wired up.
-    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-theme=\"dark\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"theme\")") != null);
+    // The seasonal rules and the no-flash bootstrap are wired up.
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"fall\"][data-time=\"evening\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"summer\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"season\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"time\")") != null);
 }
 
 test "standalone shell has no nav and no repo link" {

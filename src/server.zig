@@ -10,6 +10,7 @@
 //! configure time and has to stay `std.Build`-safe.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const project = @import("project.zig");
 const site = @import("site.zig");
 const shell = @import("shell.zig");
@@ -25,6 +26,8 @@ pub const Options = struct {
     port: u16,
     /// Re-render on change and auto-reload the browser (see `Generation`).
     watch: bool = false,
+    /// Open the served front page in the system default browser on startup.
+    open: bool = false,
 };
 
 /// Classify a serve target: an existing .md/.sx *file* serves standalone;
@@ -69,6 +72,7 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
         var routes: std.ArrayList(Route) = .empty;
         try buildRoutes(arena, &routes, loaded, false);
         for (routes.items) |r| std.debug.print("  http://{s}:{d}{s}\n", .{ opts.host, opts.port, r.path });
+        if (opts.open) openBrowser(io, arena, opts, loaded.base);
         while (true) {
             const stream = server.accept(io) catch |err| {
                 std.debug.print("accept error: {s}\n", .{@errorName(err)});
@@ -86,6 +90,7 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
     // edits appear even when nobody manually refreshes.
     var gen = try buildGeneration(gpa, io, opts.target, 1);
     for (gen.routes) |r| std.debug.print("  http://{s}:{d}{s}\n", .{ opts.host, opts.port, r.path });
+    if (opts.open) openBrowser(io, arena, opts, gen.base);
     while (true) {
         const stream = server.accept(io) catch |err| {
             std.debug.print("accept error: {s}\n", .{@errorName(err)});
@@ -109,6 +114,33 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
             std.debug.print("connection error: {s}\n", .{@errorName(err)});
         };
     }
+}
+
+/// Best-effort `--open`: open the site's front page (base-aware) in the
+/// system default browser via the platform opener. Called after the listener
+/// is bound, so the request can't race the server — at worst it queues in the
+/// accept backlog. Any failure prints a warning and the server serves on.
+fn openBrowser(io: std.Io, arena: Allocator, opts: Options, base: []const u8) void {
+    const url = std.fmt.allocPrint(arena, "http://{s}:{d}{s}", .{
+        opts.host, opts.port, site.homeHref(base),
+    }) catch return;
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .macos => &.{ "open", url },
+        .windows => &.{ "cmd", "/c", "start", "", url },
+        else => &.{ "xdg-open", url },
+    };
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |err| {
+        std.debug.print("strike: warning: could not open browser: {s}\n", .{@errorName(err)});
+        return;
+    };
+    // The opener hands the URL to the browser and exits immediately; reap it
+    // so it doesn't sit as a zombie for the server's whole lifetime.
+    _ = child.wait(io) catch {};
 }
 
 /// Load a serve target into a `Site` (a fresh directory handle per load, so

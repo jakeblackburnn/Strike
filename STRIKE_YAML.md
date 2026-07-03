@@ -20,13 +20,29 @@ Controls the whole site: the `/` project picker and global defaults.
 ```yaml
 title: strikedown   # picker heading + browser title base
 repo: https://github.com/you/strike   # default sidebar repo-link for every page
-theme: dark         # default color theme: light | dark (readers can still override)
+theme: winter evening  # default theme: a season (fall|winter|spring|summer), a time
+                    # (morning|evening), or both; light/dark are aliases for
+                    # morning/evening. Readers can still override in Settings.
 width: 44           # default content width, in rem
 base: /docs         # mount the site under a subpath of an existing website (see below)
+header: theme.sxh   # typography header applied to every project's documents (see below)
 projects:           # project order on the picker + nav; unlisted ones sort alphabetically after
   - data_mining
   - pchem
+serve:              # default options for `strike serve <this dir>` (see below)
+  watch: true
+  open: true
 ```
+
+#### `serve` — default reader options
+
+The `serve:` map fills in any `strike serve` option the command line left unset, so a
+site can declare its preferred reading setup (`strike serve strikedown` behaving like
+`--watch --open`) with no flags. Keys: `watch`, `open` (booleans), `host`, `port`.
+**Explicit flags always win** — including the negations `--no-watch` / `--no-open` for
+overriding a yaml `true`. Only directory targets read it; serving a single file uses
+flags and built-in defaults. Malformed values (e.g. a non-numeric `port`) are ignored,
+fail-soft like everything else here.
 
 #### `base` — mounting under a subpath
 
@@ -45,11 +61,10 @@ Controls one project's display metadata and its sidebar nav.
 
 ```yaml
 title: Data Mining                       # display name (else the prettified folder name)
-description: CSCI 436/536 — course notes  # shown on the picker card + generated home
-icon: "📊"                                # picker card + brand glyph
-accent: "#2563eb"                        # optional per-project accent color
+description: CSCI 436/536 — course notes  # shown on the generated project home
 repo: https://github.com/you/dm          # per-project repo link (overrides the site repo)
 home: FINAL_REVIEW_GUIDE.md              # doc served at /<project> (else a generated index)
+header: theme.sxh                        # project typography header, layered over the site one
 
 labels:                                  # project-relative path → sidebar label
   01_probability_statistics.md: Probability & Statistics
@@ -74,7 +89,7 @@ its own home (its `home:` doc, or a generated index of its own docs) instead of 
 cross-project picker — there's nothing to pick between if the root itself has content. Its
 own `strike.yaml` is the *same file* as the site-level one above, since both live at the
 content root — one file, both scopes, at once. All the per-project keys below (`labels`,
-`order`, `hidden`, `home`, `description`, `icon`, ...) apply to it exactly as they would to
+`order`, `hidden`, `home`, `description`, ...) apply to it exactly as they would to
 any other project.
 
 One trade-off worth knowing: once a root project exists, there's no automatic cross-project
@@ -101,20 +116,46 @@ becomes the page at its containing folder's route:
 
 `main.sx` beats `main.md` when both exist in one directory.
 
+### Typography headers — `.sxh`
+
+`strike.yaml` configures the *reader* (nav, ordering, mounting); typography belongs to
+strikedown itself, as **directive lines**. A `.sxh` header file is a shared collection of
+directives that `header:` attaches to a whole scope:
+
+```
+:color brand #7c3aed
+:color soft  #9aa4b2
+```
+
+Every document in the scope can then color a block by prefixing it with an alias:
+
+```
+(brand)# A purple heading
+(soft)> a muted aside
+```
+
+The same `:color` directives also work *inside* any document (taking effect from that line
+on, layered over the header's). An alias that was never defined renders as literal text —
+plain markdown is never reinterpreted. `header:` paths are relative to the file's own
+directory (content root for the site scope, the project folder for a project); a project
+header layers over the site header, later definitions winning. `.sxh` files are never
+documents — they don't appear in nav or routes. A missing/unreadable header prints a
+warning and is ignored.
+
 ## Key reference
 
 | Key | Scope | Effect |
 | --- | --- | --- |
 | `title` | site / project | Picker/browser title (site); project display name (project) |
 | `repo` | site / project | Sidebar repo-link URL; project value overrides site |
-| `theme` | site | Default `light`/`dark` before the reader picks one |
+| `theme` | site | Default season (`fall`/`winter`/`spring`/`summer`) and/or time (`morning`/`evening`; `light`/`dark` alias) before the reader picks |
 | `width` | site | Default content width in rem |
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
 | `projects` | site | Explicit project order on the picker + nav |
-| `description` | project | Picker card subtitle + generated home subtitle |
-| `icon` | project | Glyph on the picker card / brand |
-| `accent` | project | Per-project accent color |
+| `serve` | site | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win |
+| `description` | project | Generated project-home subtitle |
 | `home` | project | Project-relative doc served at `/<project>` (else the project's `main.*`, else a generated index) |
+| `header` | site / project | Typography header (`.sxh`) seeding every document in the scope; project layers over site |
 | `labels` | project | Path → nav label, for files **and** folders |
 | `order` | project | Per-directory ordering of files/folders |
 | `hidden` | project | Paths dropped from nav + routes |

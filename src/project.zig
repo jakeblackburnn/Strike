@@ -32,7 +32,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml = @import("yaml.zig");
-const markdown = @import("markdown.zig");
+const sheet = @import("sheet.zig");
 
 pub const Doc = struct {
     rel_path: []const u8, // project-relative, e.g. "topo/algebra.md"
@@ -40,7 +40,6 @@ pub const Doc = struct {
     label: []const u8, // sidebar nav label
     title: []const u8, // page <title> (first H1, else label)
     md: []const u8, // file contents, kept for rendering
-    flavor: markdown.Flavor, // .md or .sx, from the file extension
 };
 
 pub const Folder = struct {
@@ -68,21 +67,24 @@ pub const Project = struct {
     slug: []const u8,
     title: []const u8,
     description: []const u8, // "" if none
-    icon: []const u8, // "" if none
-    accent: []const u8, // "" if none (CSS color)
     repo: []const u8,
-    theme: []const u8, // site default theme ("", "light", "dark")
+    season: []const u8, // site default theme season ("", "fall", ...)
+    time: []const u8, // site default theme time ("", "morning", "evening")
     width: []const u8, // site default content width ("" or bare rem number)
     base: []const u8 = "", // site base path ("" or "/sub/path"), copied like theme/width
     home: ?*Doc, // doc served at /<slug>; null ⇒ generated index
     tree: []NavNode,
     docs: []*Doc, // flat list, for route building
+    /// The project's typography sheet: the site `header:` .sxh layered under
+    /// the project's own (see yaml `header:`). Seeds every document's parse.
+    sheet: sheet.Sheet = .empty,
 };
 
 pub const Site = struct {
     title: []const u8,
     repo: []const u8,
-    theme: []const u8, // "", "light", or "dark"
+    season: []const u8, // "" or a season name ("fall", "winter", "spring", "summer")
+    time: []const u8, // "" (auto), "morning", or "evening"
     width: []const u8, // "" or a bare number (rem)
     /// Site base path for mounting under a subpath of an existing website:
     /// "" (serve at the domain root, the default) or "/sub/path". Baked into
@@ -94,6 +96,9 @@ pub const Site = struct {
     /// the top of the picker page in place of the default site-title heading.
     /// (In root-project mode the root scan claims it as that project's home.)
     main: ?*Doc = null,
+    /// The site-level typography sheet (yaml `header:` at the content root);
+    /// used for the picker intro. Projects carry their own layered copy.
+    sheet: sheet.Sheet = .empty,
 };
 
 const default_repo = "https://example.com/strike";
@@ -123,6 +128,7 @@ const ProjCtx = struct {
 pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     const site_cfg = readConfig(io, gpa, content, "strike.yaml");
     const base = try normalizeBase(gpa, site_cfg.getScalar("base") orelse "");
+    const site_sheet = loadHeader(io, gpa, content, site_cfg);
 
     // Collect top-level project folders, and note whether the root itself has
     // documents directly inside (the implicit root project, if any).
@@ -153,10 +159,10 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
 
     var projects: std.ArrayList(Project) = .empty;
     if (has_root_docs) {
-        if (try loadProject(io, gpa, content, "", site_cfg, base)) |root| try projects.append(gpa, root);
+        if (try loadProject(io, gpa, content, "", site_cfg, base, site_sheet)) |root| try projects.append(gpa, root);
     }
     for (slugs.items) |slug| {
-        const p = try loadProject(io, gpa, content, slug, site_cfg, base) orelse continue;
+        const p = try loadProject(io, gpa, content, slug, site_cfg, base, site_sheet) orelse continue;
         try projects.append(gpa, p);
     }
 
@@ -168,26 +174,35 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
         if (root_main_name) |name| site_main = readMainDoc(io, gpa, content, name, "/") catch null;
     }
 
+    const theme = parseTheme(site_cfg.getScalar("theme") orelse "");
     return .{
         .title = site_cfg.getScalar("title") orelse "strikedown",
         .repo = site_cfg.getScalar("repo") orelse default_repo,
-        .theme = site_cfg.getScalar("theme") orelse "",
+        .season = theme.season,
+        .time = theme.time,
         .width = site_cfg.getScalar("width") orelse "",
         .base = base,
         .projects = try projects.toOwnedSlice(gpa),
         .main = site_main,
+        .sheet = site_sheet,
     };
 }
 
 /// Load one project rooted at `content/<slug>`, or — when `slug` is `""` — the
 /// content root itself (the implicit root project; see the module doc comment).
 /// `base` is the already-normalized site base path ("" or "/sub/path").
-fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8, site_cfg: yaml.Value, base: []const u8) !?Project {
+fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8, site_cfg: yaml.Value, base: []const u8, site_sheet: sheet.Sheet) !?Project {
     const is_root = slug.len == 0;
     var dir = if (is_root) content else content.openDir(io, slug, .{ .iterate = true }) catch return null;
     defer if (!is_root) dir.close(io);
 
     const cfg = readConfig(io, gpa, dir, "strike.yaml");
+    // The root project's strike.yaml *is* the site one, so its header is
+    // already in site_sheet; other projects layer theirs on top.
+    const proj_sheet = if (is_root)
+        site_sheet
+    else
+        try sheet.concat(gpa, site_sheet, loadHeader(io, gpa, dir, cfg));
     var ctx: ProjCtx = .{
         .gpa = gpa,
         .io = io,
@@ -227,20 +242,21 @@ fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8
     // The root project has no folder name to prettify, so it falls back to the
     // site's own title instead — it's serving as the site's front page.
     const default_title = if (is_root) site_cfg.getScalar("title") orelse "strikedown" else try prettify(gpa, slug);
+    const site_theme = parseTheme(site_cfg.getScalar("theme") orelse "");
 
     return .{
         .slug = slug,
         .title = cfg.getScalar("title") orelse default_title,
         .description = cfg.getScalar("description") orelse "",
-        .icon = cfg.getScalar("icon") orelse "",
-        .accent = cfg.getScalar("accent") orelse "",
         .repo = cfg.getScalar("repo") orelse site_cfg.getScalar("repo") orelse default_repo,
-        .theme = site_cfg.getScalar("theme") orelse "",
+        .season = site_theme.season,
+        .time = site_theme.time,
         .width = site_cfg.getScalar("width") orelse "",
         .base = base,
         .home = home,
         .tree = res.nodes,
         .docs = try ctx.docs.toOwnedSlice(gpa),
+        .sheet = proj_sheet,
     };
 }
 
@@ -258,6 +274,7 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
     const gpa = ctx.gpa;
     var nodes: std.ArrayList(NavNode) = .empty;
     var main_doc: ?*Doc = null;
+    var main_is_sx = false;
 
     var it = dir.iterate();
     while (it.next(ctx.io) catch null) |entry| {
@@ -284,14 +301,10 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
                 } });
             },
             .file => {
-                // Recognized doc extensions double as the doc's flavor; anything
-                // else isn't a document and is skipped.
-                const flavor: markdown.Flavor = if (std.mem.endsWith(u8, name, ".sx"))
-                    .sx
-                else if (std.mem.endsWith(u8, name, ".md"))
-                    .md
-                else
-                    continue;
+                // Only `.md`/`.sx` are documents; anything else isn't and is
+                // skipped (the server may still serve it as a static asset).
+                const is_sx = std.mem.endsWith(u8, name, ".sx");
+                if (!is_sx and !std.mem.endsWith(u8, name, ".md")) continue;
                 const md = dir.readFileAlloc(ctx.io, name, gpa, .limited(16 << 20)) catch continue;
                 const is_main = std.mem.eql(u8, stripExtension(name), "main");
                 // main.* is served at its containing directory's route.
@@ -311,13 +324,14 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
                     .label = label,
                     .title = heading orelse label,
                     .md = md,
-                    .flavor = flavor,
                 };
                 if (is_main) {
                     // `.sx` beats `.md` when both exist, whatever order the
                     // directory iterates in.
-                    if (main_doc == null or (flavor == .sx and main_doc.?.flavor == .md))
+                    if (main_doc == null or (is_sx and !main_is_sx)) {
                         main_doc = doc;
+                        main_is_sx = is_sx;
+                    }
                     continue;
                 }
                 try ctx.docs.append(gpa, doc);
@@ -341,16 +355,15 @@ pub fn loadFile(io: std.Io, gpa: Allocator, dir: std.Io.Dir, path: []const u8) !
         .slug = "",
         .title = doc.title,
         .description = "",
-        .icon = "",
-        .accent = "",
         .repo = "",
-        .theme = "",
+        .season = "",
+        .time = "",
         .width = "",
         .home = doc,
         .tree = &.{},
         .docs = &.{},
     };
-    return .{ .title = doc.title, .repo = "", .theme = "", .width = "", .projects = projects };
+    return .{ .title = doc.title, .repo = "", .season = "", .time = "", .width = "", .projects = projects };
 }
 
 /// Read `name` from `dir` into a heap `Doc` served at `route` — for docs
@@ -367,7 +380,6 @@ fn readMainDoc(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8, ro
         .label = label,
         .title = heading orelse label,
         .md = md,
-        .flavor = if (std.mem.endsWith(u8, name, ".sx")) .sx else .md,
     };
     return doc;
 }
@@ -375,9 +387,42 @@ fn readMainDoc(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8, ro
 // ---- config helpers ---------------------------------------------------------
 
 /// Read+parse a YAML config from `dir`; an empty map on any failure (fail-soft).
-fn readConfig(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8) yaml.Value {
+pub fn readConfig(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8) yaml.Value {
     const src = dir.readFileAlloc(io, name, gpa, .limited(1 << 20)) catch return .{ .map = &.{} };
     return yaml.parse(gpa, src) catch .{ .map = &.{} };
+}
+
+/// Resolve a config's `header:` (a dir-relative `.sxh` path) into a `Sheet`.
+/// Unset -> empty; unreadable -> a printed warning + empty (fail-soft, like
+/// the yaml handling — a bad header never takes the site down).
+fn loadHeader(io: std.Io, gpa: Allocator, dir: std.Io.Dir, cfg: yaml.Value) sheet.Sheet {
+    const path = cfg.getScalar("header") orelse return .empty;
+    return sheet.load(io, gpa, dir, path) catch {
+        std.debug.print("strike: warning: header {s} could not be read; ignoring\n", .{path});
+        return .empty;
+    };
+}
+
+pub const Theme = struct { season: []const u8 = "", time: []const u8 = "" };
+
+/// Parse a yaml `theme:` value into season + time (fail-soft, unknown words
+/// ignored). Accepted words: a season name, `morning`/`evening`, and the
+/// legacy `light`/`dark` (mapped to morning/evening). E.g. "winter evening".
+pub fn parseTheme(raw: []const u8) Theme {
+    var out: Theme = .{};
+    var it = std.mem.tokenizeAny(u8, raw, " \t");
+    while (it.next()) |w| {
+        if (std.mem.eql(u8, w, "fall") or std.mem.eql(u8, w, "winter") or
+            std.mem.eql(u8, w, "spring") or std.mem.eql(u8, w, "summer"))
+        {
+            out.season = w;
+        } else if (std.mem.eql(u8, w, "morning") or std.mem.eql(u8, w, "light")) {
+            out.time = "morning";
+        } else if (std.mem.eql(u8, w, "evening") or std.mem.eql(u8, w, "dark")) {
+            out.time = "evening";
+        }
+    }
+    return out;
 }
 
 fn labelFor(ctx: *ProjCtx, rel: []const u8) ?[]const u8 {
@@ -539,6 +584,18 @@ test "firstHeading returns leading H1 text or null" {
     try testing.expect(firstHeading("#nospace") == null);
 }
 
+test "parseTheme maps legacy and seasonal values" {
+    try testing.expectEqualStrings("morning", parseTheme("light").time);
+    try testing.expectEqualStrings("evening", parseTheme("dark").time);
+    try testing.expectEqualStrings("winter", parseTheme("winter").season);
+    const both = parseTheme("fall evening");
+    try testing.expectEqualStrings("fall", both.season);
+    try testing.expectEqualStrings("evening", both.time);
+    const junk = parseTheme("neon ultra");
+    try testing.expectEqualStrings("", junk.season);
+    try testing.expectEqualStrings("", junk.time);
+}
+
 test "orderIndex and slug ordering" {
     const a = yaml.Value{ .scalar = "topo" };
     const b = yaml.Value{ .scalar = "pandas.md" };
@@ -572,7 +629,6 @@ test "load scans a project folder into a Site" {
     try testing.expectEqual(@as(usize, 1), site.projects.len);
     try testing.expectEqualStrings("Blog", site.projects[0].title);
     try testing.expectEqualStrings("/blog/hello", site.projects[0].docs[0].route);
-    try testing.expectEqual(markdown.Flavor.md, site.projects[0].docs[0].flavor);
 }
 
 test "load resolves labels, order, and hidden from strike.yaml, and finds home" {
@@ -725,6 +781,46 @@ test "root main.md with loose docs joins the root project as its home" {
     try testing.expectEqual(@as(usize, 1), p.docs.len); // hello.md only
 }
 
+test "header: loads .sxh sheets, project layered over site" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "strike.yaml", .data = "header: site.sxh\n" });
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "site.sxh",
+        .data = ":color brand #111111\n:color soft #9aa4b2\n",
+    });
+    try tmp.dir.createDirPath(testing.io, "blog");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/strike.yaml", .data = "header: theme.sxh\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/theme.sxh", .data = ":color brand #222222\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/post.md", .data = "# Post\n" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    // site sheet holds the site header's aliases
+    try testing.expectEqualStrings("#111111", site.sheet.lookup("brand").?);
+    // the project's own header wins for redefined names, site fills the rest
+    const blog = site.projects[0];
+    try testing.expectEqualStrings("#222222", blog.sheet.lookup("brand").?);
+    try testing.expectEqualStrings("#9aa4b2", blog.sheet.lookup("soft").?);
+    // the .sxh files never become documents
+    try testing.expectEqual(@as(usize, 1), blog.docs.len);
+}
+
+test "a missing header degrades to an empty sheet" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "blog");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/strike.yaml", .data = "header: nope.sxh\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/post.md", .data = "# Post\n" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expect(site.projects[0].sheet.lookup("brand") == null);
+}
+
 test "main.sx beats main.md" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
@@ -737,7 +833,7 @@ test "main.sx beats main.md" {
     defer arena.deinit();
     const site = try load(testing.io, arena.allocator(), tmp.dir);
 
-    try testing.expectEqual(markdown.Flavor.sx, site.projects[0].home.?.flavor);
+    try testing.expectEqualStrings("main.sx", site.projects[0].home.?.rel_path);
 }
 
 test "normalizeBase accepts docs, /docs, and docs/ alike" {

@@ -37,13 +37,26 @@ Zig is the language of choice here because its cool and it probably has a bright
 
 
 
-A from-scratch markdown → HTML renderer, HTTP server, and CLI, written in Zig — no
-build-time dependencies beyond the Zig standard library. The one runtime exception is
-client-side MathJax (loaded from a CDN), which typesets the LaTeX math the renderer passes
-through.
+A from-scratch strikedown/markdown parser, HTML renderer, HTTP server, and CLI, written in
+Zig — no build-time dependencies beyond the Zig standard library. The one runtime exception
+is client-side MathJax (loaded from a CDN), which typesets the LaTeX math the renderer
+passes through.
 
-`.md` files render today; `.sx` is a planned markdown superset for richer typography (see
-`.claude/CLAUDE.md`'s Roadmap section).
+Rendering is two-stage: source parses into a document tree, and backends emit from it
+(HTML today; PDF is the planned second backend). `.md` and `.sx` go through the same
+pipeline — markdown is strikedown's subset, and superset features are additive: syntax
+that means nothing in plain markdown stays plain text until you activate it. The first
+typography feature is **color aliases**:
+
+```
+:color brand #7c3aed
+
+(brand)# This heading renders purple
+```
+
+`:color` defines an alias (in the document, or in a shared `.sxh` header file that
+`strike.yaml` attaches via `header:`); a `(alias)` prefix colors the block it starts. See
+`STRIKE_YAML.md` for headers and `.claude/CLAUDE.md` for the roadmap.
 
 ## Build
 
@@ -61,10 +74,12 @@ Once built, `zig-out/bin/strike` works against any content directory, not just t
 own `strikedown/`:
 
 ```sh
-strike serve  [dir|file] [--host HOST] [--port PORT] [--watch]
+strike serve  [dir|file] [--host HOST] [--port PORT] [--watch] [--open]
                                                   # serve a content dir (or one .md/.sx file) over HTTP;
-                                                  # --watch re-renders on change + auto-reloads the browser
-strike render <file> [-o out.html] [--fragment]   # render a single .md/.sx file to HTML
+                                                  # --watch re-renders on change + auto-reloads the browser;
+                                                  # --open opens the front page in your default browser
+strike render <file> [-o out.html] [--fragment] [--header f.sxh]
+                                                  # render a single .md/.sx file to HTML
 strike build  [dir] [-o outdir]                   # export a content directory to static HTML
 strike init   [dir] [--site]                      # scaffold a starter strike.yaml
 ```
@@ -82,4 +97,4 @@ stays relative so you deploy it straight into the mount directory.
 The renderer covers a practical GFM subset: headings with anchor ids, pipe tables, nested
 and task lists, images, autolinks, strikethrough, backslash escapes, fenced code with
 `language-*` classes, blockquotes, and LaTeX math delimiters (typeset client-side by
-MathJax).
+MathJax) — plus strikedown's typography directives (`:color`, with more to come).

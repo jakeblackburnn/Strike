@@ -15,8 +15,10 @@ const std = @import("std");
 const project = @import("project.zig");
 const site = @import("site.zig");
 const shell = @import("shell.zig");
-const markdown = @import("markdown.zig");
+const render_html = @import("render_html.zig");
+const sheet = @import("sheet.zig");
 const server = @import("server.zig");
+const yaml = @import("yaml.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -49,26 +51,60 @@ fn usage() void {
         \\strike -- render and serve strikedown (markdown/.sx) content.
         \\
         \\Usage:
-        \\  strike serve  [dir|file] [--host HOST] [--port PORT] [--watch]
+        \\  strike serve  [dir|file] [--host HOST] [--port PORT] [--[no-]watch] [--[no-]open]
         \\                                                    Serve a content dir (or one .md/.sx file) over HTTP;
-        \\                                                    --watch re-renders on change and auto-reloads the browser.
-        \\  strike render <file> [-o out.html] [--fragment]   Render a single .md/.sx file to HTML.
+        \\                                                    --watch re-renders on change and auto-reloads the browser;
+        \\                                                    --open opens the front page in the default browser.
+        \\  strike render <file> [-o out.html] [--fragment] [--header f.sxh]
+        \\                                                    Render a single .md/.sx file to HTML.
         \\  strike build  [dir] [-o outdir]                   Export a content directory to static HTML.
         \\  strike init   [dir] [--site]                      Scaffold a starter strike.yaml.
         \\
         \\Defaults: dir "." for serve/build/init; host 127.0.0.1; port 8080; outdir "html".
+        \\A dir's strike.yaml `serve:` map (watch/open/host/port) fills unset serve flags.
         \\
     , .{});
 }
 
 // ---- serve ------------------------------------------------------------------
 
+/// `serve`'s flags as given: `null` means "flag not passed", so yaml serve
+/// defaults can fill it before `resolveServe` applies the built-in defaults.
 const ServeArgs = struct {
     dir: []const u8 = ".",
-    host: []const u8 = "127.0.0.1",
-    port: u16 = 8080,
-    watch: bool = false,
+    host: ?[]const u8 = null,
+    port: ?u16 = null,
+    watch: ?bool = null,
+    open: ?bool = null,
 };
+
+/// Fully resolved serve options: flags beat the yaml `serve:` map, which
+/// beats the built-in defaults. Yaml values that don't parse are ignored
+/// (fail-soft, like the rest of the config handling).
+const ServeOpts = struct {
+    host: []const u8,
+    port: u16,
+    watch: bool,
+    open: bool,
+};
+
+fn resolveServe(parsed: ServeArgs, cfg: yaml.Value) ServeOpts {
+    const serve_cfg = cfg.get("serve") orelse yaml.Value{ .map = &.{} };
+    return .{
+        .host = parsed.host orelse serve_cfg.getScalar("host") orelse "127.0.0.1",
+        .port = parsed.port orelse blk: {
+            const s = serve_cfg.getScalar("port") orelse break :blk 8080;
+            break :blk std.fmt.parseInt(u16, s, 10) catch 8080;
+        },
+        .watch = parsed.watch orelse yamlBool(serve_cfg, "watch"),
+        .open = parsed.open orelse yamlBool(serve_cfg, "open"),
+    };
+}
+
+fn yamlBool(cfg: yaml.Value, key: []const u8) bool {
+    const s = cfg.getScalar(key) orelse return false;
+    return std.mem.eql(u8, s, "true");
+}
 
 /// Parse `serve`'s flags from any iterator exposing `next() ?[:0]const u8` (or
 /// `?[]const u8`) — `std.process.Args.Iterator` in production, a plain slice
@@ -83,6 +119,12 @@ fn parseServeArgs(args: anytype) !ServeArgs {
             parsed.host = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, a, "--watch")) {
             parsed.watch = true;
+        } else if (std.mem.eql(u8, a, "--no-watch")) {
+            parsed.watch = false;
+        } else if (std.mem.eql(u8, a, "--open")) {
+            parsed.open = true;
+        } else if (std.mem.eql(u8, a, "--no-open")) {
+            parsed.open = false;
         } else if (!have_dir) {
             parsed.dir = a;
             have_dir = true;
@@ -95,17 +137,29 @@ fn parseServeArgs(args: anytype) !ServeArgs {
 /// `server.run`, which owns the socket loop and route table.
 fn cmdServe(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     const parsed = try parseServeArgs(args);
+    const target = server.classifyTarget(io, parsed.dir);
+    // Dir targets may carry serve defaults in their strike.yaml; explicit
+    // flags always beat them. Single-file targets have no config to read.
+    const cfg: yaml.Value = switch (target) {
+        .dir => |d| blk: {
+            const dir = std.Io.Dir.cwd().openDir(io, d, .{}) catch break :blk .{ .map = &.{} };
+            break :blk project.readConfig(io, arena, dir, "strike.yaml");
+        },
+        .file => .{ .map = &.{} },
+    };
+    const opts = resolveServe(parsed, cfg);
     try server.run(arena, gpa, io, .{
-        .target = server.classifyTarget(io, parsed.dir),
-        .host = parsed.host,
-        .port = parsed.port,
-        .watch = parsed.watch,
+        .target = target,
+        .host = opts.host,
+        .port = opts.port,
+        .watch = opts.watch,
+        .open = opts.open,
     });
 }
 
 // ---- render -------------------------------------------------------------
 
-const RenderArgs = struct { path: ?[]const u8 = null, out: ?[]const u8 = null, fragment: bool = false };
+const RenderArgs = struct { path: ?[]const u8 = null, out: ?[]const u8 = null, fragment: bool = false, header: ?[]const u8 = null };
 
 fn parseRenderArgs(args: anytype) !RenderArgs {
     var parsed: RenderArgs = .{};
@@ -114,6 +168,8 @@ fn parseRenderArgs(args: anytype) !RenderArgs {
             parsed.out = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, a, "--fragment")) {
             parsed.fragment = true;
+        } else if (std.mem.eql(u8, a, "--header")) {
+            parsed.header = args.next() orelse return error.MissingValue;
         } else if (parsed.path == null) {
             parsed.path = a;
         } else return error.UnexpectedArgument;
@@ -124,13 +180,20 @@ fn parseRenderArgs(args: anytype) !RenderArgs {
 /// Render a single file, standalone (no project/site context). `--fragment`
 /// emits just the markdown body — the hook for embedding strike's output in
 /// another pipeline; otherwise the fragment is wrapped in `shell.standalone`.
+/// `--header` seeds the document with a `.sxh` typography sheet, standing in
+/// for the `strike.yaml` `header:` a project would provide. Unlike the
+/// fail-soft project path, an explicitly named header that can't be read is
+/// an error — the user asked for it by name.
 fn cmdRender(gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     const parsed = try parseRenderArgs(args);
     const path = parsed.path orelse return error.MissingFile;
 
+    const base: sheet.Sheet = if (parsed.header) |hp|
+        try sheet.load(io, gpa, std.Io.Dir.cwd(), hp)
+    else
+        .empty;
     const md = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 << 20));
-    const flavor: markdown.Flavor = if (std.mem.endsWith(u8, path, ".sx")) .sx else .md;
-    const body = try markdown.render(gpa, md, flavor);
+    const body = try render_html.render(gpa, md, .{ .sheet = base });
 
     const html = if (parsed.fragment) body else blk: {
         const title = project.firstHeading(md) orelse
@@ -199,8 +262,8 @@ fn cmdBuild(gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator
 const project_yaml_template =
     \\title: My Project
     \\description: ""
-    \\# icon: "📊"
     \\# home: index.md
+    \\# header: theme.sxh  # typography header (.sxh) layered over the site one
     \\# labels:
     \\#   index.md: Home
     \\# order:
@@ -211,9 +274,10 @@ const project_yaml_template =
 const site_yaml_template =
     \\title: strikedown
     \\# repo: https://github.com/you/strike
-    \\# theme: dark
+    \\# theme: winter evening  # season (fall|winter|spring|summer) and/or time (morning|evening)
     \\# width: 44
     \\# base: /docs        # mount the site under a subpath of an existing website
+    \\# header: theme.sxh  # typography header (.sxh) applied to every project
     \\# projects:
     \\#   - my_project
     \\
@@ -274,20 +338,68 @@ const SliceArgs = struct {
     }
 };
 
-test "parseServeArgs applies defaults and parses flags in any order" {
+test "parseServeArgs leaves unset flags null and parses flags in any order" {
     var none: SliceArgs = .{ .items = &.{} };
     const defaults = try parseServeArgs(&none);
     try testing.expectEqualStrings(".", defaults.dir);
-    try testing.expectEqualStrings("127.0.0.1", defaults.host);
-    try testing.expectEqual(@as(u16, 8080), defaults.port);
+    try testing.expectEqual(@as(?[]const u8, null), defaults.host);
+    try testing.expectEqual(@as(?u16, null), defaults.port);
+    try testing.expectEqual(@as(?bool, null), defaults.watch);
+    try testing.expectEqual(@as(?bool, null), defaults.open);
 
-    var full: SliceArgs = .{ .items = &.{ "--port", "9000", "docs", "--host", "0.0.0.0", "--watch" } };
+    var full: SliceArgs = .{ .items = &.{ "--port", "9000", "docs", "--host", "0.0.0.0", "--watch", "--open" } };
     const parsed = try parseServeArgs(&full);
     try testing.expectEqualStrings("docs", parsed.dir);
-    try testing.expectEqualStrings("0.0.0.0", parsed.host);
-    try testing.expectEqual(@as(u16, 9000), parsed.port);
-    try testing.expect(parsed.watch);
-    try testing.expect(!defaults.watch);
+    try testing.expectEqualStrings("0.0.0.0", parsed.host.?);
+    try testing.expectEqual(@as(u16, 9000), parsed.port.?);
+    try testing.expect(parsed.watch.?);
+    try testing.expect(parsed.open.?);
+
+    var negated: SliceArgs = .{ .items = &.{ "--no-watch", "--no-open" } };
+    const off = try parseServeArgs(&negated);
+    try testing.expect(!off.watch.?);
+    try testing.expect(!off.open.?);
+}
+
+test "resolveServe: flags beat yaml serve: which beats built-in defaults" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const gpa = arena_state.allocator();
+
+    const cfg = try yaml.parse(gpa,
+        \\serve:
+        \\  watch: true
+        \\  open: true
+        \\  host: 0.0.0.0
+        \\  port: 9999
+    );
+
+    // No flags: yaml fills everything.
+    const from_yaml = resolveServe(.{}, cfg);
+    try testing.expectEqualStrings("0.0.0.0", from_yaml.host);
+    try testing.expectEqual(@as(u16, 9999), from_yaml.port);
+    try testing.expect(from_yaml.watch);
+    try testing.expect(from_yaml.open);
+
+    // Flags win over yaml.
+    const from_flags = resolveServe(.{ .port = 8000, .watch = false }, cfg);
+    try testing.expectEqual(@as(u16, 8000), from_flags.port);
+    try testing.expect(!from_flags.watch);
+    try testing.expect(from_flags.open);
+
+    // No yaml serve: map -> built-in defaults.
+    const builtin = resolveServe(.{}, .{ .map = &.{} });
+    try testing.expectEqualStrings("127.0.0.1", builtin.host);
+    try testing.expectEqual(@as(u16, 8080), builtin.port);
+    try testing.expect(!builtin.watch);
+    try testing.expect(!builtin.open);
+
+    // Malformed yaml port is ignored (fail-soft).
+    const bad = try yaml.parse(gpa,
+        \\serve:
+        \\  port: lots
+    );
+    try testing.expectEqual(@as(u16, 8080), resolveServe(.{}, bad).port);
 }
 
 test "parseServeArgs rejects a non-numeric port and a second positional" {
@@ -298,12 +410,16 @@ test "parseServeArgs rejects a non-numeric port and a second positional" {
     try testing.expectError(error.UnexpectedArgument, parseServeArgs(&two_dirs));
 }
 
-test "parseRenderArgs parses the file, -o, and --fragment" {
-    var args: SliceArgs = .{ .items = &.{ "notes.md", "-o", "out.html", "--fragment" } };
+test "parseRenderArgs parses the file, -o, --fragment, and --header" {
+    var args: SliceArgs = .{ .items = &.{ "notes.md", "-o", "out.html", "--fragment", "--header", "theme.sxh" } };
     const parsed = try parseRenderArgs(&args);
     try testing.expectEqualStrings("notes.md", parsed.path.?);
     try testing.expectEqualStrings("out.html", parsed.out.?);
     try testing.expect(parsed.fragment);
+    try testing.expectEqualStrings("theme.sxh", parsed.header.?);
+
+    var no_header: SliceArgs = .{ .items = &.{"notes.md"} };
+    try testing.expect((try parseRenderArgs(&no_header)).header == null);
 }
 
 test "parseBuildArgs and parseInitArgs apply defaults" {
