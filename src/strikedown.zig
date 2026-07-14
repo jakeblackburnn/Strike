@@ -20,6 +20,9 @@
 //!   - display math `$$…$$` (TeX kept raw; emitters decide the wrapping)
 //!   - typography directives (`:color brand #7c3aed`) — consumed, no block;
 //!     they extend the document's working `Sheet` from that line on
+//!   - group directives (`// two_lists grid(2)` … `// --` … `// end`) — layout
+//!     elements grouping content into sections (see `docs/design/001-groups.md`);
+//!     a `//` line is a directive **iff it parses cleanly**, otherwise prose
 //!   - a `(alias)` block prefix (`(brand)# Title`) coloring the block it
 //!     starts — recognized **only** when the alias resolves in the working
 //!     sheet, so unstyled documents render byte-identically to plain markdown
@@ -41,6 +44,9 @@ const Allocator = std.mem.Allocator;
 
 pub const Doc = struct {
     blocks: []Block,
+    /// Parse-time diagnostics (e.g. a `grid(n)` section-count mismatch), as
+    /// arena strings. `parse` stays pure — callers decide whether to print.
+    warnings: []const []const u8 = &.{},
 };
 
 /// One block-level element. Typography attributes live here, beside the
@@ -62,7 +68,17 @@ pub const Block = struct {
         /// Raw display-math TeX (multi-line joined with '\n'), not escaped.
         math: []const u8,
         rule,
+        group: Group,
     };
+};
+
+/// A group directive's block: sections of content arranged by its commands.
+/// Commands land here as attributes (data, not emitter special cases) —
+/// `grid(n)` sets `columns`; future commands grow more fields.
+pub const Group = struct {
+    name: []const u8, // "" = nameless (runs to EOF unless closed)
+    columns: ?usize = null, // from grid(n); null = plain stacked container
+    sections: [][]Block,
 };
 
 pub const Heading = struct {
@@ -155,7 +171,10 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
         }
         if (try p.next()) |block| try blocks.append(arena, block);
     }
-    return .{ .blocks = try blocks.toOwnedSlice(arena) };
+    return .{
+        .blocks = try blocks.toOwnedSlice(arena),
+        .warnings = try p.warnings.toOwnedSlice(arena),
+    };
 }
 
 const Parser = struct {
@@ -169,6 +188,11 @@ const Parser = struct {
     /// The working sheet: the base (site/project header) entries followed by
     /// every in-document directive consumed so far. Later entries win.
     colors: std.ArrayList(sheet.Sheet.Entry) = .empty,
+    /// How many groups are open. Separator/closer group lines are only live
+    /// inside a group; outside they stay prose (`isGroupInterrupt`).
+    group_depth: usize = 0,
+    /// Diagnostics collected while parsing (handed to `Doc.warnings`).
+    warnings: std.ArrayList([]const u8) = .empty,
 
     /// Parse the block starting at `idx` (which is non-blank), advancing past
     /// it. Returns null for lines consumed without producing a block
@@ -220,6 +244,14 @@ const Parser = struct {
     /// (and prefix-stripped, when a color prefix applied).
     fn parseBlock(p: *Parser, t: []const u8) Allocator.Error!Block {
         const arena = p.arena;
+
+        // Group directive. Only a clean *opener* starts anything here; a
+        // separator/closer line is consumed inside `parseGroup`'s loop, so one
+        // reaching this chain is outside any group (or mismatched) and falls
+        // through to prose — the degradation rule.
+        if (parseGroupLine(t)) |gl| {
+            if (gl == .open) return try p.parseGroup(gl.open);
+        }
 
         // Fenced code block: contents are kept verbatim, no inline parsing.
         if (std.mem.startsWith(u8, t, "```")) {
@@ -347,9 +379,10 @@ const Parser = struct {
             // `isTableStart` is the table's paragraph-interrupt companion to
             // `isBlockStart` (a table is a two-line pattern, so it can't live
             // there); `splitColorPrefix` is the color prefix's (it needs the
-            // working sheet, which `isBlockStart` can't see).
+            // working sheet, which `isBlockStart` can't see); `isGroupInterrupt`
+            // is the group directive's (it needs the open-group depth).
             if (isBlockStart(nt) or isTableStart(p.lines, p.idx) or
-                p.splitColorPrefix(nt) != null) break;
+                p.splitColorPrefix(nt) != null or p.isGroupInterrupt(nt)) break;
             try inls.append(arena, .{ .text = " " });
             try inls.appendSlice(arena, try parseInlines(arena, nt));
             p.idx += 1;
@@ -395,7 +428,7 @@ const Parser = struct {
             // Non-marker line: an indented one continues the open item; anything
             // else ends the list (the block loop decides what it is).
             if (items.items.len > 0 and ind > base and !isBlockStart(t) and
-                p.splitColorPrefix(t) == null)
+                p.splitColorPrefix(t) == null and !p.isGroupInterrupt(t))
             {
                 try tail.append(arena, .{ .line = try parseInlines(arena, std.mem.trimEnd(u8, t, " ")) });
                 p.idx += 1;
@@ -406,6 +439,71 @@ const Parser = struct {
         if (items.items.len > 0)
             items.items[items.items.len - 1].tail = try tail.toOwnedSlice(arena);
         return .{ .ordered = ordered, .items = try items.toOwnedSlice(arena) };
+    }
+
+    /// Parse a group: the opener line at `idx` is consumed, then content
+    /// blocks accumulate into sections until a separator (`// --`) starts the
+    /// next one and a closer (`// end [name]` or bare `//`) — or EOF — ends
+    /// the group. Recursion via `next()` makes nested groups work and binds
+    /// separators/closers to the innermost group; a closer whose name doesn't
+    /// match this group is not consumed here and degrades to prose.
+    fn parseGroup(p: *Parser, open: GroupLine.Open) Allocator.Error!Block {
+        const arena = p.arena;
+        p.idx += 1;
+        p.group_depth += 1;
+        defer p.group_depth -= 1;
+        var sections: std.ArrayList([]Block) = .empty;
+        var cur: std.ArrayList(Block) = .empty;
+        while (p.idx < p.lines.len) {
+            if (isBlank(p.lines[p.idx])) {
+                p.idx += 1;
+                continue;
+            }
+            const t = std.mem.trimStart(u8, p.lines[p.idx], " ");
+            if (parseGroupLine(t)) |gl| switch (gl) {
+                .sep => {
+                    p.idx += 1;
+                    try sections.append(arena, try cur.toOwnedSlice(arena));
+                    cur = .empty;
+                    continue;
+                },
+                .bare => {
+                    p.idx += 1;
+                    break;
+                },
+                .end => |name| if (name == null or std.mem.eql(u8, name.?, open.name)) {
+                    p.idx += 1;
+                    break;
+                },
+                .open => {}, // a nested group; `next()` below recurses into it
+            };
+            if (try p.next()) |block| try cur.append(arena, block);
+        }
+        try sections.append(arena, try cur.toOwnedSlice(arena));
+        if (open.columns) |n| if (sections.items.len != n) {
+            try p.warnings.append(arena, try std.fmt.allocPrint(
+                arena,
+                "group '{s}': grid({d}) but {d} section(s)",
+                .{ if (open.name.len > 0) open.name else "(nameless)", n, sections.items.len },
+            ));
+        };
+        return .{ .kind = .{ .group = .{
+            .name = open.name,
+            .columns = open.columns,
+            .sections = try sections.toOwnedSlice(arena),
+        } } };
+    }
+
+    /// The group directive's paragraph-interrupt companion to `isBlockStart`
+    /// (it needs parser state, so it can't live there): a clean opener is live
+    /// anywhere; separator/closer forms only while a group is open. Inert `//`
+    /// prose lines keep soft-wrapping into paragraphs as in plain markdown.
+    fn isGroupInterrupt(p: *Parser, t: []const u8) bool {
+        const gl = parseGroupLine(t) orelse return false;
+        return switch (gl) {
+            .open => true,
+            .sep, .end, .bare => p.group_depth > 0,
+        };
     }
 
     /// `slugify` plus per-document deduplication: a repeated heading gets a
@@ -461,10 +559,11 @@ fn isBlank(line: []const u8) bool {
 }
 
 /// Returns true if a (left-trimmed) line begins any block other than a
-/// paragraph. Two block forms are NOT covered here and need companion checks
+/// paragraph. Three block forms are NOT covered here and need companion checks
 /// wherever context allows them: pipe tables (a two-line pattern —
-/// `isTableStart(lines, idx)`) and `(alias)` color prefixes (they need the
-/// working sheet — `Parser.splitColorPrefix`).
+/// `isTableStart(lines, idx)`), `(alias)` color prefixes (they need the
+/// working sheet — `Parser.splitColorPrefix`), and group directives (they need
+/// the open-group depth — `Parser.isGroupInterrupt`).
 fn isBlockStart(t: []const u8) bool {
     return headingLevel(t) != null or
         isHorizontalRule(t) or
@@ -547,6 +646,93 @@ fn orderedMarkerLen(t: []const u8) ?usize {
     if (n == 0) return null;
     if (n + 1 < t.len and t[n] == '.' and t[n + 1] == ' ') return n + 2;
     return null;
+}
+
+// ---- group directives ----------------------------------------------------------
+
+/// One classified group-directive line (`docs/design/001-groups.md`).
+const GroupLine = union(enum) {
+    open: Open,
+    /// `// --`: the innermost open group's next section starts.
+    sep,
+    /// `// end` / `// end <name>`: closes the innermost group (a given name
+    /// must match it).
+    end: ?[]const u8,
+    /// Bare `//`: same as `// end`.
+    bare,
+
+    const Open = struct {
+        name: []const u8, // "" = nameless
+        columns: ?usize, // from grid(n)
+    };
+};
+
+/// Classify a (left-trimmed) line as a group directive, or null if it isn't
+/// one — and null is the whole degradation story: any `//` line that does not
+/// parse cleanly (unknown command, malformed args, bad name) stays literal
+/// prose, so documents that never activate groups render as plain markdown.
+///
+/// Grammar: `//` must be followed by a space or end-of-line (`//foo` is
+/// prose). An opener is `// [name] <command>*` where the name is a bare
+/// alias-safe token (`end` and `--` are reserved) and every command is
+/// `word(args)` — parens required, so future command keywords can never
+/// collide with names. Whether a separator/closer is *live* is the parser's
+/// call (they need an open group); this function only classifies.
+fn parseGroupLine(t: []const u8) ?GroupLine {
+    if (!std.mem.startsWith(u8, t, "//")) return null;
+    if (t.len > 2 and t[2] != ' ') return null;
+    const rest = std.mem.trim(u8, t[2..], " ");
+    if (rest.len == 0) return .bare;
+    if (std.mem.eql(u8, rest, "--")) return .sep;
+
+    var it = std.mem.tokenizeScalar(u8, rest, ' ');
+    const first = it.next() orelse return .bare;
+    if (std.mem.eql(u8, first, "end")) {
+        const name = it.next() orelse return .{ .end = null };
+        if (it.next() != null) return null;
+        if (!sheet.isAliasName(name)) return null;
+        return .{ .end = name };
+    }
+
+    var open: GroupLine.Open = .{ .name = "", .columns = null };
+    if (parseCommand(first)) |cmd| {
+        applyCommand(&open, cmd);
+    } else {
+        if (!sheet.isAliasName(first) or std.mem.eql(u8, first, "--")) return null;
+        open.name = first;
+    }
+    while (it.next()) |tok| {
+        applyCommand(&open, parseCommand(tok) orelse return null);
+    }
+    return .{ .open = open };
+}
+
+/// The recognized group commands. A new command is a variant here, a
+/// `parseCommand` arm, an attribute on `Group` via `applyCommand`, and the
+/// emitter reading it — data all the way, per the extension recipe.
+const Command = union(enum) {
+    grid: usize,
+};
+
+/// Parse one `word(args)` token, null if it isn't a recognized command with
+/// valid args (which deactivates the whole line — strict, so typos are seen).
+fn parseCommand(tok: []const u8) ?Command {
+    if (tok.len < 3 or tok[tok.len - 1] != ')') return null;
+    const paren = std.mem.indexOfScalar(u8, tok, '(') orelse return null;
+    const word = tok[0..paren];
+    const args = tok[paren + 1 .. tok.len - 1];
+    if (std.mem.eql(u8, word, "grid")) {
+        const n = std.fmt.parseInt(usize, args, 10) catch return null;
+        if (n == 0) return null;
+        return .{ .grid = n };
+    }
+    return null;
+}
+
+fn applyCommand(open: *GroupLine.Open, cmd: Command) void {
+    switch (cmd) {
+        .grid => |n| open.columns = n,
+    }
 }
 
 // ---- table helpers -----------------------------------------------------------
@@ -905,6 +1091,130 @@ test "undefined alias prefix stays literal prose" {
     const doc = try parse(arena_state.allocator(), "(nope)# not a heading", .empty);
     try testing.expect(doc.blocks[0].kind == .paragraph);
     try testing.expect(doc.blocks[0].color == null);
+}
+
+test "group directive: the main.sx two-list example" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\// two_lists grid(2)
+        \\
+        \\1. a
+        \\2. b
+        \\
+        \\// --
+        \\
+        \\1. c
+        \\2. d
+        \\
+        \\// end two_lists
+    , .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const group = doc.blocks[0].kind.group;
+    try testing.expectEqualStrings("two_lists", group.name);
+    try testing.expectEqual(@as(usize, 2), group.columns.?);
+    try testing.expectEqual(@as(usize, 2), group.sections.len);
+    try testing.expect(group.sections[0][0].kind == .list);
+    try testing.expect(group.sections[1][0].kind == .list);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+}
+
+test "group directive: nameless opener runs to EOF" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// grid(2)\n\npara a\n\n// --\n\npara b", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const group = doc.blocks[0].kind.group;
+    try testing.expectEqualStrings("", group.name);
+    try testing.expectEqual(@as(usize, 2), group.sections.len);
+}
+
+test "group directive: unterminated named group runs to EOF" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// aside\n\npara", .empty);
+    const group = doc.blocks[0].kind.group;
+    try testing.expectEqualStrings("aside", group.name);
+    try testing.expect(group.columns == null);
+    try testing.expectEqual(@as(usize, 1), group.sections.len);
+}
+
+test "group directive: bare // closes the innermost group" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// g\n\na\n\n//\n\nafter", .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try testing.expect(doc.blocks[0].kind == .group);
+    try testing.expect(doc.blocks[1].kind == .paragraph);
+}
+
+test "group directive: nesting binds separators to the innermost group" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\// outer grid(2)
+        \\
+        \\// inner grid(2)
+        \\a
+        \\// --
+        \\b
+        \\// end
+        \\
+        \\// --
+        \\
+        \\c
+        \\
+        \\// end outer
+    , .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const outer = doc.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 2), outer.sections.len);
+    const inner = outer.sections[0][0].kind.group;
+    try testing.expectEqualStrings("inner", inner.name);
+    try testing.expectEqual(@as(usize, 2), inner.sections.len);
+}
+
+test "group directive: unclean // lines stay prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // unknown bare words after the name deactivate the whole line
+    const doc = try parse(arena_state.allocator(), "// just a comment", .empty);
+    try testing.expect(doc.blocks[0].kind == .paragraph);
+    // unknown command, malformed args, //-glued word, reserved name
+    for ([_][]const u8{ "// box glow(5)", "// g grid(zero)", "// g grid(0)", "//foo", "// -- grid(2)" }) |src| {
+        const d = try parse(arena_state.allocator(), src, .empty);
+        try testing.expect(d.blocks[0].kind == .paragraph);
+    }
+}
+
+test "group directive: separator and closer outside a group stay prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// --\n\n// end\n\n//", .empty);
+    try testing.expectEqual(@as(usize, 3), doc.blocks.len);
+    for (doc.blocks) |b| try testing.expect(b.kind == .paragraph);
+}
+
+test "group directive: grid section-count mismatch warns but renders" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// g grid(2)\na\n// --\nb\n// --\nc\n// end", .empty);
+    const group = doc.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 3), group.sections.len);
+    try testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try testing.expectEqualStrings("group 'g': grid(2) but 3 section(s)", doc.warnings[0]);
+}
+
+test "group opener interrupts a paragraph; inert // lines soft-wrap" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "text\n// g grid(2)\na\n// end", .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try testing.expect(doc.blocks[0].kind == .paragraph);
+    try testing.expect(doc.blocks[1].kind == .group);
+    // an inert // line keeps joining the paragraph, as in plain markdown
+    const d2 = try parse(arena_state.allocator(), "text\n// just prose", .empty);
+    try testing.expectEqual(@as(usize, 1), d2.blocks.len);
 }
 
 test "slugify" {

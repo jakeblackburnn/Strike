@@ -83,8 +83,8 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     return out.toOwnedSlice();
 }
 
-// The no-flash bootstrap: it restores season/time/width/sidebar before first
-// paint. `wrapPage` splices the site default season, time, then width into the
+// The no-flash bootstrap: it restores season/time/width/font-size/line-height/
+// font/sidebar before first paint. `wrapPage` splices the site default season, time, then width into the
 // three `||"…"` fallbacks so an unset reader gets the site default (still
 // overridable). The legacy `theme` key ("light"/"dark") migrates to a time.
 const head_pre_a =
@@ -104,7 +104,11 @@ const head_pre_c =
     \\if(t==="morning"||t==="evening")d.dataset.time=t;var w=localStorage.getItem("width")||"
 ;
 const head_pre_d =
-    \\";if(w)d.style.setProperty("--content-width",w+"rem");var v=localStorage.getItem("sidebar");if(v==="collapsed")d.dataset.sidebar="collapsed";}catch(e){}})();</script>
+    \\";if(w)d.style.setProperty("--content-width",w+"rem");
+    \\var fs=localStorage.getItem("fontsize");if(fs)d.style.setProperty("--font-size",fs+"px");
+    \\var lh=localStorage.getItem("lineheight");if(lh)d.style.setProperty("--line-height",lh);
+    \\var f=localStorage.getItem("font");if(f==="serif")d.dataset.font=f;
+    \\var v=localStorage.getItem("sidebar");if(v==="collapsed")d.dataset.sidebar="collapsed";}catch(e){}})();</script>
     \\<title>
 ;
 
@@ -194,8 +198,13 @@ const head_post_a =
     \\    margin: 0; padding-left: 14rem;
     \\    background: var(--bg); color: var(--fg);
     \\    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    \\    transition: padding-left .2s ease;
     \\  }
-    \\  .content { max-width: var(--content-width, 44rem); margin: 3rem auto; padding: 0 1.25rem; }
+    \\  .content {
+    \\    max-width: var(--content-width, 44rem); margin: 3rem auto; padding: 0 1.25rem;
+    \\    font-size: var(--font-size, 1rem); line-height: var(--line-height, 1.6);
+    \\  }
+    \\  :root[data-font="serif"] .content { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; }
     \\  h1, h2, h3 { line-height: 1.25; }
     \\  code {
     \\    background: var(--code-bg); padding: .15em .35em;
@@ -216,7 +225,8 @@ const head_post_a =
     \\    position: fixed; top: 0; left: 0; width: 14rem; height: 100vh;
     \\    display: flex; flex-direction: column; gap: 1rem;
     \\    padding: 1.25rem 1rem;
-    \\    background: var(--sidebar-bg); border-right: 1px solid var(--border);
+    \\    background: var(--sidebar-bg);
+    \\    transition: transform .2s ease;
     \\  }
     \\  .sidebar-brand { display: flex; align-items: center; gap: .5rem; font-weight: 600; font-size: 1.05rem; letter-spacing: .02em; }
     \\  .repo-link { display: inline-flex; color: var(--muted); }
@@ -238,23 +248,29 @@ const head_post_a =
     \\  .nav-folder > summary::-webkit-details-marker { display: none; }
     \\  .nav-folder > summary::before { content: "\25B8"; display: inline-block; width: 1em; color: var(--muted); transition: transform .12s; }
     \\  .nav-folder[open] > summary::before { transform: rotate(90deg); }
-    \\  .sidebar-toggle {
-    \\    padding: .1rem .45rem; font: inherit; font-size: .95rem;
-    \\    color: var(--muted); background: transparent;
-    \\    border: none; border-radius: 6px; cursor: pointer;
+    \\  /* The sidebar's right edge is the collapse control: a fixed strip that
+    \\     draws the border line. Hovering the sidebar warms it up, hovering the
+    \\     strip itself lights it accent, clicking toggles. Collapsed, the strip
+    \\     slides to the screen's left edge and reopens the sidebar the same way. */
+    \\  .sidebar-edge {
+    \\    position: fixed; top: 0; left: calc(14rem - .75rem); width: 1.5rem; height: 100vh; z-index: 10;
+    \\    margin: 0; padding: 0; border: none; background: transparent; cursor: pointer;
+    \\    transition: left .2s ease;
     \\  }
-    \\  .sidebar-toggle:hover { background: var(--code-bg); color: var(--fg); }
-    \\  /* Collapsed: the sidebar is fully gone; only a small reopen button floats. */
-    \\  .sidebar-open {
-    \\    display: none; position: fixed; top: .75rem; left: .75rem; z-index: 10;
-    \\    padding: .2rem .55rem; font: inherit; font-size: .95rem;
-    \\    color: var(--muted); background: var(--sidebar-bg);
-    \\    border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+    \\  .sidebar-edge::before {
+    \\    content: ""; position: absolute; top: 0; left: 50%; width: 1px; height: 100%;
+    \\    background: var(--border);
+    \\    transition: width .15s ease, background .15s ease, opacity .15s ease;
     \\  }
-    \\  .sidebar-open:hover { color: var(--fg); }
+    \\  .sidebar:hover + .sidebar-edge::before { width: 2px; background: var(--accent); opacity: .35; }
+    \\  .sidebar-edge:hover::before { width: 2px; background: var(--accent); opacity: .75; }
+    \\  /* Collapsed: the sidebar is fully gone; only the edge strip remains. */
     \\  :root[data-sidebar="collapsed"] body { padding-left: 0; }
-    \\  :root[data-sidebar="collapsed"] .sidebar { display: none; }
-    \\  :root[data-sidebar="collapsed"] .sidebar-open { display: block; }
+    \\  :root[data-sidebar="collapsed"] .sidebar {
+    \\    transform: translateX(-100%); visibility: hidden;
+    \\    transition: transform .2s ease, visibility 0s .2s;
+    \\  }
+    \\  :root[data-sidebar="collapsed"] .sidebar-edge { left: -.75rem; }
     \\  /* Settings: two plain-text triggers; each panel pops out OVER the sidebar
     \\     (absolutely positioned above the trigger row), keeping nav uncluttered. */
     \\  .sidebar-settings { position: relative; display: flex; gap: 1rem; }
@@ -286,7 +302,8 @@ const head_post_a =
     \\      position: static; width: auto; height: auto;
     \\      flex-direction: row; align-items: center; justify-content: space-between;
     \\    }
-    \\    .sidebar-nav, .sidebar-settings, .sidebar-toggle, .sidebar-open { display: none; }
+    \\    .sidebar-nav, .sidebar-settings, .sidebar-edge { display: none; }
+    \\    :root[data-sidebar="collapsed"] .sidebar { display: none; }
     \\    .content { margin-top: 1.5rem; }
     \\  }
     \\</style>
@@ -319,7 +336,6 @@ const repo_link_post =
 ;
 
 const head_post_d =
-    \\    <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Hide sidebar" title="Hide sidebar">&lsaquo;</button>
     \\  </div>
     \\  <nav class="sidebar-nav">
 ;
@@ -348,10 +364,23 @@ const head_post_e =
     \\        <span class="control-label"><span>Width</span><span id="width-value">44rem</span></span>
     \\        <input id="width-range" class="width-range" type="range" min="30" max="72" step="1" value="44">
     \\      </label>
+    \\      <label class="control" for="size-range">
+    \\        <span class="control-label"><span>Size</span><span id="size-value">16px</span></span>
+    \\        <input id="size-range" class="width-range" type="range" min="13" max="22" step="1" value="16">
+    \\      </label>
+    \\      <label class="control" for="line-range">
+    \\        <span class="control-label"><span>Line height</span><span id="line-value">1.6</span></span>
+    \\        <input id="line-range" class="width-range" type="range" min="1.2" max="2" step="0.05" value="1.6">
+    \\      </label>
+    \\      <div class="opt-group" id="font-opts">
+    \\        <span class="opt-label">Font</span>
+    \\        <button class="opt" type="button" data-v="">Sans</button>
+    \\        <button class="opt" type="button" data-v="serif">Serif</button>
+    \\      </div>
     \\    </div>
     \\  </div>
     \\</aside>
-    \\<button id="sidebar-open" class="sidebar-open" type="button" aria-label="Show sidebar" title="Show sidebar">&rsaquo;</button>
+    \\<button id="sidebar-edge" class="sidebar-edge" type="button" aria-label="Toggle sidebar" title="Toggle sidebar"></button>
     \\<main class="content">
     \\
 ;
@@ -361,16 +390,18 @@ const page_tail =
     \\<script>
     \\(function(){
     \\  var d = document.documentElement;
-    \\  var stog = document.getElementById("sidebar-toggle");
-    \\  var sopen = document.getElementById("sidebar-open");
-    \\  if (stog && sopen) {
-    \\    stog.addEventListener("click", function(){
-    \\      d.dataset.sidebar = "collapsed";
-    \\      try { localStorage.setItem("sidebar", "collapsed"); } catch (e) {}
-    \\    });
-    \\    sopen.addEventListener("click", function(){
-    \\      delete d.dataset.sidebar;
-    \\      try { localStorage.setItem("sidebar", "expanded"); } catch (e) {}
+    \\  var edge = document.getElementById("sidebar-edge");
+    \\  if (edge) {
+    \\    function edgeLabel(){
+    \\      var l = d.dataset.sidebar === "collapsed" ? "Show sidebar" : "Hide sidebar";
+    \\      edge.setAttribute("aria-label", l); edge.title = l;
+    \\    }
+    \\    edgeLabel();
+    \\    edge.addEventListener("click", function(){
+    \\      var collapsed = d.dataset.sidebar === "collapsed";
+    \\      if (collapsed) delete d.dataset.sidebar; else d.dataset.sidebar = "collapsed";
+    \\      try { localStorage.setItem("sidebar", collapsed ? "expanded" : "collapsed"); } catch (e) {}
+    \\      edgeLabel();
     \\    });
     \\  }
     \\
@@ -419,23 +450,36 @@ const page_tail =
     \\      localStorage.removeItem("theme");
     \\    } catch (e) {}
     \\  });
+    \\  optGroup("font-opts", d.dataset.font || "", function(v){
+    \\    if (v) d.dataset.font = v; else delete d.dataset.font;
+    \\    try { if (v) localStorage.setItem("font", v); else localStorage.removeItem("font"); } catch (e) {}
+    \\  });
     \\
-    \\  var range = document.getElementById("width-range");
-    \\  var wval = document.getElementById("width-value");
-    \\  if (range) {
+    \\  // Text sliders share one shape: restore from localStorage, apply live,
+    \\  // echo the value next to the label.
+    \\  function slider(id, valId, key, unit, apply){
+    \\    var range = document.getElementById(id);
+    \\    var val = document.getElementById(valId);
+    \\    if (!range) return;
     \\    var saved = null;
-    \\    try { saved = localStorage.getItem("width"); } catch (e) {}
+    \\    try { saved = localStorage.getItem(key); } catch (e) {}
     \\    if (saved) range.value = saved;
-    \\    function applyWidth(v){
-    \\      d.style.setProperty("--content-width", v + "rem");
-    \\      if (wval) wval.textContent = v + "rem";
-    \\    }
-    \\    applyWidth(range.value);
+    \\    function go(v){ apply(v); if (val) val.textContent = v + unit; }
+    \\    go(range.value);
     \\    range.addEventListener("input", function(){
-    \\      applyWidth(range.value);
-    \\      try { localStorage.setItem("width", range.value); } catch (e) {}
+    \\      go(range.value);
+    \\      try { localStorage.setItem(key, range.value); } catch (e) {}
     \\    });
     \\  }
+    \\  slider("width-range", "width-value", "width", "rem", function(v){
+    \\    d.style.setProperty("--content-width", v + "rem");
+    \\  });
+    \\  slider("size-range", "size-value", "fontsize", "px", function(v){
+    \\    d.style.setProperty("--font-size", v + "px");
+    \\  });
+    \\  slider("line-range", "line-value", "lineheight", "", function(v){
+    \\    d.style.setProperty("--line-height", v);
+    \\  });
     \\
     \\  // Persist each sidebar folder's open/closed state under nav:<project>/<path>.
     \\  var folders = document.querySelectorAll("details.nav-folder");
@@ -484,10 +528,19 @@ test "wrapPage emits sidebar, settings panel and content body" {
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"spring\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"evening\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"width-range\"") != null);
-    // Collapse fully hides the sidebar; a floating reopen button remains.
-    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-toggle\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-open\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar { display: none; }") != null);
+    // Text panel: font size and line-height sliders plus the font opt group.
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"size-range\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"line-range\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"serif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"fontsize\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"lineheight\")") != null);
+    // The sidebar's right edge is the collapse toggle; collapsing slides the
+    // sidebar away and leaves the strip at the screen edge.
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-edge\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-toggle\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-open\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sidebar:hover + .sidebar-edge::before") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar-edge { left: -.75rem; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"sidebar\")") != null);
     // Repository link with the external-link icon next to the brand.
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"repo-link\"") != null);

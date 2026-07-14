@@ -42,6 +42,7 @@ pub fn render(gpa: Allocator, src: []const u8, opts: Options) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const doc = try strikedown.parse(arena_state.allocator(), src, opts.sheet);
+    for (doc.warnings) |warning| std.debug.print("strike: warning: {s}\n", .{warning});
     return emit(gpa, doc);
 }
 
@@ -121,6 +122,31 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
             try w.writeAll("\\]\n");
         },
         .rule => try w.writeAll("<hr/>\n"),
+        .group => |g| {
+            // Styles are inline (not shell CSS) so fragments and static
+            // exports are self-contained; the classes are hooks for future
+            // reader styling.
+            try w.writeAll("<div class=\"sx-group\"");
+            if (g.columns != null or block.color != null) {
+                try w.writeAll(" style=\"");
+                if (g.columns) |n| {
+                    try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:1.5rem", .{n});
+                    if (block.color != null) try w.writeByte(';');
+                }
+                if (block.color) |c| {
+                    try w.writeAll("color:");
+                    try escapeAttrInto(w, c);
+                }
+                try w.writeByte('"');
+            }
+            try w.writeAll(">\n");
+            for (g.sections) |section| {
+                try w.writeAll("<div class=\"sx-group-sec\">\n");
+                for (section) |b| try emitBlock(w, b);
+                try w.writeAll("</div>\n");
+            }
+            try w.writeAll("</div>\n");
+        },
     }
 }
 
@@ -529,6 +555,49 @@ test "a base sheet from render options seeds the document" {
     const got = try render(std.testing.allocator, "(brand)# T", .{ .sheet = base });
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings("<h1 id=\"t\" style=\"color:#7c3aed\">T</h1>\n", got);
+}
+
+test "group directive: two lists render side by side (main.sx)" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<ol>\n<li>c</li>\n<li>d</li>\n</ol>\n</div>\n" ++
+            "</div>\n",
+        "// two_lists grid(2)\n\n1. a\n2. b\n\n// --\n\n1. c\n2. d\n\n// end two_lists",
+    );
+}
+
+test "group directive: nameless group without commands beyond grid" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n" ++
+            "</div>\n",
+        "// grid(2)\n\na\n\n// --\n\nb",
+    );
+}
+
+test "group directive: a group with no commands is a plain container" {
+    try expectRender(
+        "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// box\n\na\n\n// end",
+    );
+}
+
+test "group directive: a color prefix styles the group wrapper" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;color:#ff0000\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n</div>\n",
+        ":color red #ff0000\n\n(red)// g grid(2)\n\na\n\n// --\n\nb\n\n// end",
+    );
+}
+
+test "group directive: unclean // lines degrade to prose" {
+    try expectRender("<p>// note here</p>\n", "// note here");
+    try expectRender("<p>// box glow(5)</p>\n", "// box glow(5)");
+    try expectRender("<p>// --</p>\n", "// --");
+    try expectRender("<p>// end</p>\n", "// end");
 }
 
 test "fenced code language class" {

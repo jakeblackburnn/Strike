@@ -28,13 +28,18 @@ prominence in `main.*`.
   homepage it lists the projects — so every page is reachable from the sidebar no
   matter what the author put in `main.*`.
 - Navigation first: brand, nav tree, and (at the bottom) the settings triggers.
-- The collapse control lives at the **top** of the sidebar.
-- Collapsed means **gone**: zero width, no rail, no reserved margin — only a small
-  fixed button to bring it back.
+- **The right edge is the collapse control.** No arrow buttons: hovering the sidebar
+  warms the edge line, hovering the edge itself lights it in the accent color, and
+  clicking it toggles. The sidebar slides away; the edge strip slides to the screen's
+  left edge and reopens it the same way.
+- Collapsed means **gone**: zero width, no reserved margin — only the hairline edge
+  strip remains to bring it back.
 - Settings stay out of the sidebar body. Two plain-text triggers at the bottom —
   **Theme** and **Text** — each open their own panel that pops out *over* the sidebar
   (opening one closes the other). Theme choices are selectable text links, not
-  dropdowns; Text holds render settings (content width, and future reading features).
+  dropdowns; Text holds reading settings: content width, font size, line height, and
+  font family (sans/serif) — these style the reading experience, never the document's
+  own typography (that stays in strikedown).
 
 ## Seasonal themes
 
@@ -58,6 +63,7 @@ override in Settings.
 
 - All CSS/JS is inline string constants in `shell.zig`; no framework, no build step,
   no external assets beyond MathJax.
-- Reader state (season, time, width, sidebar, nav folders) persists in `localStorage`
-  only, restored pre-paint by the head bootstrap so pages never flash.
+- Reader state (season, time, width, font size, line height, font, sidebar, nav
+  folders) persists in `localStorage` only, restored pre-paint by the head bootstrap
+  so pages never flash.
 - Generated HTML stays small and readable; prefer deleting chrome to adding it.
