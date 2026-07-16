@@ -12,7 +12,7 @@
 //!     `\[…\]`, HTML-escaped; client-side MathJax does the typesetting (the
 //!     loader is in `shell.zig`)
 //!   - a fence's language lands as `class="language-…"`
-//!   - a group's layout attributes (`columns`, `width_pct`) land as inline
+//!   - a group's layout attributes (`columns`, `width_pct`, `centered`) land as inline
 //!     `style` declarations on its `sx-group` wrapper
 //!
 //! The end-to-end `expectRender` tests at the bottom are the renderer's
@@ -122,14 +122,21 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
             // exports are self-contained; the classes are hooks for future
             // reader styling.
             try w.writeAll("<div class=\"sx-group\"");
-            if (g.columns != null or g.width_pct != null) {
+            if (g.columns != null or g.width_pct != null or g.centered) {
                 try w.writeAll(" style=\"");
+                var sep = false;
                 if (g.columns) |n| {
                     try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:1.5rem", .{n});
-                    if (g.width_pct != null) try w.writeByte(';');
+                    sep = true;
                 }
                 if (g.width_pct) |pct| {
+                    if (sep) try w.writeByte(';');
                     try w.print("width:{d}%;margin-inline:auto", .{pct});
+                    sep = true;
+                }
+                if (g.centered) {
+                    if (sep) try w.writeByte(';');
+                    try w.writeAll("text-align:center");
                 }
                 try w.writeByte('"');
             }
@@ -683,6 +690,22 @@ test "skinny renders a centered narrow wrapper" {
             "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n</div>\n",
         "// g grid(2) skinny(80%)\n\na\n\n// --\n\nb\n\n// end",
     );
+}
+
+test "center renders a text-centering wrapper" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-align:center\">\n" ++
+            "<div class=\"sx-group-sec\">\n<h3 id=\"title\">title</h3>\n</div>\n</div>\n",
+        "/center()\n\n### title",
+    );
+    // combined with skinny: width first, then the alignment
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:60%;margin-inline:auto;text-align:center\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// box skinny(60%) center()\n\na\n\n// end",
+    );
+    // center takes no arguments — args deactivate the line
+    try expectRender("<p>/center(5)</p>\n", "/center(5)");
 }
 
 test "single command wraps the next content element" {

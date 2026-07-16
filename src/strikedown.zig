@@ -80,13 +80,15 @@ pub const Block = struct {
 
 /// A group's block: sections of content arranged by its commands. Commands
 /// land here as attributes (data, not emitter special cases) — `grid(n)`
-/// sets `columns`, `skinny(N%)` sets `width_pct`; future commands grow more
-/// fields. A single-command directive (`/cmd()`) produces this same node:
-/// nameless, one section holding the one element it binds to.
+/// sets `columns`, `skinny(N%)` sets `width_pct`, `center()` sets
+/// `centered`; future commands grow more fields. A single-command directive
+/// (`/cmd()`) produces this same node: nameless, one section holding the one
+/// element it binds to.
 pub const Group = struct {
     name: []const u8, // "" = nameless (runs to EOF unless closed)
     columns: ?usize = null, // from grid(n); null = plain stacked container
     width_pct: ?usize = null, // from skinny(N%): % of the body column width
+    centered: bool = false, // from center(): center-align contained text
     sections: [][]Block,
 };
 
@@ -523,6 +525,7 @@ const Parser = struct {
             .name = attrs.name,
             .columns = attrs.columns,
             .width_pct = attrs.width_pct,
+            .centered = attrs.centered,
             .sections = try sections.toOwnedSlice(arena),
         } } };
     }
@@ -565,6 +568,7 @@ const Parser = struct {
             .name = "",
             .columns = attrs.columns,
             .width_pct = attrs.width_pct,
+            .centered = attrs.centered,
             .sections = sections,
         } } };
     }
@@ -582,6 +586,10 @@ const Parser = struct {
         if (attrs.width_pct != null and p.layout_depth.get(.skinny) > 0) {
             attrs.width_pct = null;
             try p.warnStrippedLayout(name, "skinny");
+        }
+        if (attrs.centered and p.layout_depth.get(.center) > 0) {
+            attrs.centered = false;
+            try p.warnStrippedLayout(name, "center");
         }
     }
 
@@ -606,11 +614,13 @@ const Parser = struct {
     fn enterLayout(p: *Parser, attrs: GroupLine.Open) void {
         if (attrs.columns != null) p.layout_depth.getPtr(.grid).* += 1;
         if (attrs.width_pct != null) p.layout_depth.getPtr(.skinny).* += 1;
+        if (attrs.centered) p.layout_depth.getPtr(.center).* += 1;
     }
 
     fn exitLayout(p: *Parser, attrs: GroupLine.Open) void {
         if (attrs.columns != null) p.layout_depth.getPtr(.grid).* -= 1;
         if (attrs.width_pct != null) p.layout_depth.getPtr(.skinny).* -= 1;
+        if (attrs.centered) p.layout_depth.getPtr(.center).* -= 1;
     }
 
     /// True if the line at `idx` (already left-trimmed as `t`) starts a new
@@ -807,6 +817,7 @@ const GroupLine = union(enum) {
         name: []const u8, // "" = nameless
         columns: ?usize = null, // from grid(n)
         width_pct: ?usize = null, // from skinny(N%)
+        centered: bool = false, // from center()
     };
 };
 
@@ -861,6 +872,8 @@ const Command = union(enum) {
     grid: usize,
     /// skinny(N%): render at N% of the body column width, centered.
     skinny: usize,
+    /// center(): center-align text within the surrounding layout element.
+    center,
 };
 
 /// Parse one `word(args)` token, null if it isn't a recognized command with
@@ -882,6 +895,10 @@ fn parseCommand(tok: []const u8) ?Command {
         if (n == 0 or n > 100) return null;
         return .{ .skinny = n };
     }
+    if (std.mem.eql(u8, word, "center")) {
+        if (args.len != 0) return null; // center() takes no arguments
+        return .center;
+    }
     return null;
 }
 
@@ -889,6 +906,7 @@ fn applyCommand(open: *GroupLine.Open, cmd: Command) void {
     switch (cmd) {
         .grid => |n| open.columns = n,
         .skinny => |n| open.width_pct = n,
+        .center => open.centered = true,
     }
 }
 
@@ -1612,6 +1630,44 @@ test "skinny command: malformed args deactivate the line" {
         const doc = try parse(arena_state.allocator(), src, .empty);
         try testing.expect(doc.blocks[0].kind == .paragraph);
     }
+}
+
+test "center command: on groups, with other commands, and as a single command" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// box center()\n\npara", .empty);
+    try testing.expect(d1.blocks[0].kind.group.centered);
+    const d2 = try parse(arena_state.allocator(), "// g center() skinny(50%)\n\npara", .empty);
+    try testing.expect(d2.blocks[0].kind.group.centered);
+    try testing.expectEqual(@as(usize, 50), d2.blocks[0].kind.group.width_pct.?);
+    const d3 = try parse(arena_state.allocator(), "/center()\n\n### heading", .empty);
+    const g3 = d3.blocks[0].kind.group;
+    try testing.expect(g3.centered);
+    try testing.expect(g3.sections[0][0].kind == .heading);
+    try testing.expectEqual(@as(usize, 0), d3.warnings.len);
+}
+
+test "center command: args deactivate the line; center-in-center is stripped" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// g center(5)", .empty);
+    try testing.expect(d1.blocks[0].kind == .paragraph);
+    const d2 = try parse(arena_state.allocator(),
+        \\// box center()
+        \\
+        \\// inner center()
+        \\a
+        \\// end
+        \\
+        \\// end box
+    , .empty);
+    const inner = d2.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expect(!inner.centered);
+    try testing.expectEqual(@as(usize, 1), d2.warnings.len);
+    try testing.expectEqualStrings(
+        "group 'inner': center ignored (already inside a center)",
+        d2.warnings[0],
+    );
 }
 
 test "single command: applies to the very next content element" {

@@ -97,15 +97,19 @@ element**, as if that one element were a nameless one-section group.
   directive next, the line is inert prose — so `/` lines never stack.
 - The layout-level rule applies as if the wrapper were a group.
 
-### Typography directives — `:` (reserved)
+### Alias directives — `:` (reserved)
 
-The `:` namespace is reserved for typography directives, usable in-document
-and collected into shared `.sxh` header files. **No `:` directive is
-currently defined** — every `:` line is ordinary prose, and `.sxh` contents
-are inert. (The original `:color` directive and its `(name)` block prefix
-were removed 2026-07-14 pending a design that fits the strikedown = content
-/ strike = rendering-style split; a `(name)` prefix is likewise plain
-prose.)
+The `:` namespace is reserved for **alias definitions** — naming a command or
+command-set for reuse, usable in-document and collected into shared `.sxh`
+header files. Intended direction (2026-07-16): `:thin-grid grid(2)
+skinny(80%)` would define `thin-grid`, and `// thin-grid` would then open a
+group carrying both commands. **No `:` directive is currently defined** —
+every `:` line is ordinary prose, and `.sxh` contents are inert. (The
+namespace was originally earmarked for typography *settings* — the `:color`
+directive and its `(name)` block prefix, removed 2026-07-14; the alias
+direction supersedes that idea. Open for the eventual design: an alias name
+in a `//` opener sits in the group-name position, so alias resolution and
+group naming must be disambiguated. A `(name)` prefix remains plain prose.)
 
 ## Commands
 
@@ -119,10 +123,11 @@ spacing…) will simply not count under the layout-level rule.
 | --- | --- |
 | `grid(n)` | n columns; sections fill left-to-right and wrap. n ≥ 1. A section count ≠ n still renders, with a warning. |
 | `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/design/003-skinny.md`)* |
+| `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/design/005-center.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
-arguments deactivate the whole line — `skinny(50)`, `grid(0)`, `glow(5)` all
-leave their line as prose.
+arguments deactivate the whole line — `skinny(50)`, `grid(0)`, `center(5)`,
+`glow(5)` all leave their line as prose.
 
 ### The layout-level rule
 
@@ -242,6 +247,6 @@ Degradation — every line below is an ordinary paragraph:
 //foo                       (no space after the marker)
 /usr/bin/env foo            (not a command: no parens)
 /skinny(50%) extra          (trailing text)
-:color brand #7c3aed        (reserved namespace, nothing defined)
+:thin-grid grid(2) skinny(80%)   (reserved namespace, nothing defined yet)
 (name)# not a heading       (retired prefix: plain prose)
 ```
