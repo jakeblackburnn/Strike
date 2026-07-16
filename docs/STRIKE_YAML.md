@@ -116,31 +116,17 @@ becomes the page at its containing folder's route:
 
 `main.sx` beats `main.md` when both exist in one directory.
 
-### Typography headers — `.sxh`
+### Typography headers — `.sxh` (reserved)
 
 `strike.yaml` configures the *reader* (nav, ordering, mounting); typography belongs to
-strikedown itself, as **directive lines**. A `.sxh` header file is a shared collection of
-directives that `header:` attaches to a whole scope:
-
-```
-:color brand #7c3aed
-:color soft  #9aa4b2
-```
-
-Every document in the scope can then color a block by prefixing it with an alias:
-
-```
-(brand)# A purple heading
-(soft)> a muted aside
-```
-
-The same `:color` directives also work *inside* any document (taking effect from that line
-on, layered over the header's). An alias that was never defined renders as literal text —
-plain markdown is never reinterpreted. `header:` paths are relative to the file's own
-directory (content root for the site scope, the project folder for a project); a project
-header layers over the site header, later definitions winning. `.sxh` files are never
-documents — they don't appear in nav or routes. A missing/unreadable header prints a
-warning and is ignored.
+strikedown itself, as **`:` directive lines**. A `.sxh` header file is a shared
+collection of such directives that `header:` attaches to a whole scope. The directive
+namespace is currently **reserved** — no `:` directive is defined, so `.sxh` contents
+are inert and every in-document `:` line is ordinary prose (see `docs/STRIKEDOWN.md`).
+The plumbing works and stays: `header:` paths are relative to the file's own directory
+(content root for the site scope, the project folder for a project); a project header
+layers over the site header. `.sxh` files are never documents — they don't appear in
+nav or routes. A missing/unreadable header prints a warning and is ignored.
 
 ## Key reference
 

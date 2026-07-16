@@ -69,8 +69,8 @@ This repo is developed with AI assistance; the process is shaped around that:
   and would silently change meaning. A candidate that collides needs either a narrower
   trigger or a rejection note.
 - **Degradation is a mandatory section.** Every superset form must be inert prose in
-  documents that never activate it (the `(name)`-only-if-defined precedent). A draft
-  that cannot state its degradation story is not ready to decide on.
+  documents that never activate it (the parses-cleanly precedent of `//` lines). A
+  draft that cannot state its degradation story is not ready to decide on.
 - **Spec examples are the tests.** Each canonical example in an accepted note becomes a
   parser test in `src/strikedown.zig` and an end-to-end test in `src/render_html.zig`,
   quoting the example.

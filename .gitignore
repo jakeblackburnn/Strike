@@ -2,4 +2,6 @@
 zig-out/
 .DS_Store
 .claude
+
+test.md
 strikedown

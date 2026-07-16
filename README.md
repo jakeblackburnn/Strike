@@ -46,17 +46,31 @@ Rendering is two-stage: source parses into a document tree, and backends emit fr
 (HTML today; PDF is the planned second backend). `.md` and `.sx` go through the same
 pipeline — markdown is strikedown's subset, and superset features are additive: syntax
 that means nothing in plain markdown stays plain text until you activate it. The first
-typography feature is **color aliases**:
+layout features are **groups** and **commands**:
 
 ```
-:color brand #7c3aed
+// two_lists grid(2)
 
-(brand)# This heading renders purple
+1. left column
+2. of a grid
+
+// --
+
+1. right
+2. column
+
+// end two_lists
+
+/skinny(50%)
+
+and this one paragraph renders at half the body width, centered
 ```
 
-`:color` defines an alias (in the document, or in a shared `.sxh` header file that
-`strike.yaml` attaches via `header:`); a `(alias)` prefix colors the block it starts. See
-`STRIKE_YAML.md` for headers and `.claude/CLAUDE.md` for the roadmap.
+A `//` line brackets content into a group whose commands (`grid(n)`, `skinny(N%)`)
+arrange it; a `/command()` line applies one command to just the next element. Any such
+line that doesn't parse cleanly is ordinary prose — plain markdown is never
+reinterpreted. The language spec lives in `docs/STRIKEDOWN.md`; the roadmap in
+`.claude/CLAUDE.md`.
 
 ## Build
 
@@ -97,4 +111,5 @@ stays relative so you deploy it straight into the mount directory.
 The renderer covers a practical GFM subset: headings with anchor ids, pipe tables, nested
 and task lists, images, autolinks, strikethrough, backslash escapes, fenced code with
 `language-*` classes, blockquotes, and LaTeX math delimiters (typeset client-side by
-MathJax) — plus strikedown's typography directives (`:color`, with more to come).
+MathJax) — plus strikedown's layout directives (groups, `grid(n)`, `skinny(N%)`, and
+single-command `/cmd()` lines; the spec is `docs/STRIKEDOWN.md`).

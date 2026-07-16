@@ -1,8 +1,20 @@
 # 001 — Group directives (`//` lines)
 
 **Status: shipped** (decision dictated by Jack, 2026-07-13; implemented and tested the
-same day). Canonical examples merge into `docs/STRIKEDOWN.md` when that spec file
-exists.
+same day). Canonical examples merged into `docs/STRIKEDOWN.md`.
+
+**Superseded in part, 2026-07-14** (this note is history; the spec is truth):
+
+- *Nesting*: groups still nest freely as containers and separators/closers still bind
+  innermost, but **layout commands only apply one level below the main body** — a
+  `grid`/`skinny` on a group whose ancestor already carries a layout command is ignored
+  with a warning (the layout-level rule, `docs/STRIKEDOWN.md`). **Revised 2026-07-16**:
+  the rule is now *per command* — only the same command nested under itself is ignored
+  (`004-per-command-layout.md`).
+- *Terminology*: the spec refines this note's vocabulary — a **layout element** is now
+  what a layout *command creates* (the main body being the top-level one); the
+  renderer-addressed lines this note called "layout elements" are just **directives**.
+  Groups without layout commands are named containers, not layout elements.
 
 ## Problem
 
@@ -58,6 +70,8 @@ Semantics:
   still renders (wrapped) but emits a warning: `group 'g': grid(2) but 3 section(s)`.
 - **Nesting** is allowed; `// --` / `// end` / `//` bind to the innermost open group.
   A `// end <name>` naming anything other than the innermost group is prose.
+  *(Superseded 2026-07-14: nesting of containers stands, but nested layout commands
+  are ignored with a warning — see the status block above.)*
 
 ## Canonical examples
 
