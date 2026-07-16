@@ -172,6 +172,14 @@ spec for closing them.
   `$math$`, `![image](src)`, `[link](url)`, `<autolink>` and bare
   `http(s)://` URLs, `***bold-italic***` / `**bold**` / `*italic*`,
   `~~strikethrough~~`.
+- **Cross-document links** — a *relative* link target ending in `.md`/`.sx`
+  (optional `#fragment`) addresses a sibling document by file path, resolved
+  from the linking document's own directory (`design/spec.md`,
+  `../notes.sx#anchor`). Renderers that know the site resolve it to the
+  target's route (extension dropped; a `main.*` target lands on its folder's
+  own page); the same source stays a working file link on GitHub or any
+  plain-markdown viewer. Absolute URLs, `/site-absolute` paths, and non-doc
+  targets pass through verbatim.
 
 ## Canonical examples
 

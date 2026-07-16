@@ -8,12 +8,11 @@
 //!
 //! If `site.projects` contains the implicit root project (`slug == ""`, see
 //! `project.zig`), its home takes over route `/` instead of the picker — there
-//! is nothing to pick between if the content root itself has documents. Other
-//! (subfolder) projects, if any coexist with it, keep their normal `/<slug>`
-//! routes and stay reachable by direct link; they just won't appear on an
-//! auto-generated index, since `/` now belongs to the root project's own
-//! content. This mirrors how a docs site's root README naturally becomes the
-//! landing page.
+//! is nothing to pick between if the content root itself has documents.
+//! (`project.load` makes the root project the *only* project — subdirectories
+//! nest into its tree — but `renderAll` still renders any sibling projects a
+//! hand-built `Site` carries, at their normal `/<slug>` routes.) This mirrors
+//! how a docs site's root README naturally becomes the landing page.
 
 const std = @import("std");
 const project = @import("project.zig");
@@ -203,7 +202,7 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
 pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 {
     const nav = try renderNav(gpa, p.slug, p.tree, d.route);
     defer gpa.free(nav);
-    const body = try render_html.render(gpa, d.md, .{ .sheet = p.sheet });
+    const body = try render_html.render(gpa, d.md, .{ .sheet = p.sheet, .link_base = d.route_dir });
     defer gpa.free(body);
     const doc_shell: Shell = .{
         .title = d.title,
@@ -309,7 +308,7 @@ pub fn renderPickerNav(allocator: Allocator, site: project.Site) ![]u8 {
 /// default: the site-title heading and a plain link list of the projects.
 /// Caller owns the result.
 pub fn renderPicker(allocator: Allocator, site: project.Site) ![]u8 {
-    if (site.main) |m| return render_html.render(allocator, m.md, .{ .sheet = site.sheet });
+    if (site.main) |m| return render_html.render(allocator, m.md, .{ .sheet = site.sheet, .link_base = m.route_dir });
 
     var out: Writer.Allocating = .init(allocator);
     errdefer out.deinit();

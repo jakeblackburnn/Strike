@@ -33,6 +33,13 @@ const Writer = std.Io.Writer;
 /// the directive namespace is reserved, kept so the plumbing stays wired.
 pub const Options = struct {
     sheet: sheet.Sheet = .empty,
+    /// Route of the rendered document's containing directory ("" at the site
+    /// root, "/data_mining/topo" for a nested doc — `project.Doc.route_dir`).
+    /// Doc-relative link targets (`[spec](design/spec.md)`, `../notes.sx`,
+    /// with an optional `#fragment`) resolve against it into extensionless
+    /// routes; absolute URLs, site-absolute paths, and non-doc targets pass
+    /// through untouched.
+    link_base: []const u8 = "",
 };
 
 /// Render strikedown/markdown source to an HTML fragment (no surrounding
@@ -43,41 +50,41 @@ pub fn render(gpa: Allocator, src: []const u8, opts: Options) ![]u8 {
     defer arena_state.deinit();
     const doc = try strikedown.parse(arena_state.allocator(), src, opts.sheet);
     for (doc.warnings) |warning| std.debug.print("strike: warning: {s}\n", .{warning});
-    return emit(gpa, doc);
+    return emit(gpa, doc, opts);
 }
 
 /// Emit an already-parsed `Doc` as an HTML fragment. Caller owns the result.
-pub fn emit(gpa: Allocator, doc: strikedown.Doc) ![]u8 {
+pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) ![]u8 {
     var out: Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    for (doc.blocks) |block| try emitBlock(&out.writer, block);
+    for (doc.blocks) |block| try emitBlock(&out.writer, block, opts.link_base);
     return out.toOwnedSlice();
 }
 
-fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
+fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.Error!void {
     switch (block.kind) {
         .heading => |h| {
             try w.print("<h{d} id=\"", .{h.level});
             try escapeAttrInto(w, h.id);
             try w.writeAll("\">");
-            try emitInlines(w, h.inlines);
+            try emitInlines(w, h.inlines, link_base);
             try w.print("</h{d}>\n", .{h.level});
         },
         .paragraph => |inls| {
             try w.writeAll("<p>");
-            try emitInlines(w, inls);
+            try emitInlines(w, inls, link_base);
             try w.writeAll("</p>\n");
         },
         .quote => |paras| {
             try w.writeAll("<blockquote>\n");
             for (paras) |inls| {
                 try w.writeAll("<p>");
-                try emitInlines(w, inls);
+                try emitInlines(w, inls, link_base);
                 try w.writeAll("</p>\n");
             }
             try w.writeAll("</blockquote>\n");
         },
-        .list => |list| try emitList(w, list),
+        .list => |list| try emitList(w, list, link_base),
         .code => |code| {
             if (code.lang.len > 0) {
                 try w.writeAll("<pre><code class=\"language-");
@@ -92,13 +99,13 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
         .table => |table| {
             try w.writeAll("<table>\n<thead>\n<tr>");
             for (table.header, 0..) |cell, ci| {
-                try writeCell(w, "th", strikedown.alignAt(table.aligns, ci), cell);
+                try writeCell(w, "th", strikedown.alignAt(table.aligns, ci), cell, link_base);
             }
             try w.writeAll("</tr>\n</thead>\n<tbody>\n");
             for (table.rows) |row| {
                 try w.writeAll("<tr>");
                 for (row, 0..) |cell, ci| {
-                    try writeCell(w, "td", strikedown.alignAt(table.aligns, ci), cell);
+                    try writeCell(w, "td", strikedown.alignAt(table.aligns, ci), cell, link_base);
                 }
                 try w.writeAll("</tr>\n");
             }
@@ -129,7 +136,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
             try w.writeAll(">\n");
             for (g.sections) |section| {
                 try w.writeAll("<div class=\"sx-group-sec\">\n");
-                for (section) |b| try emitBlock(w, b);
+                for (section) |b| try emitBlock(w, b, link_base);
                 try w.writeAll("</div>\n");
             }
             try w.writeAll("</div>\n");
@@ -137,7 +144,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
     }
 }
 
-fn emitList(w: *Writer, list: strikedown.List) Writer.Error!void {
+fn emitList(w: *Writer, list: strikedown.List, link_base: []const u8) Writer.Error!void {
     if (list.ordered and list.start != 1) {
         try w.print("<ol start=\"{d}\">\n", .{list.start});
     } else {
@@ -151,15 +158,15 @@ fn emitList(w: *Writer, list: strikedown.List) Writer.Error!void {
             else
                 "<input type=\"checkbox\" disabled> ");
         }
-        try emitInlines(w, item.text);
+        try emitInlines(w, item.text, link_base);
         for (item.tail) |tail| switch (tail) {
             .line => |inls| {
                 try w.writeByte(' ');
-                try emitInlines(w, inls);
+                try emitInlines(w, inls, link_base);
             },
             .list => |sub| {
                 try w.writeByte('\n');
-                try emitList(w, sub);
+                try emitList(w, sub, link_base);
             },
         };
         try w.writeAll("</li>\n");
@@ -168,7 +175,7 @@ fn emitList(w: *Writer, list: strikedown.List) Writer.Error!void {
 }
 
 /// One `<th>`/`<td>` with its alignment style and inline content.
-fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const strikedown.Inline) Writer.Error!void {
+fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const strikedown.Inline, link_base: []const u8) Writer.Error!void {
     try w.writeByte('<');
     try w.writeAll(tag);
     switch (al) {
@@ -178,13 +185,13 @@ fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const st
         .right => try w.writeAll(" style=\"text-align:right\""),
     }
     try w.writeByte('>');
-    try emitInlines(w, inls);
+    try emitInlines(w, inls, link_base);
     try w.writeAll("</");
     try w.writeAll(tag);
     try w.writeByte('>');
 }
 
-fn emitInlines(w: *Writer, inls: []const strikedown.Inline) Writer.Error!void {
+fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: []const u8) Writer.Error!void {
     for (inls) |inl| switch (inl) {
         .text => |s| try escapeInto(w, s),
         .code => |s| {
@@ -206,9 +213,13 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline) Writer.Error!void {
         },
         .link => |l| {
             try w.writeAll("<a href=\"");
-            try escapeAttrInto(w, l.url);
+            if (docLinkPath(l.url)) |path| {
+                try writeDocHref(w, link_base, path, l.url[path.len..]);
+            } else {
+                try escapeAttrInto(w, l.url);
+            }
             try w.writeAll("\">");
-            try emitInlines(w, l.children);
+            try emitInlines(w, l.children, link_base);
             try w.writeAll("</a>");
         },
         .autolink => |url| {
@@ -220,22 +231,22 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline) Writer.Error!void {
         },
         .strong => |c| {
             try w.writeAll("<strong>");
-            try emitInlines(w, c);
+            try emitInlines(w, c, link_base);
             try w.writeAll("</strong>");
         },
         .em => |c| {
             try w.writeAll("<em>");
-            try emitInlines(w, c);
+            try emitInlines(w, c, link_base);
             try w.writeAll("</em>");
         },
         .strong_em => |c| {
             try w.writeAll("<strong><em>");
-            try emitInlines(w, c);
+            try emitInlines(w, c, link_base);
             try w.writeAll("</em></strong>");
         },
         .strike => |c| {
             try w.writeAll("<del>");
-            try emitInlines(w, c);
+            try emitInlines(w, c, link_base);
             try w.writeAll("</del>");
         },
     };
@@ -245,8 +256,69 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline) Writer.Error!void {
 // The renderer's end-to-end specification, unchanged across the parse/emit
 // split (it used to live in markdown.zig's single-pass renderer).
 
+/// The path part of a doc-relative link target (`design/spec.md#anchor` ->
+/// `design/spec.md`), or null when the target isn't one. Only relative paths
+/// ending in `.md`/`.sx` activate the rewrite — absolute URLs, `mailto:`,
+/// site-absolute paths, bare fragments, and everything else pass through
+/// verbatim, so plain-markdown documents render exactly as before.
+fn docLinkPath(url: []const u8) ?[]const u8 {
+    if (url.len == 0 or url[0] == '/' or url[0] == '#') return null;
+    const end = std.mem.indexOfAny(u8, url, "#?") orelse url.len;
+    const path = url[0..end];
+    if (std.mem.indexOfScalar(u8, path, ':') != null) return null; // a scheme (https:, mailto:, ...)
+    if (!std.mem.endsWith(u8, path, ".md") and !std.mem.endsWith(u8, path, ".sx")) return null;
+    return path;
+}
+
+/// Emit the route a doc-relative link resolves to: leading `./`s drop, each
+/// leading `../` pops a segment off `base` (clamped at the site root), the
+/// `.md`/`.sx` extension drops, and a trailing `main` segment collapses to
+/// its folder's own route (main.* docs are served there). `suffix` is the
+/// target's `#fragment`/`?query` tail, appended untouched.
+fn writeDocHref(w: *Writer, base: []const u8, path: []const u8, suffix: []const u8) Writer.Error!void {
+    var b = base;
+    var p = path;
+    while (true) {
+        if (std.mem.startsWith(u8, p, "./")) {
+            p = p[2..];
+        } else if (std.mem.startsWith(u8, p, "../")) {
+            p = p[3..];
+            b = if (std.mem.lastIndexOfScalar(u8, b, '/')) |i| b[0..i] else "";
+        } else break;
+    }
+    var stem = stripDocExt(p);
+    if (std.mem.eql(u8, stem, "main")) {
+        stem = "";
+    } else if (std.mem.endsWith(u8, stem, "/main")) {
+        stem = stem[0 .. stem.len - "/main".len];
+    }
+    if (stem.len == 0) {
+        if (b.len == 0) try w.writeByte('/') else try escapeAttrInto(w, b);
+    } else {
+        try escapeAttrInto(w, b);
+        try w.writeByte('/');
+        try escapeAttrInto(w, stem);
+    }
+    try escapeAttrInto(w, suffix);
+}
+
+/// Strip a trailing `.sx` and/or `.md` (the `.sx.md` double extension too) —
+/// mirrors route building in `project.zig`'s `stripExtension`.
+fn stripDocExt(path: []const u8) []const u8 {
+    var s = path;
+    if (std.mem.endsWith(u8, s, ".md")) s = s[0 .. s.len - ".md".len];
+    if (std.mem.endsWith(u8, s, ".sx")) s = s[0 .. s.len - ".sx".len];
+    return s;
+}
+
 fn expectRender(expected: []const u8, md: []const u8) !void {
     const got = try render(std.testing.allocator, md, .{});
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings(expected, got);
+}
+
+fn expectRenderAt(link_base: []const u8, expected: []const u8, md: []const u8) !void {
+    const got = try render(std.testing.allocator, md, .{ .link_base = link_base });
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings(expected, got);
 }
@@ -294,6 +366,46 @@ test "links" {
         "<p><a href=\"https://z.dev\">Zig</a></p>\n",
         "[Zig](https://z.dev)",
     );
+}
+
+test "doc-relative .md/.sx links resolve to routes" {
+    // from the site root: extension drops, subfolder path survives
+    try expectRender(
+        "<p><a href=\"/design/001-groups\">groups</a></p>\n",
+        "[groups](design/001-groups.md)",
+    );
+    try expectRender("<p><a href=\"/notes\">n</a></p>\n", "[n](notes.sx)");
+    // from a nested doc: sibling and `../` targets resolve against link_base
+    try expectRenderAt(
+        "/design",
+        "<p><a href=\"/design/001-groups\">g</a></p>\n",
+        "[g](001-groups.md)",
+    );
+    try expectRenderAt(
+        "/design",
+        "<p><a href=\"/STRIKEDOWN\">spec</a></p>\n",
+        "[spec](../STRIKEDOWN.md)",
+    );
+    // `../` clamps at the site root; `./` is dropped
+    try expectRenderAt("", "<p><a href=\"/a\">a</a></p>\n", "[a](../../a.md)");
+    try expectRenderAt("/p", "<p><a href=\"/p/a\">a</a></p>\n", "[a](./a.md)");
+    // a fragment survives the rewrite
+    try expectRender(
+        "<p><a href=\"/spec#anchors\">s</a></p>\n",
+        "[s](spec.md#anchors)",
+    );
+    // main.* links land on the containing folder's own route
+    try expectRenderAt("/p", "<p><a href=\"/p/sub\">s</a></p>\n", "[s](sub/main.md)");
+    try expectRenderAt("/p", "<p><a href=\"/p\">home</a></p>\n", "[home](main.md)");
+    try expectRenderAt("", "<p><a href=\"/\">home</a></p>\n", "[home](main.md)");
+}
+
+test "non-doc link targets pass through untouched" {
+    try expectRenderAt("/p", "<p><a href=\"https://z.dev/x.md\">x</a></p>\n", "[x](https://z.dev/x.md)");
+    try expectRenderAt("/p", "<p><a href=\"/abs/x.md\">x</a></p>\n", "[x](/abs/x.md)");
+    try expectRenderAt("/p", "<p><a href=\"#frag\">f</a></p>\n", "[f](#frag)");
+    try expectRenderAt("/p", "<p><a href=\"img/pic.png\">p</a></p>\n", "[p](img/pic.png)");
+    try expectRenderAt("/p", "<p><a href=\"mailto:a@b.md\">m</a></p>\n", "[m](mailto:a@b.md)");
 }
 
 test "unordered and ordered lists" {

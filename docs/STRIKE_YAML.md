@@ -83,19 +83,19 @@ hidden:                                  # excluded from the nav AND from routes
 
 ### Root project — loose docs at the content root
 
-If the content root itself has `.md`/`.sx` files directly inside (alongside, or instead of,
-project subfolders), those documents form an implicit **root project**: it takes over `/` as
-its own home (its `home:` doc, or a generated index of its own docs) instead of a
-cross-project picker — there's nothing to pick between if the root itself has content. Its
-own `strike.yaml` is the *same file* as the site-level one above, since both live at the
-content root — one file, both scopes, at once. All the per-project keys below (`labels`,
-`order`, `hidden`, `home`, `description`, ...) apply to it exactly as they would to
-any other project.
+If the content root itself has `.md`/`.sx` files directly inside, the *whole tree* forms an
+implicit **root project**: it takes over `/` as its own home (its `home:` doc, or a
+generated index of its own docs) instead of a cross-project picker — there's nothing to
+pick between if the root itself has content — and subdirectories become its nav folders
+rather than separate projects. A repo's `docs/` folder therefore serves correctly with no
+`strike.yaml` at all. Its own `strike.yaml` is the *same file* as the site-level one above,
+since both live at the content root — one file, both scopes, at once. All the per-project
+keys below (`labels`, `order`, `hidden`, `home`, `description`, ...) apply to it exactly as
+they would to any other project.
 
-One trade-off worth knowing: once a root project exists, there's no automatic cross-project
-index page anymore, since `/` belongs to the root project's own content. Other (subfolder)
-projects, if any coexist with it, keep their normal `/<slug>` routes and stay reachable by
-direct link — just not from an auto-generated picker.
+The two layouts are exclusive by construction: loose docs at the root ⇒ one root project
+owning everything; a root with only subfolders ⇒ one project per subfolder behind the
+picker (a root `main.*` alone doesn't tip the balance — see below).
 
 ### `main.md` / `main.sx` — content by convention
 

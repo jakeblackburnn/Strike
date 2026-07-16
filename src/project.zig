@@ -10,12 +10,13 @@
 //! YAML.
 //!
 //! If the content root itself has `.md`/`.sx` files directly inside (a "flat"
-//! layout, or loose docs alongside project folders), those are scanned as an
+//! layout, like a repo's `docs/` folder), the *entire tree* is scanned as one
 //! implicit **root project** (`Project.slug == ""`) using the exact same
-//! `loadProject`/`scan` machinery as any other project. `site.zig`'s `renderAll`
-//! gives the root project's home route `/` instead of the cross-project picker
-//! (there's nothing to pick between if the root itself has content) — see its
-//! doc comment. The root project's `strike.yaml` is the same file as the site's
+//! `loadProject`/`scan` machinery as any other project — subdirectories become
+//! its nav folders, not sibling projects. `site.zig`'s `renderAll` gives the
+//! root project's home route `/` instead of the cross-project picker (there's
+//! nothing to pick between if the root itself has content) — see its doc
+//! comment. The root project's `strike.yaml` is the same file as the site's
 //! (both live at the content root), so it doubles as both scopes at once.
 //!
 //! A file named `main.md`/`main.sx` supplies the *content* for the directory
@@ -37,6 +38,10 @@ const sheet = @import("sheet.zig");
 pub const Doc = struct {
     rel_path: []const u8, // project-relative, e.g. "topo/algebra.md"
     route: []const u8, // full route, e.g. "/data_mining/topo/algebra"
+    /// Route of the doc's *containing directory*, no trailing slash ("" at the
+    /// site root). The base doc-relative links resolve against — see
+    /// `render_html.Options.link_base`.
+    route_dir: []const u8 = "",
     label: []const u8, // sidebar nav label
     title: []const u8, // page <title> (first H1, else label)
     md: []const u8, // file contents, kept for rendering
@@ -114,12 +119,6 @@ const ProjCtx = struct {
     order: ?[]const yaml.Value,
     hidden: ?[]const yaml.Value,
     docs: std.ArrayList(*Doc),
-    /// True while scanning the implicit root project. Every top-level
-    /// directory is *always* its own project (the layout model above), so the
-    /// root project's own tree must never recurse into one — otherwise a
-    /// sibling project's files would be scanned twice: once nested under the
-    /// root project, once as that project's own docs.
-    is_root: bool,
 };
 
 /// Scan `content` (an opened, iterable content dir) into a `Site`. All
@@ -155,15 +154,18 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
             else => {},
         }
     }
-    orderSlugs(slugs.items, site_cfg.getList("projects"));
-
     var projects: std.ArrayList(Project) = .empty;
     if (has_root_docs) {
+        // Root-project mode: loose docs at the content root mean the whole
+        // tree is one project — subdirectories nest into its nav instead of
+        // becoming sibling projects nothing links to (there's no picker).
         if (try loadProject(io, gpa, content, "", site_cfg, base, site_sheet)) |root| try projects.append(gpa, root);
-    }
-    for (slugs.items) |slug| {
-        const p = try loadProject(io, gpa, content, slug, site_cfg, base, site_sheet) orelse continue;
-        try projects.append(gpa, p);
+    } else {
+        orderSlugs(slugs.items, site_cfg.getList("projects"));
+        for (slugs.items) |slug| {
+            const p = try loadProject(io, gpa, content, slug, site_cfg, base, site_sheet) orelse continue;
+            try projects.append(gpa, p);
+        }
     }
 
     // In picker mode a content-root main.* still supplies the picker's intro
@@ -172,6 +174,7 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     var site_main: ?*Doc = null;
     if (!has_root_docs) {
         if (root_main_name) |name| site_main = readMainDoc(io, gpa, content, name, "/") catch null;
+        if (site_main) |m| m.route_dir = base; // its links resolve from the content root
     }
 
     const theme = parseTheme(site_cfg.getScalar("theme") orelse "");
@@ -212,7 +215,6 @@ fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8
         .order = cfg.getList("order"),
         .hidden = cfg.getList("hidden"),
         .docs = .empty,
-        .is_root = is_root,
     };
 
     // `base` for the root project (so `scan`'s "{prefix}/{rel}" route-building
@@ -286,9 +288,6 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
 
         switch (entry.kind) {
             .directory => {
-                // Every top-level directory is always its own project (never
-                // a subfolder of the root project) — see `ProjCtx.is_root`.
-                if (ctx.is_root and rel_prefix.len == 0) continue;
                 var sub = dir.openDir(ctx.io, name, .{ .iterate = true }) catch continue;
                 defer sub.close(ctx.io);
                 const sub_res = try scan(ctx, sub, rel, route_prefix);
@@ -315,12 +314,19 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
                         try std.fmt.allocPrint(gpa, "{s}/{s}", .{ route_prefix, rel_prefix }))
                 else
                     try std.fmt.allocPrint(gpa, "{s}/{s}", .{ route_prefix, stripExtension(rel) });
+                // A main.* doc's route *is* its containing dir's; a regular
+                // doc's containing dir is its route minus the last segment.
+                const route_dir = if (is_main)
+                    (if (std.mem.eql(u8, route, "/")) "" else route)
+                else
+                    route[0..std.mem.lastIndexOfScalar(u8, route, '/').?];
                 const heading = firstHeading(md);
                 const label = labelFor(ctx, rel) orelse heading orelse try prettify(gpa, stripExtension(name));
                 const doc = try gpa.create(Doc);
                 doc.* = .{
                     .rel_path = rel,
                     .route = route,
+                    .route_dir = route_dir,
                     .label = label,
                     .title = heading orelse label,
                     .md = md,
@@ -678,7 +684,7 @@ test "load detects the implicit root project from loose docs at the content root
     try testing.expectEqualStrings("/hello", site.projects[0].docs[0].route);
 }
 
-test "load supports loose root docs alongside subfolder projects" {
+test "root-project mode nests subfolders into the root project's tree" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.md", .data = "# Hello\nbody" });
@@ -689,11 +695,39 @@ test "load supports loose root docs alongside subfolder projects" {
     defer arena.deinit();
     const site = try load(testing.io, arena.allocator(), tmp.dir);
 
-    try testing.expectEqual(@as(usize, 2), site.projects.len);
-    try testing.expectEqualStrings("", site.projects[0].slug); // root project sorts first
-    try testing.expectEqualStrings("/hello", site.projects[0].docs[0].route);
-    try testing.expectEqualStrings("blog", site.projects[1].slug);
-    try testing.expectEqualStrings("/blog/post", site.projects[1].docs[0].route);
+    // loose docs at the root ⇒ one project owning the whole tree, blog/ is a
+    // nav folder of it (not a sibling project nothing links to)
+    try testing.expectEqual(@as(usize, 1), site.projects.len);
+    const p = site.projects[0];
+    try testing.expectEqualStrings("", p.slug);
+    try testing.expectEqual(@as(usize, 2), p.docs.len);
+    try testing.expectEqual(@as(usize, 2), p.tree.len);
+    try testing.expectEqualStrings("blog", p.tree[0].folder.rel_path); // sorts before hello.md
+    try testing.expectEqualStrings("/blog/post", p.tree[0].folder.children[0].doc.route);
+    try testing.expectEqualStrings("/hello", p.tree[1].doc.route);
+}
+
+test "docs carry their containing directory's route as route_dir" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.md", .data = "# Hello\n" });
+    try tmp.dir.createDirPath(testing.io, "blog/sub");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/sub/a.md", .data = "# A\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/sub/main.md", .data = "# Sub\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "main.md", .data = "# Front\n" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    const p = site.projects[0];
+    try testing.expectEqualStrings("", p.home.?.route_dir); // root main.md: links resolve from the site root
+    for (p.docs) |d| {
+        if (std.mem.eql(u8, d.rel_path, "hello.md")) try testing.expectEqualStrings("", d.route_dir);
+        if (std.mem.eql(u8, d.rel_path, "blog/sub/a.md")) try testing.expectEqualStrings("/blog/sub", d.route_dir);
+    }
+    const sub = p.tree[0].folder.children[0].folder;
+    try testing.expectEqualStrings("/blog/sub", sub.main.?.route_dir); // folder main.*: its own route
 }
 
 test "main.md becomes the project home and stays out of nav and docs" {
