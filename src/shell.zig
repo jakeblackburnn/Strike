@@ -150,15 +150,15 @@ const spring_morning =
 ;
 const spring_evening =
     \\    color-scheme: dark;
-    \\    --bg: #23262a; --fg: #e2e6e0; --muted: #9aa79b; --accent: #6fbf82;
-    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(111,191,130,.22);
+    \\    --bg: #23262a; --fg: #e2e6e0; --muted: #9aa79b; --accent: #cf6fa3;
+    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(207,111,163,.22);
     \\    --sidebar-bg: #1b1e21;
 ;
 const summer_morning =
     \\    color-scheme: light;
-    \\    --bg: #f0f7ec; --fg: #2c3a2c; --muted: #6b7d6b; --accent: #7d4fc9;
-    \\    --code-bg: rgba(90,130,90,.12); --border: rgba(90,130,90,.28);
-    \\    --sidebar-bg: #e6f0e0;
+    \\    --bg: #fbf3d9; --fg: #2c3a2c; --muted: #8a8560; --accent: #5a9c3f;
+    \\    --code-bg: rgba(90,130,60,.12); --border: rgba(90,130,60,.28);
+    \\    --sidebar-bg: #f5e9bd;
 ;
 const summer_evening =
     \\    color-scheme: dark;
@@ -209,6 +209,7 @@ const head_post_a =
     \\  code {
     \\    background: var(--code-bg); padding: .15em .35em;
     \\    border-radius: 4px; font-size: .9em;
+    \\    color: var(--fg); /* pinned: code never inherits color() regions (006-color) */
     \\  }
     \\  pre {
     \\    background: var(--code-bg); padding: 1rem;

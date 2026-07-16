@@ -33,13 +33,14 @@
 //!     very next content element (see `docs/design/002-single-command.md`)
 //!
 //! Inline grammar, in precedence order: backslash escape, `` `code` ``,
-//! `$math$`, `![alt](src)`, `[text](url)`, `<http…>` and bare-URL autolinks,
+//! `$math$`, `![alt](src)`, `[text](url)`, `[text].color(role)` color spans
+//! (see `docs/design/006-color.md`), `<http…>` and bare-URL autolinks,
 //! `***`/`**`/`*` emphasis, `~~strikethrough~~`. Code/math bodies are never
 //! inline-parsed.
 //!
-//! Layout (and typography, when it returns) lands as *data on tree nodes*
-//! (e.g. `Group.columns`), never as emitter special cases. Every superset
-//! form must degrade to inert prose in plain markdown documents that never
+//! Layout and typography land as *data on tree nodes* (e.g. `Group.columns`,
+//! `Group.text_color`), never as emitter special cases. Every superset form
+//! must degrade to inert prose in plain markdown documents that never
 //! activate it.
 
 const std = @import("std");
@@ -81,15 +82,30 @@ pub const Block = struct {
 /// A group's block: sections of content arranged by its commands. Commands
 /// land here as attributes (data, not emitter special cases) — `grid(n)`
 /// sets `columns`, `skinny(N%)` sets `width_pct`, `center()` sets
-/// `centered`; future commands grow more fields. A single-command directive
-/// (`/cmd()`) produces this same node: nameless, one section holding the one
-/// element it binds to.
+/// `centered`, `color(role)` sets `text_color`; future commands grow more
+/// fields. A single-command directive (`/cmd()`) produces this same node:
+/// nameless, one section holding the one element it binds to.
 pub const Group = struct {
     name: []const u8, // "" = nameless (runs to EOF unless closed)
     columns: ?usize = null, // from grid(n); null = plain stacked container
     width_pct: ?usize = null, // from skinny(N%): % of the body column width
     centered: bool = false, // from center(): center-align contained text
+    text_color: ?TextColor = null, // from color(role): theme text color
     sections: [][]Block,
+};
+
+/// A theme color role (`docs/design/006-color.md`). Strikedown never names
+/// concrete colors — a role resolves to whatever the reader's active theme
+/// defines for it (HTML: `var(--accent)` etc.), so colored text tracks theme
+/// switches; other backends map roles to their own palettes.
+pub const TextColor = enum {
+    accent,
+    muted,
+    fg,
+
+    pub fn parse(name: []const u8) ?TextColor {
+        return std.meta.stringToEnum(TextColor, name);
+    }
 };
 
 pub const Heading = struct {
@@ -150,6 +166,8 @@ pub const Inline = union(enum) {
     em: []Inline,
     strong_em: []Inline,
     strike: []Inline,
+    /// `[text].color(role)` — a colored span (`docs/design/006-color.md`).
+    color_span: struct { color: TextColor, children: []Inline },
 };
 
 pub fn alignAt(aligns: []const Align, i: usize) Align {
@@ -526,6 +544,7 @@ const Parser = struct {
             .columns = attrs.columns,
             .width_pct = attrs.width_pct,
             .centered = attrs.centered,
+            .text_color = attrs.text_color,
             .sections = try sections.toOwnedSlice(arena),
         } } };
     }
@@ -569,6 +588,7 @@ const Parser = struct {
             .columns = attrs.columns,
             .width_pct = attrs.width_pct,
             .centered = attrs.centered,
+            .text_color = attrs.text_color,
             .sections = sections,
         } } };
     }
@@ -818,6 +838,7 @@ const GroupLine = union(enum) {
         columns: ?usize = null, // from grid(n)
         width_pct: ?usize = null, // from skinny(N%)
         centered: bool = false, // from center()
+        text_color: ?TextColor = null, // from color(role)
     };
 };
 
@@ -863,17 +884,20 @@ fn parseGroupLine(t: []const u8) ?GroupLine {
 
 /// The recognized commands. A new command is a variant here, a
 /// `parseCommand` arm, an attribute on `Group` via `applyCommand`, and the
-/// emitter reading it — data all the way, per the extension recipe. Every
-/// command today is a *layout* command: it creates a layout element, and its
-/// tag keys a `Parser.layout_depth` counter for the per-command layout-level
-/// rule (`stripNestedLayout`/`enterLayout`). Future non-layout commands
-/// simply won't touch a counter.
+/// emitter reading it — data all the way, per the extension recipe. A
+/// *layout* command creates a layout element, and its tag keys a
+/// `Parser.layout_depth` counter for the per-command layout-level rule
+/// (`stripNestedLayout`/`enterLayout`); a non-layout command (`color`)
+/// simply never touches a counter, so it nests freely.
 const Command = union(enum) {
     grid: usize,
     /// skinny(N%): render at N% of the body column width, centered.
     skinny: usize,
     /// center(): center-align text within the surrounding layout element.
     center,
+    /// color(role): set the contained text's theme color. Non-layout —
+    /// nested colors are meaningful (inner wins by cascade).
+    color: TextColor,
 };
 
 /// Parse one `word(args)` token, null if it isn't a recognized command with
@@ -899,6 +923,10 @@ fn parseCommand(tok: []const u8) ?Command {
         if (args.len != 0) return null; // center() takes no arguments
         return .center;
     }
+    if (std.mem.eql(u8, word, "color")) {
+        const role = TextColor.parse(args) orelse return null;
+        return .{ .color = role };
+    }
     return null;
 }
 
@@ -907,6 +935,7 @@ fn applyCommand(open: *GroupLine.Open, cmd: Command) void {
         .grid => |n| open.columns = n,
         .skinny => |n| open.width_pct = n,
         .center => open.centered = true,
+        .color => |role| open.text_color = role,
     }
 }
 
@@ -1001,6 +1030,28 @@ fn parseLink(s: []const u8) ?Link {
     return .{
         .text = s[1..close_bracket],
         .url = s[close_bracket + 2 .. close_paren],
+        .consumed = close_paren + 1,
+    };
+}
+
+const ColorSpan = struct { text: []const u8, color: TextColor, consumed: usize };
+
+/// Parse `[text].color(role)` starting at the leading `[`
+/// (`docs/design/006-color.md`). Same first-`]` scan as `parseLink` — which
+/// is the restriction story: a link's `[label](url)` wins the `[` first, so
+/// `.color()` never attaches to a link, and spans don't nest (the earliest
+/// `].color(` closes the span; the rest stays literal). Unknown roles fail
+/// the parse and stay literal prose.
+fn parseColorSpan(s: []const u8) ?ColorSpan {
+    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
+    const suffix = s[close_bracket + 1 ..];
+    if (!std.mem.startsWith(u8, suffix, ".color(")) return null;
+    const args_start = close_bracket + 1 + ".color(".len;
+    const close_paren = std.mem.indexOfScalarPos(u8, s, args_start, ')') orelse return null;
+    const role = TextColor.parse(s[args_start..close_paren]) orelse return null;
+    return .{
+        .text = s[1..close_bracket],
+        .color = role,
         .consumed = close_paren + 1,
     };
 }
@@ -1101,6 +1152,17 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
                     .children = try parseInlines(arena, link.text),
                 } });
                 i += link.consumed;
+                continue;
+            }
+            // [text].color(role) — checked after the link form so a link
+            // always wins its `[`.
+            if (parseColorSpan(text[i..])) |span| {
+                try flushText(arena, &out, &pending);
+                try out.append(arena, .{ .color_span = .{
+                    .color = span.color,
+                    .children = try parseInlines(arena, span.text),
+                } });
+                i += span.consumed;
                 continue;
             }
         }
@@ -1804,4 +1866,82 @@ test "slugify" {
     const s3 = try slugify(gpa, "K-Means (k=3)");
     defer gpa.free(s3);
     try testing.expectEqualStrings("k-means-k-3", s3);
+}
+
+test "color command: on groups, with other commands, and as a single command" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// note color(muted)\n\npara", .empty);
+    try testing.expectEqual(TextColor.muted, d1.blocks[0].kind.group.text_color.?);
+    const d2 = try parse(arena_state.allocator(), "// g color(accent) skinny(50%)\n\npara", .empty);
+    try testing.expectEqual(TextColor.accent, d2.blocks[0].kind.group.text_color.?);
+    try testing.expectEqual(@as(usize, 50), d2.blocks[0].kind.group.width_pct.?);
+    const d3 = try parse(arena_state.allocator(), "/color(fg)\n\n### heading", .empty);
+    const g3 = d3.blocks[0].kind.group;
+    try testing.expectEqual(TextColor.fg, g3.text_color.?);
+    try testing.expect(g3.sections[0][0].kind == .heading);
+    try testing.expectEqual(@as(usize, 0), d3.warnings.len);
+}
+
+test "color command: unknown roles and malformed args deactivate the line" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    for ([_][]const u8{ "// g color(red)", "// g color()", "// g color(#fff)", "/color(bright)" }) |src| {
+        const doc = try parse(arena_state.allocator(), src, .empty);
+        try testing.expect(doc.blocks[0].kind == .paragraph);
+    }
+}
+
+test "color command is non-layout: color-in-color nests without stripping" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\// box color(muted)
+        \\
+        \\// inner color(accent)
+        \\a
+        \\// end
+        \\
+        \\// end box
+    , .empty);
+    try testing.expectEqual(TextColor.muted, doc.blocks[0].kind.group.text_color.?);
+    const inner = doc.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expectEqual(TextColor.accent, inner.text_color.?);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+}
+
+test "color span: [text].color(role) parses with nested inlines" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "a [**big** word].color(accent) b", .empty);
+    const inls = doc.blocks[0].kind.paragraph;
+    try testing.expectEqual(@as(usize, 3), inls.len);
+    const span = inls[1].color_span;
+    try testing.expectEqual(TextColor.accent, span.color);
+    try testing.expect(span.children[0] == .strong);
+    try testing.expectEqualStrings(" word", span.children[1].text);
+}
+
+test "color span: restricted forms stay literal prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // a link wins its `[` — no postfix-on-link
+    const d1 = try parse(arena_state.allocator(), "[label](url).color(accent)", .empty);
+    const p1 = d1.blocks[0].kind.paragraph;
+    try testing.expect(p1[0] == .link);
+    try testing.expectEqualStrings(".color(accent)", p1[1].text);
+    // unknown role, escaped bracket, unterminated args: all literal
+    const d2 = try parse(arena_state.allocator(), "[x].color(red)", .empty);
+    try testing.expect(d2.blocks[0].kind.paragraph[0] == .text);
+    const d3 = try parse(arena_state.allocator(), "\\[x].color(accent)", .empty);
+    try testing.expect(d3.blocks[0].kind.paragraph[0] == .text);
+    const d4 = try parse(arena_state.allocator(), "[x].color(accent", .empty);
+    try testing.expect(d4.blocks[0].kind.paragraph[0] == .text);
+    // no nesting: brackets don't pair — the earliest `].color(` closes the
+    // span (exactly parseLink's non-nesting scan), the rest stays literal
+    const d5 = try parse(arena_state.allocator(), "[a [b].color(muted) c].color(accent)", .empty);
+    const p5 = d5.blocks[0].kind.paragraph;
+    try testing.expectEqual(TextColor.muted, p5[0].color_span.color);
+    try testing.expectEqualStrings("a [b", p5[0].color_span.children[0].text);
+    try testing.expectEqualStrings(" c].color(accent)", p5[1].text);
 }

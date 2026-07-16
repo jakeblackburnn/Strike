@@ -115,19 +115,44 @@ group naming must be disambiguated. A `(name)` prefix remains plain prose.)
 
 A **command** is a `word(args)` token — parens required, so command keywords
 can never collide with group names. One vocabulary serves group openers and
-single-command directives. Every command today is a **layout command** (it
-makes its target a layout element); future non-layout commands (color,
-spacing…) will simply not count under the layout-level rule.
+single-command directives. Most commands are **layout commands** (they make
+their target a layout element and count under the layout-level rule);
+`color` is the first **non-layout command** — it styles content without
+creating a layout element and never counts under the rule.
 
 | Command | Meaning |
 | --- | --- |
 | `grid(n)` | n columns; sections fill left-to-right and wrap. n ≥ 1. A section count ≠ n still renders, with a warning. |
 | `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/design/003-skinny.md`)* |
 | `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/design/005-center.md`) |
+| `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/design/006-color.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `grid(0)`, `center(5)`,
-`glow(5)` all leave their line as prose.
+`color(red)`, `glow(5)` all leave their line as prose.
+
+### Color roles and the inline color span
+
+Strikedown never names concrete colors. A **color role** is a slot in the
+renderer's theme — `accent` (the theme's signature color), `muted`
+(secondary text), `fg` (body text, the reset) — and each renderer/theme
+decides what a role looks like, so colored documents follow the reader's
+theme (`docs/design/006-color.md`).
+
+`color` is also the one command with an **inline** position: a **color
+span** `[text].color(role)` colors a run of inline content mid-line. The
+bracketed text is inline-parsed (bold, code, math inside all work); the
+postfix must follow the `]` immediately and name a valid role, else the
+whole thing is ordinary prose.
+
+Color is deliberately restricted where interactions would be ambiguous:
+
+- The link form wins the `[`: `[label](url).color(x)` is a link followed by
+  literal prose (links can't be colored), and a link inside a span's
+  brackets parses exactly as it would in plain markdown (no span forms).
+- Spans don't nest: the earliest `].color(` closes the span.
+- Elements that own a theme color — links, blockquotes, code — keep it
+  inside colored groups and spans; `color` reaches only plain flowing text.
 
 ### The layout-level rule
 
@@ -174,9 +199,9 @@ spec for closing them.
   through raw (backends decide typesetting); never inline-parsed.
 - **Horizontal rules** `---` / `***` / `___`.
 - **Inlines**, in precedence order: backslash escape, `` `code` ``,
-  `$math$`, `![image](src)`, `[link](url)`, `<autolink>` and bare
-  `http(s)://` URLs, `***bold-italic***` / `**bold**` / `*italic*`,
-  `~~strikethrough~~`.
+  `$math$`, `![image](src)`, `[link](url)`, `[text].color(role)` color
+  spans (superset — see "Color roles"), `<autolink>` and bare `http(s)://`
+  URLs, `***bold-italic***` / `**bold**` / `*italic*`, `~~strikethrough~~`.
 - **Cross-document links** — a *relative* link target ending in `.md`/`.sx`
   (optional `#fragment`) addresses a sibling document by file path, resolved
   from the linking document's own directory (`design/spec.md`,
@@ -228,6 +253,16 @@ the right cell
 // end outer
 ```
 
+A muted aside, and one accent word (block and inline color):
+
+```
+// aside color(muted)
+
+secondary text; the [key point].color(accent) still pops
+
+// end aside
+```
+
 A merged, lazily-continued quote (two paragraphs):
 
 ```
@@ -247,6 +282,9 @@ Degradation — every line below is an ordinary paragraph:
 //foo                       (no space after the marker)
 /usr/bin/env foo            (not a command: no parens)
 /skinny(50%) extra          (trailing text)
+/color(red)                 (unknown color role)
+[x].color(bright)           (inline near-miss: unknown role → literal text)
+[z](https://z.dev).color(muted)   (the link wins its `[`; postfix is prose)
 :thin-grid grid(2) skinny(80%)   (reserved namespace, nothing defined yet)
 (name)# not a heading       (retired prefix: plain prose)
 ```

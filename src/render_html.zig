@@ -12,8 +12,13 @@
 //!     `\[…\]`, HTML-escaped; client-side MathJax does the typesetting (the
 //!     loader is in `shell.zig`)
 //!   - a fence's language lands as `class="language-…"`
-//!   - a group's layout attributes (`columns`, `width_pct`, `centered`) land as inline
-//!     `style` declarations on its `sx-group` wrapper
+//!   - a group's attributes (`columns`, `width_pct`, `centered`, `text_color`)
+//!     land as inline `style` declarations on its `sx-group` wrapper; a
+//!     `[text].color(role)` span becomes an inline-styled `sx-color` span.
+//!     Color roles emit as `var(--<role>)` references, resolved by the active
+//!     theme in `shell.zig` — links/blockquotes/code keep their own
+//!     element-selector colors inside colored regions (deliberate; see
+//!     `docs/design/006-color.md`)
 //!
 //! The end-to-end `expectRender` tests at the bottom are the renderer's
 //! specification — they predate the parse/emit split and must keep passing
@@ -122,7 +127,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
             // exports are self-contained; the classes are hooks for future
             // reader styling.
             try w.writeAll("<div class=\"sx-group\"");
-            if (g.columns != null or g.width_pct != null or g.centered) {
+            if (g.columns != null or g.width_pct != null or g.centered or g.text_color != null) {
                 try w.writeAll(" style=\"");
                 var sep = false;
                 if (g.columns) |n| {
@@ -137,6 +142,11 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
                 if (g.centered) {
                     if (sep) try w.writeByte(';');
                     try w.writeAll("text-align:center");
+                    sep = true;
+                }
+                if (g.text_color) |role| {
+                    if (sep) try w.writeByte(';');
+                    try w.print("color:var(--{t})", .{role});
                 }
                 try w.writeByte('"');
             }
@@ -235,6 +245,11 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: []const u
             try w.writeAll("\">");
             try escapeInto(w, url);
             try w.writeAll("</a>");
+        },
+        .color_span => |span| {
+            try w.print("<span class=\"sx-color\" style=\"color:var(--{t})\">", .{span.color});
+            try emitInlines(w, span.children, link_base);
+            try w.writeAll("</span>");
         },
         .strong => |c| {
             try w.writeAll("<strong>");
@@ -758,4 +773,50 @@ test "fenced code language class" {
     );
     // no info string -> no class attribute (existing behavior)
     try expectRender("<pre><code>x\n</code></pre>\n", "```\nx\n```");
+}
+
+test "color command renders a theme-variable wrapper" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"color:var(--muted)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// note color(muted)\n\na\n\n// end",
+    );
+    // combined with skinny: width first, then the color
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:60%;margin-inline:auto;color:var(--accent)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// box skinny(60%) color(accent)\n\na\n\n// end",
+    );
+    // single command on a heading
+    try expectRender(
+        "<div class=\"sx-group\" style=\"color:var(--accent)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<h3 id=\"title\">title</h3>\n</div>\n</div>\n",
+        "/color(accent)\n\n### title",
+    );
+    // unknown roles deactivate the line
+    try expectRender("<p>/color(red)</p>\n", "/color(red)");
+}
+
+test "color span renders an inline-styled span" {
+    try expectRender(
+        "<p>a <span class=\"sx-color\" style=\"color:var(--accent)\"><strong>big</strong> word</span> b</p>\n",
+        "a [**big** word].color(accent) b",
+    );
+    // a link cannot sit inside a span: the first-`]` scan hands the outer
+    // `[` to the link form, byte-identical to plain markdown's parse
+    try expectRender(
+        "<p><a href=\"https://z.dev\">see [z</a>].color(muted)</p>\n",
+        "[see [z](https://z.dev)].color(muted)",
+    );
+}
+
+test "color span restricted forms degrade to prose" {
+    // a link wins its `[` — `.color()` never attaches to a link
+    try expectRender(
+        "<p><a href=\"https://z.dev\">z</a>.color(accent)</p>\n",
+        "[z](https://z.dev).color(accent)",
+    );
+    // unknown role and escaped bracket stay literal
+    try expectRender("<p>[x].color(red)</p>\n", "[x].color(red)");
+    try expectRender("<p>[x].color(accent)</p>\n", "\\[x].color(accent)");
 }
