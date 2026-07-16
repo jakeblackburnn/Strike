@@ -12,8 +12,8 @@
 //!     `\[…\]`, HTML-escaped; client-side MathJax does the typesetting (the
 //!     loader is in `shell.zig`)
 //!   - a fence's language lands as `class="language-…"`
-//!   - a block's `color` attribute lands as an inline `style="color:…"` on
-//!     the block's outer tag
+//!   - a group's layout attributes (`columns`, `width_pct`) land as inline
+//!     `style` declarations on its `sx-group` wrapper
 //!
 //! The end-to-end `expectRender` tests at the bottom are the renderer's
 //! specification — they predate the parse/emit split and must keep passing
@@ -29,8 +29,8 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
 /// Per-render settings — the extension point for future options. `sheet` is
-/// the base typography sheet (a site/project `.sxh` header); in-document
-/// directives layer on top of it.
+/// the base typography sheet (a site/project `.sxh` header) — inert while
+/// the directive namespace is reserved, kept so the plumbing stays wired.
 pub const Options = struct {
     sheet: sheet.Sheet = .empty,
 };
@@ -59,50 +59,38 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
         .heading => |h| {
             try w.print("<h{d} id=\"", .{h.level});
             try escapeAttrInto(w, h.id);
-            try w.writeByte('"');
-            try styleAttr(w, block.color);
-            try w.writeByte('>');
+            try w.writeAll("\">");
             try emitInlines(w, h.inlines);
             try w.print("</h{d}>\n", .{h.level});
         },
         .paragraph => |inls| {
-            try w.writeAll("<p");
-            try styleAttr(w, block.color);
-            try w.writeByte('>');
+            try w.writeAll("<p>");
             try emitInlines(w, inls);
             try w.writeAll("</p>\n");
         },
-        .quote => |qlines| {
-            try w.writeAll("<blockquote");
-            try styleAttr(w, block.color);
-            try w.writeAll(">\n");
-            for (qlines) |inls| {
+        .quote => |paras| {
+            try w.writeAll("<blockquote>\n");
+            for (paras) |inls| {
                 try w.writeAll("<p>");
                 try emitInlines(w, inls);
                 try w.writeAll("</p>\n");
             }
             try w.writeAll("</blockquote>\n");
         },
-        .list => |list| try emitList(w, list, block.color),
+        .list => |list| try emitList(w, list),
         .code => |code| {
             if (code.lang.len > 0) {
-                try w.writeAll("<pre");
-                try styleAttr(w, block.color);
-                try w.writeAll("><code class=\"language-");
+                try w.writeAll("<pre><code class=\"language-");
                 try escapeAttrInto(w, code.lang);
                 try w.writeAll("\">");
             } else {
-                try w.writeAll("<pre");
-                try styleAttr(w, block.color);
-                try w.writeAll("><code>");
+                try w.writeAll("<pre><code>");
             }
             try escapeInto(w, code.text);
             try w.writeAll("</code></pre>\n");
         },
         .table => |table| {
-            try w.writeAll("<table");
-            try styleAttr(w, block.color);
-            try w.writeAll(">\n<thead>\n<tr>");
+            try w.writeAll("<table>\n<thead>\n<tr>");
             for (table.header, 0..) |cell, ci| {
                 try writeCell(w, "th", strikedown.alignAt(table.aligns, ci), cell);
             }
@@ -127,15 +115,14 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
             // exports are self-contained; the classes are hooks for future
             // reader styling.
             try w.writeAll("<div class=\"sx-group\"");
-            if (g.columns != null or block.color != null) {
+            if (g.columns != null or g.width_pct != null) {
                 try w.writeAll(" style=\"");
                 if (g.columns) |n| {
                     try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:1.5rem", .{n});
-                    if (block.color != null) try w.writeByte(';');
+                    if (g.width_pct != null) try w.writeByte(';');
                 }
-                if (block.color) |c| {
-                    try w.writeAll("color:");
-                    try escapeAttrInto(w, c);
+                if (g.width_pct) |pct| {
+                    try w.print("width:{d}%;margin-inline:auto", .{pct});
                 }
                 try w.writeByte('"');
             }
@@ -150,18 +137,12 @@ fn emitBlock(w: *Writer, block: strikedown.Block) Writer.Error!void {
     }
 }
 
-/// ` style="color:…"` when the block carries a color; nothing otherwise.
-fn styleAttr(w: *Writer, color: ?[]const u8) Writer.Error!void {
-    const c = color orelse return;
-    try w.writeAll(" style=\"color:");
-    try escapeAttrInto(w, c);
-    try w.writeByte('"');
-}
-
-fn emitList(w: *Writer, list: strikedown.List, color: ?[]const u8) Writer.Error!void {
-    try w.writeAll(if (list.ordered) "<ol" else "<ul");
-    try styleAttr(w, color);
-    try w.writeAll(">\n");
+fn emitList(w: *Writer, list: strikedown.List) Writer.Error!void {
+    if (list.ordered and list.start != 1) {
+        try w.print("<ol start=\"{d}\">\n", .{list.start});
+    } else {
+        try w.writeAll(if (list.ordered) "<ol>\n" else "<ul>\n");
+    }
     for (list.items) |item| {
         try w.writeAll("<li>");
         if (item.task) |checked| {
@@ -178,7 +159,7 @@ fn emitList(w: *Writer, list: strikedown.List, color: ?[]const u8) Writer.Error!
             },
             .list => |sub| {
                 try w.writeByte('\n');
-                try emitList(w, sub, null);
+                try emitList(w, sub);
             },
         };
         try w.writeAll("</li>\n");
@@ -356,8 +337,24 @@ test "list item continuation lines join the item" {
     try expectRender("<ul>\n<li>a b</li>\n</ul>\n", "- a\n  b");
 }
 
-test "unindented line after a list becomes a paragraph" {
-    try expectRender("<ul>\n<li>a</li>\n</ul>\n<p>text</p>\n", "- a\ntext");
+test "unindented line lazily continues the list item" {
+    try expectRender("<ul>\n<li>a text</li>\n</ul>\n", "- a\ntext");
+}
+
+test "blank lines between items keep one list" {
+    try expectRender(
+        "<ol>\n<li>x</li>\n<li>y</li>\n<li>z</li>\n</ol>\n",
+        "1. x\n2. y\n\n3. z",
+    );
+}
+
+test "ordered list starts at the first written number" {
+    try expectRender("<ol start=\"3\">\n<li>x</li>\n<li>y</li>\n</ol>\n", "3. x\n4. y");
+}
+
+test "block forms still terminate a list" {
+    try expectRender("<ul>\n<li>a</li>\n</ul>\n<h1 id=\"h\">h</h1>\n", "- a\n# h");
+    try expectRender("<ul>\n<li>a</li>\n</ul>\n<hr/>\n", "- a\n\n---");
 }
 
 test "sibling list of the other kind splits" {
@@ -513,48 +510,25 @@ test "pipe row without a separator stays a paragraph" {
     try expectRender("<p>| a | b |</p>\n", "| a | b |");
 }
 
-test "color directives color blocks end to end" {
-    // define + use, on a heading
-    try expectRender(
-        "<h1 id=\"title\" style=\"color:#7c3aed\">Title</h1>\n",
-        ":color brand #7c3aed\n\n(brand)# Title",
-    );
-    // paragraphs, quotes, and lists take the same prefix
-    try expectRender(
-        "<p style=\"color:#FFFFFF\">snow</p>\n",
-        ":color white #FFFFFF\n(white)snow",
-    );
-    try expectRender(
-        "<blockquote style=\"color:#9aa4b2\">\n<p>aside</p>\n</blockquote>\n",
-        ":color soft #9aa4b2\n\n(soft)> aside",
-    );
-    try expectRender(
-        "<ul style=\"color:#ff0000\">\n<li>a</li>\n<li>b</li>\n</ul>\n",
-        ":color red #ff0000\n\n(red)- a\n- b",
-    );
-}
-
-test "a directive alone renders nothing" {
-    try expectRender("", ":color brand #7c3aed");
-}
-
-test "unknown directives and undefined aliases stay prose" {
+test "reserved `:` directive lines are prose" {
+    // the `:` namespace is reserved but recognizes nothing — every `:` line,
+    // including the retired `:color`, renders literally
+    try expectRender("<p>:color brand #7c3aed</p>\n", ":color brand #7c3aed");
     try expectRender("<p>:margin 2rem</p>\n", ":margin 2rem");
-    try expectRender("<p>(nope)# not a heading</p>\n", "(nope)# not a heading");
+    // the retired `(name)` prefix is likewise plain prose
+    try expectRender("<p>(note)# not a heading</p>\n", "(note)# not a heading");
 }
 
-test "a later color definition wins" {
+test "quote paragraphs: merge, bare-> split, lazy continuation" {
+    try expectRender("<blockquote>\n<p>a b</p>\n</blockquote>\n", "> a\n> b");
     try expectRender(
-        "<p style=\"color:#222222\">x</p>\n",
-        ":color a #111111\n:color a #222222\n(a)x",
+        "<blockquote>\n<p>a</p>\n<p>b</p>\n</blockquote>\n",
+        "> a\n>\n> b",
     );
-}
-
-test "a base sheet from render options seeds the document" {
-    const base: sheet.Sheet = .{ .colors = &.{.{ .name = "brand", .value = "#7c3aed" }} };
-    const got = try render(std.testing.allocator, "(brand)# T", .{ .sheet = base });
-    defer std.testing.allocator.free(got);
-    try std.testing.expectEqualStrings("<h1 id=\"t\" style=\"color:#7c3aed\">T</h1>\n", got);
+    try expectRender(
+        "<blockquote>\n<p>a b</p>\n</blockquote>\n<p>after</p>\n",
+        "> a\nb\n\nafter",
+    );
 }
 
 test "group directive: two lists render side by side (main.sx)" {
@@ -584,12 +558,54 @@ test "group directive: a group with no commands is a plain container" {
     );
 }
 
-test "group directive: a color prefix styles the group wrapper" {
+test "skinny renders a centered narrow wrapper" {
     try expectRender(
-        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;color:#ff0000\">\n" ++
+        "<div class=\"sx-group\" style=\"width:75%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// box skinny()\n\na\n\n// end",
+    );
+    // combined with grid: grid declarations first, then the width
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;width:80%;margin-inline:auto\">\n" ++
             "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
             "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n</div>\n",
-        ":color red #ff0000\n\n(red)// g grid(2)\n\na\n\n// --\n\nb\n\n// end",
+        "// g grid(2) skinny(80%)\n\na\n\n// --\n\nb\n\n// end",
+    );
+}
+
+test "single command wraps the next content element" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:50%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>narrow para</p>\n</div>\n</div>\n",
+        "/skinny(50%)\n\nnarrow para",
+    );
+    // prose slash lines are untouched
+    try expectRender("<p>/usr/bin/env foo</p>\n", "/usr/bin/env foo");
+    // a command with nothing to bind to stays prose
+    try expectRender("<p>/skinny(50%)</p>\n", "/skinny(50%)");
+}
+
+test "a command nested under itself renders the structure without the layout" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n</div>\n" ++
+            "</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>c</p>\n</div>\n</div>\n",
+        "// outer grid(2)\n\n// inner grid(2)\na\n// --\nb\n// end\n\n// --\n\nc\n\n// end outer",
+    );
+}
+
+test "different layout commands nest: skinny inside a grid section" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\" style=\"width:50%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n" ++
+            "</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n</div>\n",
+        "// outer grid(2)\n\n// inner skinny(50%)\na\n// end\n\n// --\n\nb\n\n// end outer",
     );
 }
 

@@ -13,28 +13,34 @@
 //!   - ATX headings (`#` .. `######`) with auto anchor ids (see `slugify`)
 //!   - paragraphs (soft-wrapped lines are joined with a space)
 //!   - unordered (`-`/`*`/`+`) and ordered (`1.`) lists, nested by
-//!     indentation, with `- [ ]`/`- [x]` task boxes
+//!     indentation, with `- [ ]`/`- [x]` task boxes; a plain line lazily
+//!     continues the open item, blank lines between items don't end the
+//!     list, and the first written number sets an ordered list's start
 //!   - GFM pipe tables (header + `|---|` separator, `:-:` alignment)
 //!   - fenced code blocks (```` ``` ````) with an info-string language
-//!   - blockquotes (`>`), horizontal rules (`---` / `***` / `___`)
+//!   - blockquotes (`>`): consecutive `>` lines flow into one paragraph, a
+//!     bare `>` line breaks paragraphs, and a plain line lazily continues the
+//!     open quote paragraph until a blank line or a new block
+//!   - horizontal rules (`---` / `***` / `___`)
 //!   - display math `$$…$$` (TeX kept raw; emitters decide the wrapping)
-//!   - typography directives (`:color brand #7c3aed`) — consumed, no block;
-//!     they extend the document's working `Sheet` from that line on
-//!   - group directives (`// two_lists grid(2)` … `// --` … `// end`) — layout
-//!     elements grouping content into sections (see `docs/design/001-groups.md`);
-//!     a `//` line is a directive **iff it parses cleanly**, otherwise prose
-//!   - a `(alias)` block prefix (`(brand)# Title`) coloring the block it
-//!     starts — recognized **only** when the alias resolves in the working
-//!     sheet, so unstyled documents render byte-identically to plain markdown
+//!   - typography directives (`:` lines) — a reserved namespace, currently
+//!     inert (see `sheet.zig`); a recognized line is consumed, emits no block
+//!   - group directives (`// two_lists grid(2)` … `// --` … `// end`) —
+//!     bracketing content into sections that layout commands arrange (see
+//!     `docs/design/001-groups.md`); a `//` line is a directive **iff it
+//!     parses cleanly**, otherwise prose
+//!   - single-command directives (`/skinny(60%)`) applying one command to the
+//!     very next content element (see `docs/design/002-single-command.md`)
 //!
 //! Inline grammar, in precedence order: backslash escape, `` `code` ``,
 //! `$math$`, `![alt](src)`, `[text](url)`, `<http…>` and bare-URL autolinks,
 //! `***`/`**`/`*` emphasis, `~~strikethrough~~`. Code/math bodies are never
 //! inline-parsed.
 //!
-//! Typography lands as *attributes on tree nodes* (e.g. `Block.color`), never
-//! as emitter special cases. Every superset form must degrade to inert prose
-//! in plain markdown documents that never activate it.
+//! Layout (and typography, when it returns) lands as *data on tree nodes*
+//! (e.g. `Group.columns`), never as emitter special cases. Every superset
+//! form must degrade to inert prose in plain markdown documents that never
+//! activate it.
 
 const std = @import("std");
 const sheet = @import("sheet.zig");
@@ -49,18 +55,18 @@ pub const Doc = struct {
     warnings: []const []const u8 = &.{},
 };
 
-/// One block-level element. Typography attributes live here, beside the
-/// structural payload in `kind`, so every block type gets them uniformly.
+/// One block-level element — a *content element*, or a group arranging
+/// content elements. Shared attributes (typography, when it returns) will
+/// live here beside the structural payload in `kind`, so every block type
+/// gets them uniformly.
 pub const Block = struct {
-    /// Resolved CSS color (e.g. "#7c3aed") from a `(alias)` block prefix;
-    /// null = unstyled. Emitters that have no color channel may ignore it.
-    color: ?[]const u8 = null,
     kind: Kind,
 
     pub const Kind = union(enum) {
         heading: Heading,
         paragraph: []Inline,
-        /// One entry per `>` line, each its own paragraph inside the quote.
+        /// The quote's paragraphs: consecutive `>` lines merge into one,
+        /// a bare `>` line separates them.
         quote: [][]Inline,
         list: List,
         code: Code,
@@ -72,12 +78,15 @@ pub const Block = struct {
     };
 };
 
-/// A group directive's block: sections of content arranged by its commands.
-/// Commands land here as attributes (data, not emitter special cases) —
-/// `grid(n)` sets `columns`; future commands grow more fields.
+/// A group's block: sections of content arranged by its commands. Commands
+/// land here as attributes (data, not emitter special cases) — `grid(n)`
+/// sets `columns`, `skinny(N%)` sets `width_pct`; future commands grow more
+/// fields. A single-command directive (`/cmd()`) produces this same node:
+/// nameless, one section holding the one element it binds to.
 pub const Group = struct {
     name: []const u8, // "" = nameless (runs to EOF unless closed)
     columns: ?usize = null, // from grid(n); null = plain stacked container
+    width_pct: ?usize = null, // from skinny(N%): % of the body column width
     sections: [][]Block,
 };
 
@@ -94,6 +103,9 @@ pub const Code = struct {
 
 pub const List = struct {
     ordered: bool,
+    /// The first item's written number (GFM: it sets the list start; later
+    /// item numbers are ignored). Always 1 for unordered lists.
+    start: usize,
     items: []Item,
 };
 
@@ -144,12 +156,13 @@ pub fn alignAt(aligns: []const Align, i: usize) Align {
 
 // ---- parsing -----------------------------------------------------------------
 
-/// Parse strikedown/markdown source into a `Doc`. `base` seeds the document's
-/// working sheet (the site/project `.sxh` header, or `.empty`); in-document
-/// directives extend it as they are consumed. Everything in the returned tree
-/// is owned by `arena` (or points into `src`/`base`) — free the arena as a
-/// whole, never nodes piecemeal.
+/// Parse strikedown/markdown source into a `Doc`. `base` is the document's
+/// base typography sheet (the site/project `.sxh` header, or `.empty`) —
+/// inert while the directive namespace is reserved, kept so the header
+/// plumbing stays wired. Everything in the returned tree is owned by `arena`
+/// (or points into `src`) — free the arena as a whole, never nodes piecemeal.
 pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Error!Doc {
+    _ = base;
     // Collect the document into lines so block parsers can look ahead.
     var lines: std.ArrayList([]const u8) = .empty;
     {
@@ -162,7 +175,6 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
     }
 
     var p: Parser = .{ .arena = arena, .lines = lines.items };
-    try p.colors.appendSlice(arena, base.colors);
     var blocks: std.ArrayList(Block) = .empty;
     while (p.idx < p.lines.len) {
         if (isBlank(p.lines[p.idx])) {
@@ -179,18 +191,18 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
 
 const Parser = struct {
     arena: Allocator,
-    /// Mutable so a recognized `(alias)` prefix can be stripped in place,
-    /// letting the multi-line block parsers see the plain construct.
-    lines: [][]const u8,
+    lines: []const []const u8,
     idx: usize = 0,
     /// Heading anchor slugs used so far in this document (for deduping).
     used_slugs: std.ArrayList([]const u8) = .empty,
-    /// The working sheet: the base (site/project header) entries followed by
-    /// every in-document directive consumed so far. Later entries win.
-    colors: std.ArrayList(sheet.Sheet.Entry) = .empty,
     /// How many groups are open. Separator/closer group lines are only live
     /// inside a group; outside they stay prose (`isGroupInterrupt`).
     group_depth: usize = 0,
+    /// How many open groups carry each layout command. The layout-level rule
+    /// is per-command (`docs/STRIKEDOWN.md`): a layout command whose counter
+    /// is already > 0 — an open ancestor carries the same command — is
+    /// ignored with a warning; other commands on the same opener still apply.
+    layout_depth: std.enums.EnumArray(std.meta.Tag(Command), usize) = .initFill(0),
     /// Diagnostics collected while parsing (handed to `Doc.warnings`).
     warnings: std.ArrayList([]const u8) = .empty,
 
@@ -200,44 +212,15 @@ const Parser = struct {
     fn next(p: *Parser) Allocator.Error!?Block {
         const t = std.mem.trimStart(u8, p.lines[p.idx], " ");
 
-        // Typography directive: extends the working sheet, emits nothing.
-        if (sheet.parseLine(t)) |directive| {
-            switch (directive) {
-                .color => |entry| try p.colors.append(p.arena, entry),
-            }
+        // Typography directive (`:` line): consumed, emits nothing. The `:`
+        // namespace is reserved — `sheet.parseLine` recognizes nothing today
+        // — so this arm is dormant until typography directives return.
+        if (sheet.parseLine(t) != null) {
             p.idx += 1;
             return null;
         }
 
-        // `(alias)` color prefix. Strip it in place, parse the rest as any
-        // normal block, and attach the resolved color — uniform across block
-        // types, no per-block special cases.
-        if (p.splitColorPrefix(t)) |pre| {
-            p.lines[p.idx] = pre.rest;
-            var block = try p.parseBlock(pre.rest);
-            block.color = pre.color;
-            return block;
-        }
-
         return try p.parseBlock(t);
-    }
-
-    /// If `t` starts with a `(alias)` prefix whose alias resolves in the
-    /// working sheet, return the resolved color and the rest of the line.
-    /// An undefined alias returns null and the line stays literal prose —
-    /// the superset's backward-compatibility rule.
-    fn splitColorPrefix(p: *Parser, t: []const u8) ?struct { color: []const u8, rest: []const u8 } {
-        if (t.len < 3 or t[0] != '(') return null;
-        const close = std.mem.indexOfScalar(u8, t, ')') orelse return null;
-        const name = t[1..close];
-        if (!sheet.isAliasName(name)) return null;
-        const value = p.lookupColor(name) orelse return null;
-        return .{ .color = value, .rest = std.mem.trimStart(u8, t[close + 1 ..], " ") };
-    }
-
-    fn lookupColor(p: *Parser, name: []const u8) ?[]const u8 {
-        const working: sheet.Sheet = .{ .colors = p.colors.items };
-        return working.lookup(name);
     }
 
     /// The block classification chain: `t` is the current line, left-trimmed
@@ -251,6 +234,15 @@ const Parser = struct {
         // through to prose — the degradation rule.
         if (parseGroupLine(t)) |gl| {
             if (gl == .open) return try p.parseGroup(gl.open);
+        }
+
+        // Single-command directive: `/cmd(args)` applies one command to the
+        // very next content element by wrapping it in an anonymous group.
+        // With nothing to bind to (EOF, or a directive next), it falls
+        // through to prose — the same context-liveness rule that keeps
+        // separators/closers outside a group inert.
+        if (parseSingleCommandLine(t)) |cmd| {
+            if (try p.parseSingleCommand(cmd)) |block| return block;
         }
 
         // Fenced code block: contents are kept verbatim, no inline parsing.
@@ -317,18 +309,42 @@ const Parser = struct {
             return .{ .kind = .rule };
         }
 
-        // Blockquote: a run of consecutive `>` lines.
+        // Blockquote. Consecutive `>` lines soft-merge into one flowing
+        // paragraph (the same joining rule as plain paragraphs); a bare `>`
+        // line breaks paragraphs within the quote; a plain line lazily
+        // continues the open quote paragraph (GFM lazy continuation). A
+        // blank line — or any new block form — ends the quote.
         if (std.mem.startsWith(u8, t, ">")) {
-            var qlines: std.ArrayList([]Inline) = .empty;
+            var paras: std.ArrayList([]Inline) = .empty;
+            var cur: std.ArrayList(Inline) = .empty;
             while (p.idx < p.lines.len) {
+                if (isBlank(p.lines[p.idx])) break;
                 const qt = std.mem.trimStart(u8, p.lines[p.idx], " ");
-                if (!std.mem.startsWith(u8, qt, ">")) break;
-                var content = qt[1..];
-                if (content.len > 0 and content[0] == ' ') content = content[1..];
-                try qlines.append(arena, try parseInlines(arena, std.mem.trimEnd(u8, content, " ")));
+                if (std.mem.startsWith(u8, qt, ">")) {
+                    var content = qt[1..];
+                    if (content.len > 0 and content[0] == ' ') content = content[1..];
+                    content = std.mem.trimEnd(u8, content, " ");
+                    if (content.len == 0) {
+                        // Bare `>`: paragraph break within the quote.
+                        if (cur.items.len > 0) try paras.append(arena, try cur.toOwnedSlice(arena));
+                        cur = .empty;
+                    } else {
+                        if (cur.items.len > 0) try cur.append(arena, .{ .text = " " });
+                        try cur.appendSlice(arena, try parseInlines(arena, content));
+                    }
+                    p.idx += 1;
+                    continue;
+                }
+                // Lazy continuation needs an open paragraph and a line that
+                // starts no block.
+                if (cur.items.len == 0) break;
+                if (p.interruptsFlow(qt)) break;
+                try cur.append(arena, .{ .text = " " });
+                try cur.appendSlice(arena, try parseInlines(arena, qt));
                 p.idx += 1;
             }
-            return .{ .kind = .{ .quote = try qlines.toOwnedSlice(arena) } };
+            if (cur.items.len > 0) try paras.append(arena, try cur.toOwnedSlice(arena));
+            return .{ .kind = .{ .quote = try paras.toOwnedSlice(arena) } };
         }
 
         // List (unordered or ordered, possibly nested by indentation).
@@ -376,13 +392,7 @@ const Parser = struct {
         p.idx += 1;
         while (p.idx < p.lines.len and !isBlank(p.lines[p.idx])) {
             const nt = std.mem.trim(u8, p.lines[p.idx], " ");
-            // `isTableStart` is the table's paragraph-interrupt companion to
-            // `isBlockStart` (a table is a two-line pattern, so it can't live
-            // there); `splitColorPrefix` is the color prefix's (it needs the
-            // working sheet, which `isBlockStart` can't see); `isGroupInterrupt`
-            // is the group directive's (it needs the open-group depth).
-            if (isBlockStart(nt) or isTableStart(p.lines, p.idx) or
-                p.splitColorPrefix(nt) != null or p.isGroupInterrupt(nt)) break;
+            if (p.interruptsFlow(nt)) break;
             try inls.append(arena, .{ .text = " " });
             try inls.appendSlice(arena, try parseInlines(arena, nt));
             p.idx += 1;
@@ -394,9 +404,12 @@ const Parser = struct {
     /// consumed lines. Nesting is by indentation: an item indented >= 2 columns
     /// past its parent opens a child list inside the parent's item; a dedent
     /// returns to the outer level; a marker of the other orderedness at the
-    /// same level ends this list (the block loop starts the sibling). An
-    /// indented non-marker line soft-wraps into the open item; an unindented
-    /// one — or a blank line — ends the list (loose lists are out of scope).
+    /// same level ends this list (the block loop starts the sibling). A
+    /// non-marker line that starts no block soft-wraps into the open item,
+    /// indented or not (lazy continuation, as in quotes). Blank lines end the
+    /// list unless the next non-blank line is a marker continuing it — a
+    /// sibling of the same orderedness, or a nested item; rendering stays
+    /// tight either way (`<p>`-wrapped loose rendering is out of scope).
     fn parseList(p: *Parser) Allocator.Error!List {
         const arena = p.arena;
         const base = indentWidth(p.lines[p.idx]);
@@ -406,7 +419,19 @@ const Parser = struct {
         var tail: std.ArrayList(Item.Tail) = .empty;
         while (p.idx < p.lines.len) {
             const line = p.lines[p.idx];
-            if (isBlank(line)) break;
+            if (isBlank(line)) {
+                // Skip the blank run iff a marker that continues this list
+                // follows; only a marker resumes a list across a blank.
+                var j = p.idx;
+                while (j < p.lines.len and isBlank(p.lines[j])) j += 1;
+                if (j == p.lines.len) break;
+                const m = parseMarker(std.mem.trimStart(u8, p.lines[j], " \t")) orelse break;
+                const nind = indentWidth(p.lines[j]);
+                if (nind < base) break;
+                if (nind < base + 2 and m.ordered != ordered) break;
+                p.idx = j;
+                continue;
+            }
             const ind = indentWidth(line);
             const t = std.mem.trimStart(u8, line, " \t");
             if (parseMarker(t)) |m| {
@@ -425,11 +450,10 @@ const Parser = struct {
                 p.idx += 1;
                 continue;
             }
-            // Non-marker line: an indented one continues the open item; anything
-            // else ends the list (the block loop decides what it is).
-            if (items.items.len > 0 and ind > base and !isBlockStart(t) and
-                p.splitColorPrefix(t) == null and !p.isGroupInterrupt(t))
-            {
+            // Non-marker line: one that starts no block continues the open
+            // item; anything else ends the list (the block loop decides what
+            // it is).
+            if (items.items.len > 0 and !p.interruptsFlow(t)) {
                 try tail.append(arena, .{ .line = try parseInlines(arena, std.mem.trimEnd(u8, t, " ")) });
                 p.idx += 1;
                 continue;
@@ -438,7 +462,7 @@ const Parser = struct {
         }
         if (items.items.len > 0)
             items.items[items.items.len - 1].tail = try tail.toOwnedSlice(arena);
-        return .{ .ordered = ordered, .items = try items.toOwnedSlice(arena) };
+        return .{ .ordered = ordered, .start = first.num, .items = try items.toOwnedSlice(arena) };
     }
 
     /// Parse a group: the opener line at `idx` is consumed, then content
@@ -452,6 +476,14 @@ const Parser = struct {
         p.idx += 1;
         p.group_depth += 1;
         defer p.group_depth -= 1;
+        // The layout-level rule, per command: a layout command an open
+        // ancestor already carries is stripped with a warning; the rest of
+        // the opener still applies, and the group still forms (structure
+        // kept — degradation stays gentle).
+        var attrs = open;
+        try p.stripNestedLayout(&attrs, attrs.name);
+        p.enterLayout(attrs);
+        defer p.exitLayout(attrs);
         var sections: std.ArrayList([]Block) = .empty;
         var cur: std.ArrayList(Block) = .empty;
         while (p.idx < p.lines.len) {
@@ -471,7 +503,7 @@ const Parser = struct {
                     p.idx += 1;
                     break;
                 },
-                .end => |name| if (name == null or std.mem.eql(u8, name.?, open.name)) {
+                .end => |name| if (name == null or std.mem.eql(u8, name.?, attrs.name)) {
                     p.idx += 1;
                     break;
                 },
@@ -480,18 +512,114 @@ const Parser = struct {
             if (try p.next()) |block| try cur.append(arena, block);
         }
         try sections.append(arena, try cur.toOwnedSlice(arena));
-        if (open.columns) |n| if (sections.items.len != n) {
+        if (attrs.columns) |n| if (sections.items.len != n) {
             try p.warnings.append(arena, try std.fmt.allocPrint(
                 arena,
                 "group '{s}': grid({d}) but {d} section(s)",
-                .{ if (open.name.len > 0) open.name else "(nameless)", n, sections.items.len },
+                .{ groupLabel(attrs.name), n, sections.items.len },
             ));
         };
         return .{ .kind = .{ .group = .{
-            .name = open.name,
-            .columns = open.columns,
+            .name = attrs.name,
+            .columns = attrs.columns,
+            .width_pct = attrs.width_pct,
             .sections = try sections.toOwnedSlice(arena),
         } } };
+    }
+
+    /// Apply a single-command directive: wrap the very next content element
+    /// in an anonymous one-section group — the same tree node and emitter
+    /// path as `//` groups. Returns null (the line stays prose) when there is
+    /// nothing to bind to: EOF, or any directive line next.
+    fn parseSingleCommand(p: *Parser, cmd: Command) Allocator.Error!?Block {
+        const arena = p.arena;
+        var j = p.idx + 1;
+        while (j < p.lines.len and isBlank(p.lines[j])) j += 1;
+        if (j >= p.lines.len) return null;
+        const nt = std.mem.trimStart(u8, p.lines[j], " ");
+        if (parseSingleCommandLine(nt) != null or p.isGroupInterrupt(nt) or
+            sheet.parseLine(nt) != null) return null;
+
+        var attrs: GroupLine.Open = .{ .name = "" };
+        applyCommand(&attrs, cmd);
+        // The layout-level rule, exactly as in `parseGroup`.
+        try p.stripNestedLayout(&attrs, null);
+        if (attrs.columns) |n| if (n != 1) {
+            try p.warnings.append(arena, try std.fmt.allocPrint(
+                arena,
+                "single command: grid({d}) but 1 element",
+                .{n},
+            ));
+        };
+
+        p.idx = j;
+        p.enterLayout(attrs);
+        defer p.exitLayout(attrs);
+        const inner = try p.parseBlock(nt);
+
+        const section = try arena.alloc(Block, 1);
+        section[0] = inner;
+        const sections = try arena.alloc([]Block, 1);
+        sections[0] = section;
+        return .{ .kind = .{ .group = .{
+            .name = "",
+            .columns = attrs.columns,
+            .width_pct = attrs.width_pct,
+            .sections = sections,
+        } } };
+    }
+
+    /// The layout-level rule, per command (`docs/STRIKEDOWN.md`): null out
+    /// each layout command in `attrs` that an open ancestor already carries,
+    /// warning per stripped command. `name` is the group's name for the
+    /// warning (null for a single-command directive). Commands that don't
+    /// collide survive — the rule strips commands, never openers.
+    fn stripNestedLayout(p: *Parser, attrs: *GroupLine.Open, name: ?[]const u8) Allocator.Error!void {
+        if (attrs.columns != null and p.layout_depth.get(.grid) > 0) {
+            attrs.columns = null;
+            try p.warnStrippedLayout(name, "grid");
+        }
+        if (attrs.width_pct != null and p.layout_depth.get(.skinny) > 0) {
+            attrs.width_pct = null;
+            try p.warnStrippedLayout(name, "skinny");
+        }
+    }
+
+    fn warnStrippedLayout(p: *Parser, name: ?[]const u8, cmd: []const u8) Allocator.Error!void {
+        try p.warnings.append(p.arena, if (name) |n|
+            try std.fmt.allocPrint(
+                p.arena,
+                "group '{s}': {s} ignored (already inside a {s})",
+                .{ groupLabel(n), cmd, cmd },
+            )
+        else
+            try std.fmt.allocPrint(
+                p.arena,
+                "single command: {s} ignored (already inside a {s})",
+                .{ cmd, cmd },
+            ));
+    }
+
+    /// Count the layout commands `attrs` carries (post-strip) as open, for
+    /// the per-command rule. Pair with a deferred `exitLayout` on the same
+    /// attrs. Future non-layout commands simply won't touch a counter.
+    fn enterLayout(p: *Parser, attrs: GroupLine.Open) void {
+        if (attrs.columns != null) p.layout_depth.getPtr(.grid).* += 1;
+        if (attrs.width_pct != null) p.layout_depth.getPtr(.skinny).* += 1;
+    }
+
+    fn exitLayout(p: *Parser, attrs: GroupLine.Open) void {
+        if (attrs.columns != null) p.layout_depth.getPtr(.grid).* -= 1;
+        if (attrs.width_pct != null) p.layout_depth.getPtr(.skinny).* -= 1;
+    }
+
+    /// True if the line at `idx` (already left-trimmed as `t`) starts a new
+    /// block form — `isBlockStart` plus its two contextual companions (pipe
+    /// tables and group directives). The one shared "does this line interrupt
+    /// a flowing text run" check, used by the paragraph loop, quote lazy
+    /// continuation, and list item continuation.
+    fn interruptsFlow(p: *Parser, t: []const u8) bool {
+        return isBlockStart(t) or isTableStart(p.lines, p.idx) or p.isGroupInterrupt(t);
     }
 
     /// The group directive's paragraph-interrupt companion to `isBlockStart`
@@ -559,11 +687,13 @@ fn isBlank(line: []const u8) bool {
 }
 
 /// Returns true if a (left-trimmed) line begins any block other than a
-/// paragraph. Three block forms are NOT covered here and need companion checks
-/// wherever context allows them: pipe tables (a two-line pattern —
-/// `isTableStart(lines, idx)`), `(alias)` color prefixes (they need the
-/// working sheet — `Parser.splitColorPrefix`), and group directives (they need
-/// the open-group depth — `Parser.isGroupInterrupt`).
+/// paragraph. Two block forms are NOT covered here and need context: pipe
+/// tables (a two-line pattern — `isTableStart(lines, idx)`) and group
+/// directives (they need the open-group depth — `Parser.isGroupInterrupt`);
+/// `Parser.interruptsFlow` bundles all three and is what flowing-text loops
+/// call. A clean single-command line counts even when its follower later
+/// makes it inert prose — a small accepted divergence
+/// (`docs/design/002-single-command.md`) that keeps this check context-free.
 fn isBlockStart(t: []const u8) bool {
     return headingLevel(t) != null or
         isHorizontalRule(t) or
@@ -571,7 +701,8 @@ fn isBlockStart(t: []const u8) bool {
         std.mem.startsWith(u8, t, "```") or
         std.mem.startsWith(u8, t, "$$") or
         isUnorderedItem(t) or
-        orderedMarkerLen(t) != null or
+        orderedMarker(t) != null or
+        parseSingleCommandLine(t) != null or
         sheet.parseLine(t) != null;
 }
 
@@ -613,6 +744,8 @@ const Marker = struct {
     ordered: bool,
     /// Offset of the item text within the trimmed line (past marker + task box).
     content_start: usize,
+    /// The written number (`12. ` -> 12); 1 for unordered markers.
+    num: usize,
     /// null = plain item; true/false = checked/unchecked task box.
     task: ?bool,
 };
@@ -622,9 +755,9 @@ const Marker = struct {
 fn parseMarker(t: []const u8) ?Marker {
     var m: Marker = undefined;
     if (isUnorderedItem(t)) {
-        m = .{ .ordered = false, .content_start = 2, .task = null };
-    } else if (orderedMarkerLen(t)) |mlen| {
-        m = .{ .ordered = true, .content_start = mlen, .task = null };
+        m = .{ .ordered = false, .content_start = 2, .num = 1, .task = null };
+    } else if (orderedMarker(t)) |om| {
+        m = .{ .ordered = true, .content_start = om.len, .num = om.num, .task = null };
     } else return null;
     const rest = t[m.content_start..];
     if (std.mem.startsWith(u8, rest, "[ ]") and (rest.len == 3 or rest[3] == ' ')) {
@@ -639,12 +772,21 @@ fn parseMarker(t: []const u8) ?Marker {
     return m;
 }
 
-/// Length of an ordered-list marker like `12. `, or null if the line isn't one.
-fn orderedMarkerLen(t: []const u8) ?usize {
+const OrderedMarker = struct {
+    /// Marker length through the space after the dot (`12. ` -> 4).
+    len: usize,
+    /// The written number.
+    num: usize,
+};
+
+/// An ordered-list marker like `12. ` at the start of a left-trimmed line,
+/// or null if the line isn't one. GFM caps the number at 9 digits.
+fn orderedMarker(t: []const u8) ?OrderedMarker {
     var n: usize = 0;
     while (n < t.len and std.ascii.isDigit(t[n])) n += 1;
-    if (n == 0) return null;
-    if (n + 1 < t.len and t[n] == '.' and t[n + 1] == ' ') return n + 2;
+    if (n == 0 or n > 9) return null;
+    if (n + 1 < t.len and t[n] == '.' and t[n + 1] == ' ')
+        return .{ .len = n + 2, .num = std.fmt.parseInt(usize, t[0..n], 10) catch unreachable };
     return null;
 }
 
@@ -663,7 +805,8 @@ const GroupLine = union(enum) {
 
     const Open = struct {
         name: []const u8, // "" = nameless
-        columns: ?usize, // from grid(n)
+        columns: ?usize = null, // from grid(n)
+        width_pct: ?usize = null, // from skinny(N%)
     };
 };
 
@@ -707,11 +850,17 @@ fn parseGroupLine(t: []const u8) ?GroupLine {
     return .{ .open = open };
 }
 
-/// The recognized group commands. A new command is a variant here, a
+/// The recognized commands. A new command is a variant here, a
 /// `parseCommand` arm, an attribute on `Group` via `applyCommand`, and the
-/// emitter reading it — data all the way, per the extension recipe.
+/// emitter reading it — data all the way, per the extension recipe. Every
+/// command today is a *layout* command: it creates a layout element, and its
+/// tag keys a `Parser.layout_depth` counter for the per-command layout-level
+/// rule (`stripNestedLayout`/`enterLayout`). Future non-layout commands
+/// simply won't touch a counter.
 const Command = union(enum) {
     grid: usize,
+    /// skinny(N%): render at N% of the body column width, centered.
+    skinny: usize,
 };
 
 /// Parse one `word(args)` token, null if it isn't a recognized command with
@@ -726,13 +875,36 @@ fn parseCommand(tok: []const u8) ?Command {
         if (n == 0) return null;
         return .{ .grid = n };
     }
+    if (std.mem.eql(u8, word, "skinny")) {
+        if (args.len == 0) return .{ .skinny = 75 }; // bare skinny(): the default width
+        if (args[args.len - 1] != '%') return null;
+        const n = std.fmt.parseInt(usize, args[0 .. args.len - 1], 10) catch return null;
+        if (n == 0 or n > 100) return null;
+        return .{ .skinny = n };
+    }
     return null;
 }
 
 fn applyCommand(open: *GroupLine.Open, cmd: Command) void {
     switch (cmd) {
         .grid => |n| open.columns = n,
+        .skinny => |n| open.width_pct = n,
     }
+}
+
+fn groupLabel(name: []const u8) []const u8 {
+    return if (name.len > 0) name else "(nameless)";
+}
+
+/// Classify a (left-trimmed) line as a single-command directive
+/// (`docs/design/002-single-command.md`): `/` immediately followed by exactly
+/// one command token and nothing else. The char after the slash keeps the two
+/// directive families apart (`//` is a group line), and `parseCommand`'s
+/// strictness is the degradation story — `/usr/bin/env`, `/skinny (50%)`, or
+/// trailing words all return null and stay prose.
+fn parseSingleCommandLine(t: []const u8) ?Command {
+    if (t.len < 2 or t[0] != '/' or t[1] == '/') return null;
+    return parseCommand(std.mem.trimEnd(u8, t[1..], " "));
 }
 
 // ---- table helpers -----------------------------------------------------------
@@ -1048,6 +1220,66 @@ test "nested list becomes a tail segment of its parent item" {
     try testing.expectEqual(@as(usize, 0), list.items[1].tail.len);
 }
 
+test "list: an unindented plain line lazily continues the open item" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "- a\nwraps", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const list = doc.blocks[0].kind.list;
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqual(@as(usize, 1), list.items[0].tail.len);
+    try testing.expect(list.items[0].tail[0] == .line);
+}
+
+test "list: blank lines between same-orderedness items don't end the list" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "1. a\n2. b\n\n3. c", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const list = doc.blocks[0].kind.list;
+    try testing.expect(list.ordered);
+    try testing.expectEqual(@as(usize, 1), list.start);
+    try testing.expectEqual(@as(usize, 3), list.items.len);
+}
+
+test "list: a blank line then the other orderedness still splits" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "1. a\n\n- b", .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try testing.expect(doc.blocks[0].kind.list.ordered);
+    try testing.expect(!doc.blocks[1].kind.list.ordered);
+}
+
+test "list: a blank line then a nested marker continues the open item" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "- a\n\n  - a1", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const list = doc.blocks[0].kind.list;
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqual(@as(usize, 1), list.items[0].tail.len);
+    try testing.expect(list.items[0].tail[0] == .list);
+}
+
+test "list: a blank line then plain text ends the list" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "- a\n\ntext", .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try testing.expect(doc.blocks[0].kind == .list);
+    try testing.expect(doc.blocks[1].kind == .paragraph);
+}
+
+test "list: the first written number sets the ordered start" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "3. a\n7. b", .empty);
+    const list = doc.blocks[0].kind.list;
+    try testing.expectEqual(@as(usize, 3), list.start);
+    try testing.expectEqual(@as(usize, 2), list.items.len);
+}
+
 test "table rows are padded to the header width at parse time" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -1059,38 +1291,56 @@ test "table rows are padded to the header width at parse time" {
     try testing.expectEqual(@as(usize, 0), table.rows[0][1].len); // padded cell is empty
 }
 
-test "color directive + prefix attach a resolved color to the block" {
+test "reserved `:` directive lines are prose" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const doc = try parse(arena_state.allocator(),
-        \\:color brand #7c3aed
-        \\
-        \\(brand)# Title
-        \\
-        \\plain
-    , .empty);
-    // the directive line produced no block
-    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
-    try testing.expect(doc.blocks[0].kind == .heading);
-    try testing.expectEqualStrings("#7c3aed", doc.blocks[0].color.?);
-    try testing.expect(doc.blocks[1].color == null);
-}
-
-test "base sheet seeds the working sheet" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const base: sheet.Sheet = .{ .colors = &.{.{ .name = "soft", .value = "#9aa4b2" }} };
-    const doc = try parse(arena_state.allocator(), "(soft)> aside", base);
-    try testing.expect(doc.blocks[0].kind == .quote);
-    try testing.expectEqualStrings("#9aa4b2", doc.blocks[0].color.?);
-}
-
-test "undefined alias prefix stays literal prose" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const doc = try parse(arena_state.allocator(), "(nope)# not a heading", .empty);
+    const doc = try parse(arena_state.allocator(), ":color brand #7c3aed", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
     try testing.expect(doc.blocks[0].kind == .paragraph);
-    try testing.expect(doc.blocks[0].color == null);
+}
+
+test "a (name) block prefix is plain prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "(note)# not a heading", .empty);
+    try testing.expect(doc.blocks[0].kind == .paragraph);
+}
+
+test "quote: consecutive > lines merge into one paragraph" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "> a\n> b", .empty);
+    const quote = doc.blocks[0].kind.quote;
+    try testing.expectEqual(@as(usize, 1), quote.len);
+}
+
+test "quote: a bare > line splits paragraphs" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "> a\n>\n> b", .empty);
+    const quote = doc.blocks[0].kind.quote;
+    try testing.expectEqual(@as(usize, 2), quote.len);
+}
+
+test "quote: a plain line lazily continues the quote until a blank line" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "> a\nb\n\nafter", .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try testing.expectEqual(@as(usize, 1), doc.blocks[0].kind.quote.len);
+    try testing.expect(doc.blocks[1].kind == .paragraph);
+}
+
+test "quote: block forms still interrupt lazy continuation" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "> a\n- item", .empty);
+    try testing.expectEqual(@as(usize, 2), d1.blocks.len);
+    try testing.expect(d1.blocks[0].kind == .quote);
+    try testing.expect(d1.blocks[1].kind == .list);
+    const d2 = try parse(arena_state.allocator(), "> a\n| h |\n|---|", .empty);
+    try testing.expectEqual(@as(usize, 2), d2.blocks.len);
+    try testing.expect(d2.blocks[1].kind == .table);
 }
 
 test "group directive: the main.sx two-list example" {
@@ -1148,7 +1398,7 @@ test "group directive: bare // closes the innermost group" {
     try testing.expect(doc.blocks[1].kind == .paragraph);
 }
 
-test "group directive: nesting binds separators to the innermost group" {
+test "group directive: nesting keeps structure but nested layout commands are ignored" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const doc = try parse(arena_state.allocator(),
@@ -1168,10 +1418,280 @@ test "group directive: nesting binds separators to the innermost group" {
     , .empty);
     try testing.expectEqual(@as(usize, 1), doc.blocks.len);
     const outer = doc.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 2), outer.columns.?);
     try testing.expectEqual(@as(usize, 2), outer.sections.len);
+    // separators still bind to the innermost group…
     const inner = outer.sections[0][0].kind.group;
     try testing.expectEqualStrings("inner", inner.name);
     try testing.expectEqual(@as(usize, 2), inner.sections.len);
+    // …but the layout-level rule strips the grid-in-grid, with a warning.
+    try testing.expect(inner.columns == null);
+    try testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try testing.expectEqualStrings(
+        "group 'inner': grid ignored (already inside a grid)",
+        doc.warnings[0],
+    );
+}
+
+test "layout-level rule is per-command: different commands nest freely" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // a skinny group inside a grid section: both apply, no warnings
+    const d1 = try parse(arena_state.allocator(),
+        \\// outer grid(2)
+        \\
+        \\// inner skinny(50%)
+        \\a
+        \\// end
+        \\
+        \\// --
+        \\
+        \\b
+        \\
+        \\// end outer
+    , .empty);
+    try testing.expectEqual(@as(usize, 2), d1.blocks[0].kind.group.columns.?);
+    const d1_inner = d1.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expectEqual(@as(usize, 50), d1_inner.width_pct.?);
+    try testing.expectEqual(@as(usize, 0), d1.warnings.len);
+    // a grid inside a skinny works too
+    const d2 = try parse(arena_state.allocator(),
+        \\// box skinny(80%)
+        \\
+        \\// g grid(2)
+        \\a
+        \\// --
+        \\b
+        \\// end g
+        \\
+        \\// end box
+    , .empty);
+    const d2_inner = d2.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expectEqual(@as(usize, 2), d2_inner.columns.?);
+    try testing.expectEqual(@as(usize, 0), d2.warnings.len);
+}
+
+test "layout-level rule is per-command: a command nested under itself is stripped" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // skinny in skinny: inner stripped
+    const d1 = try parse(arena_state.allocator(),
+        \\// box skinny(80%)
+        \\
+        \\// inner skinny(50%)
+        \\a
+        \\// end
+        \\
+        \\// end box
+    , .empty);
+    const d1_inner = d1.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expect(d1_inner.width_pct == null);
+    try testing.expectEqual(@as(usize, 1), d1.warnings.len);
+    try testing.expectEqualStrings(
+        "group 'inner': skinny ignored (already inside a skinny)",
+        d1.warnings[0],
+    );
+    // the counter sees any open ancestor, not just the parent:
+    // skinny > grid > skinny strips the innermost skinny
+    const d2 = try parse(arena_state.allocator(),
+        \\// box skinny(80%)
+        \\
+        \\// g grid(2)
+        \\
+        \\// deep skinny(50%)
+        \\a
+        \\// end deep
+        \\
+        \\// --
+        \\b
+        \\// end g
+        \\
+        \\// end box
+    , .empty);
+    const deep = d2.blocks[0].kind.group // box
+        .sections[0][0].kind.group // g
+        .sections[0][0].kind.group; // deep
+    try testing.expect(deep.width_pct == null);
+    try testing.expectEqual(@as(usize, 1), d2.warnings.len);
+    try testing.expectEqualStrings(
+        "group 'deep': skinny ignored (already inside a skinny)",
+        d2.warnings[0],
+    );
+}
+
+test "layout-level rule: mixed opener strips only the colliding command" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\// outer grid(2)
+        \\
+        \\// inner grid(2) skinny(50%)
+        \\a
+        \\// --
+        \\b
+        \\// end inner
+        \\
+        \\// --
+        \\
+        \\c
+        \\
+        \\// end outer
+    , .empty);
+    const inner = doc.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expect(inner.columns == null);
+    try testing.expectEqual(@as(usize, 50), inner.width_pct.?);
+    try testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try testing.expectEqualStrings(
+        "group 'inner': grid ignored (already inside a grid)",
+        doc.warnings[0],
+    );
+}
+
+test "layout-level rule: counters unwind when a group closes" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // a grid *after* a closed grid group is a sibling, not a nesting
+    const doc = try parse(arena_state.allocator(),
+        \\// one grid(2)
+        \\a
+        \\// --
+        \\b
+        \\// end one
+        \\
+        \\// two grid(2)
+        \\c
+        \\// --
+        \\d
+        \\// end two
+    , .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try testing.expectEqual(@as(usize, 2), doc.blocks[0].kind.group.columns.?);
+    try testing.expectEqual(@as(usize, 2), doc.blocks[1].kind.group.columns.?);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+}
+
+test "layout commands inside a plain named group still apply" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\// wrapper
+        \\
+        \\// g grid(2)
+        \\a
+        \\// --
+        \\b
+        \\// end g
+        \\
+        \\// end wrapper
+    , .empty);
+    const wrapper = doc.blocks[0].kind.group;
+    try testing.expect(wrapper.columns == null);
+    const inner = wrapper.sections[0][0].kind.group;
+    try testing.expectEqual(@as(usize, 2), inner.columns.?);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+}
+
+test "skinny command: on groups, with grid, and bare default" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// box skinny(50%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 50), d1.blocks[0].kind.group.width_pct.?);
+    const d2 = try parse(arena_state.allocator(), "// skinny()\n\npara", .empty);
+    try testing.expectEqualStrings("", d2.blocks[0].kind.group.name);
+    try testing.expectEqual(@as(usize, 75), d2.blocks[0].kind.group.width_pct.?);
+    const d3 = try parse(arena_state.allocator(), "// g grid(2) skinny(80%)\na\n// --\nb\n// end", .empty);
+    try testing.expectEqual(@as(usize, 2), d3.blocks[0].kind.group.columns.?);
+    try testing.expectEqual(@as(usize, 80), d3.blocks[0].kind.group.width_pct.?);
+    try testing.expectEqual(@as(usize, 0), d3.warnings.len);
+}
+
+test "skinny command: malformed args deactivate the line" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    for ([_][]const u8{ "// g skinny(50)", "// g skinny(0%)", "// g skinny(150%)", "// g skinny(x%)" }) |src| {
+        const doc = try parse(arena_state.allocator(), src, .empty);
+        try testing.expect(doc.blocks[0].kind == .paragraph);
+    }
+}
+
+test "single command: applies to the very next content element" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "/skinny(50%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const group = doc.blocks[0].kind.group;
+    try testing.expectEqualStrings("", group.name);
+    try testing.expectEqual(@as(usize, 50), group.width_pct.?);
+    try testing.expectEqual(@as(usize, 1), group.sections.len);
+    try testing.expectEqual(@as(usize, 1), group.sections[0].len);
+    try testing.expect(group.sections[0][0].kind == .paragraph);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+}
+
+test "single command: /grid on one element applies but warns" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "/grid(2)\npara", .empty);
+    try testing.expectEqual(@as(usize, 2), doc.blocks[0].kind.group.columns.?);
+    try testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try testing.expectEqualStrings("single command: grid(2) but 1 element", doc.warnings[0]);
+}
+
+test "single command: with nothing to bind to it stays prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // EOF next
+    const d1 = try parse(arena_state.allocator(), "/skinny(50%)", .empty);
+    try testing.expect(d1.blocks[0].kind == .paragraph);
+    // a group opener next
+    const d2 = try parse(arena_state.allocator(), "/skinny(50%)\n\n// g grid(2)\na\n// --\nb\n// end", .empty);
+    try testing.expectEqual(@as(usize, 2), d2.blocks.len);
+    try testing.expect(d2.blocks[0].kind == .paragraph);
+    try testing.expect(d2.blocks[1].kind == .group);
+    // another single-command line next: no stacking
+    const d3 = try parse(arena_state.allocator(), "/skinny(50%)\n/skinny(60%)\npara", .empty);
+    try testing.expectEqual(@as(usize, 2), d3.blocks.len);
+    try testing.expect(d3.blocks[0].kind == .paragraph);
+    try testing.expectEqual(@as(usize, 60), d3.blocks[1].kind.group.width_pct.?);
+}
+
+test "single command: prose slash lines stay prose and never interrupt" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "/usr/bin/env foo", .empty);
+    try testing.expect(d1.blocks[0].kind == .paragraph);
+    // a prose slash line keeps soft-wrapping into the open paragraph
+    const d2 = try parse(arena_state.allocator(), "text\n/usr/bin/env", .empty);
+    try testing.expectEqual(@as(usize, 1), d2.blocks.len);
+    // a clean command line does interrupt
+    const d3 = try parse(arena_state.allocator(), "text\n/skinny(50%)\npara", .empty);
+    try testing.expectEqual(@as(usize, 2), d3.blocks.len);
+    try testing.expect(d3.blocks[0].kind == .paragraph);
+    try testing.expect(d3.blocks[1].kind == .group);
+}
+
+test "single command inside a grid group: a different command still applies" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// g grid(2)\n/skinny(50%)\na\n// --\nb\n// end", .empty);
+    const outer = doc.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 2), outer.sections.len);
+    const wrapped = outer.sections[0][0].kind.group;
+    try testing.expectEqual(@as(usize, 50), wrapped.width_pct.?);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+}
+
+test "single command inside a laid-out group: the same command is dropped" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "// box skinny(80%)\n/skinny(50%)\na\n// end", .empty);
+    const wrapped = doc.blocks[0].kind.group.sections[0][0].kind.group;
+    try testing.expect(wrapped.width_pct == null);
+    try testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try testing.expectEqualStrings(
+        "single command: skinny ignored (already inside a skinny)",
+        doc.warnings[0],
+    );
 }
 
 test "group directive: unclean // lines stay prose" {

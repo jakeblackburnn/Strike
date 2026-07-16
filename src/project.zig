@@ -781,31 +781,23 @@ test "root main.md with loose docs joins the root project as its home" {
     try testing.expectEqual(@as(usize, 1), p.docs.len); // hello.md only
 }
 
-test "header: loads .sxh sheets, project layered over site" {
+test "header: loads .sxh sheets at site and project scope" {
+    // The directive namespace is reserved, so sheets carry nothing yet — this
+    // pins the plumbing: both scopes' headers load without erroring, and the
+    // `.sxh` files never become documents.
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "strike.yaml", .data = "header: site.sxh\n" });
-    try tmp.dir.writeFile(testing.io, .{
-        .sub_path = "site.sxh",
-        .data = ":color brand #111111\n:color soft #9aa4b2\n",
-    });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "site.sxh", .data = "reserved for typography\n" });
     try tmp.dir.createDirPath(testing.io, "blog");
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/strike.yaml", .data = "header: theme.sxh\n" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/theme.sxh", .data = ":color brand #222222\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/theme.sxh", .data = "reserved for typography\n" });
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/post.md", .data = "# Post\n" });
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const site = try load(testing.io, arena.allocator(), tmp.dir);
-
-    // site sheet holds the site header's aliases
-    try testing.expectEqualStrings("#111111", site.sheet.lookup("brand").?);
-    // the project's own header wins for redefined names, site fills the rest
-    const blog = site.projects[0];
-    try testing.expectEqualStrings("#222222", blog.sheet.lookup("brand").?);
-    try testing.expectEqualStrings("#9aa4b2", blog.sheet.lookup("soft").?);
-    // the .sxh files never become documents
-    try testing.expectEqual(@as(usize, 1), blog.docs.len);
+    try testing.expectEqual(@as(usize, 1), site.projects[0].docs.len);
 }
 
 test "a missing header degrades to an empty sheet" {
@@ -818,7 +810,7 @@ test "a missing header degrades to an empty sheet" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const site = try load(testing.io, arena.allocator(), tmp.dir);
-    try testing.expect(site.projects[0].sheet.lookup("brand") == null);
+    try testing.expectEqual(@as(usize, 1), site.projects[0].docs.len);
 }
 
 test "main.sx beats main.md" {
