@@ -735,6 +735,31 @@ test "single command wraps the next content element" {
     try expectRender("<p>/skinny(50%)</p>\n", "/skinny(50%)");
 }
 
+test "chained single commands nest and apply to the next content element" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:75%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\" style=\"color:var(--accent)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>heres some skinny colored test</p>\n</div>\n</div>\n" ++
+            "</div>\n</div>\n",
+        "/skinny()\n/color(accent)\nheres some skinny colored test",
+    );
+    // a repeated layout command in the chain still hits the layout-level
+    // rule: the inner one is stripped and warned, same as two nested groups
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:50%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n" ++
+            "</div>\n</div>\n",
+        "/skinny(50%)\n/skinny(60%)\na",
+    );
+    // a chain that never reaches a content element reverts to prose
+    try expectRender(
+        "<p>/skinny(50%)</p>\n<p>/color(accent)</p>\n",
+        "/skinny(50%)\n/color(accent)",
+    );
+}
+
 test "a command nested under itself renders the structure without the layout" {
     try expectRender(
         "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++

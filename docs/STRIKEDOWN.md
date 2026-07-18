@@ -93,9 +93,16 @@ element**, as if that one element were a nameless one-section group.
 
 - `//` is checked first; a second `/` always means the group family.
 - **Activation**: the command must parse cleanly *and* a content element
-  must follow (blank lines skipped). At end-of-document, or with another
-  directive next, the line is inert prose — so `/` lines never stack.
-- The layout-level rule applies as if the wrapper were a group.
+  must follow (blank lines skipped). At end-of-document, or with a live
+  `//`/`:` directive next, the line is inert prose.
+- **Chaining**: consecutive `/command()` lines apply to the same next
+  content element, nesting innermost-last — `/skinny() /color(accent) text`
+  is the nested-group form `// skinny()` → `// color(accent)` → text without
+  the ceremony. A chain that never reaches a content element (EOF or a
+  `//`/`:` directive at its end) reverts entirely to prose.
+- The layout-level rule applies as if the wrapper were a group — including
+  across a chain, so `/skinny() /skinny() text` strips and warns on the
+  inner one exactly as two nested `// skinny()` groups would.
 
 ### Alias directives — `:` (reserved)
 

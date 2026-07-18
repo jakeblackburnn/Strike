@@ -552,15 +552,19 @@ const Parser = struct {
     /// Apply a single-command directive: wrap the very next content element
     /// in an anonymous one-section group — the same tree node and emitter
     /// path as `//` groups. Returns null (the line stays prose) when there is
-    /// nothing to bind to: EOF, or any directive line next.
+    /// nothing to bind to: EOF, or a `:`/`//` directive next. A chain of
+    /// `/command()` lines recurses — each wraps the next, down to the
+    /// eventual content element — so `/skinny() /color(accent) text` nests
+    /// exactly as the equivalent nested groups would (layout-level rule and
+    /// all: a repeated layout command in the chain still strips and warns).
     fn parseSingleCommand(p: *Parser, cmd: Command) Allocator.Error!?Block {
         const arena = p.arena;
+        const saved_idx = p.idx;
         var j = p.idx + 1;
         while (j < p.lines.len and isBlank(p.lines[j])) j += 1;
         if (j >= p.lines.len) return null;
         const nt = std.mem.trimStart(u8, p.lines[j], " ");
-        if (parseSingleCommandLine(nt) != null or p.isGroupInterrupt(nt) or
-            sheet.parseLine(nt) != null) return null;
+        if (p.isGroupInterrupt(nt) or sheet.parseLine(nt) != null) return null;
 
         var attrs: GroupLine.Open = .{ .name = "" };
         applyCommand(&attrs, cmd);
@@ -577,7 +581,17 @@ const Parser = struct {
         p.idx = j;
         p.enterLayout(attrs);
         defer p.exitLayout(attrs);
-        const inner = try p.parseBlock(nt);
+        // A chained `/command()` line binds recursively; if the chain never
+        // reaches a content element (EOF/directive at its end), the whole
+        // thing reverts to prose — restore `idx` so the caller re-parses
+        // this line as such, rather than resuming mid-chain.
+        const inner = if (parseSingleCommandLine(nt)) |next_cmd|
+            (try p.parseSingleCommand(next_cmd)) orelse {
+                p.idx = saved_idx;
+                return null;
+            }
+        else
+            try p.parseBlock(nt);
 
         const section = try arena.alloc(Block, 1);
         section[0] = inner;
@@ -1766,11 +1780,40 @@ test "single command: with nothing to bind to it stays prose" {
     try testing.expectEqual(@as(usize, 2), d2.blocks.len);
     try testing.expect(d2.blocks[0].kind == .paragraph);
     try testing.expect(d2.blocks[1].kind == .group);
-    // another single-command line next: no stacking
-    const d3 = try parse(arena_state.allocator(), "/skinny(50%)\n/skinny(60%)\npara", .empty);
+    // a chain that never reaches a content element (EOF at its end) reverts
+    // entirely to prose — each line its own paragraph (the accepted
+    // paragraph-interruption quirk), and parsing doesn't get stuck mid-chain.
+    const d3 = try parse(arena_state.allocator(), "/skinny(50%)\n/color(accent)", .empty);
     try testing.expectEqual(@as(usize, 2), d3.blocks.len);
     try testing.expect(d3.blocks[0].kind == .paragraph);
-    try testing.expectEqual(@as(usize, 60), d3.blocks[1].kind.group.width_pct.?);
+    try testing.expect(d3.blocks[1].kind == .paragraph);
+}
+
+test "single command: a chain applies to the next content element" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "/skinny(50%)\n/color(accent)\npara", .empty);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    const outer = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 50), outer.width_pct.?);
+    try testing.expectEqual(@as(usize, 1), outer.sections.len);
+    try testing.expectEqual(@as(usize, 1), outer.sections[0].len);
+    const inner = outer.sections[0][0].kind.group;
+    try testing.expectEqual(TextColor.accent, inner.text_color.?);
+    try testing.expectEqual(@as(usize, 1), inner.sections.len);
+    try testing.expectEqual(@as(usize, 1), inner.sections[0].len);
+    try testing.expect(inner.sections[0][0].kind == .paragraph);
+
+    // A repeated layout command in the chain still hits the layout-level
+    // rule: the inner `skinny` is stripped and warned, exactly as it would
+    // be nested two `//` groups deep.
+    const d2 = try parse(arena_state.allocator(), "/skinny(50%)\n/skinny(60%)\npara", .empty);
+    try testing.expectEqual(@as(usize, 1), d2.blocks.len);
+    const outer2 = d2.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 50), outer2.width_pct.?);
+    const inner2 = outer2.sections[0][0].kind.group;
+    try testing.expect(inner2.width_pct == null);
+    try testing.expect(std.mem.indexOf(u8, d2.warnings[0], "skinny ignored") != null);
 }
 
 test "single command: prose slash lines stay prose and never interrupt" {

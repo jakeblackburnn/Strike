@@ -1,4 +1,5 @@
 # Strike Documentation
+this doc is not for AI to edit. 
 
 these docs are largely AI generated serving as project memory. 
 
@@ -17,5 +18,20 @@ docs
 ├── [strike.yaml](STRIKE_YAML.md)
 ├── [strikedown](STRIKEDOWN.md)
 └── [ui](UI.md)
+
+
+## v0.0.7 
+- fix single command chains
+
+## v0.1.0 scope 
+think about how to clarify the internal model of the document and terminology
+think about how to refactor for future changes 
+
+- deepen test suite
+- deep refactor
+
+## ideas for future changes 
+
+element-type-specific commands, e.g.,  // ###.color(accent)
 
 
