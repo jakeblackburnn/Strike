@@ -266,6 +266,43 @@ test "empty and missing" {
     try testing.expect(v.getList("nope") == null);
 }
 
+test "malformed: duplicate keys both parse; get returns the first" {
+    const v = try parse(testing.allocator, "title: first\ntitle: second\n");
+    defer free(testing.allocator, v);
+    try testing.expectEqualStrings("first", v.getScalar("title").?);
+    try testing.expectEqual(@as(usize, 2), v.map.len);
+}
+
+test "malformed: tabs are not indentation — a tab-indented child reads as top level" {
+    const v = try parse(testing.allocator, "serve:\n\tport: 9000\n");
+    defer free(testing.allocator, v);
+    // `port` never nests under `serve` (leftSpace counts spaces only); the
+    // tab is trimmed from the key, so it surfaces as a sibling.
+    try testing.expectEqualStrings("", v.getScalar("serve").?);
+    try testing.expectEqualStrings("9000", v.getScalar("port").?);
+}
+
+test "malformed: fail-soft truncation, never an error" {
+    // A stray deeper line after a scalar value is dropped, and a colon-less
+    // line stops the current map — everything after it is skipped.
+    const v1 = try parse(testing.allocator, "a: 1\n  b: 2\n");
+    defer free(testing.allocator, v1);
+    try testing.expectEqualStrings("1", v1.getScalar("a").?);
+    try testing.expect(v1.get("b") == null);
+
+    const v2 = try parse(testing.allocator, "a: 1\njunk line\nb: 2\n");
+    defer free(testing.allocator, v2);
+    try testing.expectEqualStrings("1", v2.getScalar("a").?);
+    try testing.expect(v2.get("b") == null);
+}
+
+test "malformed: a sequence under a scalar value is dropped" {
+    const v = try parse(testing.allocator, "key: val\n  - x\n");
+    defer free(testing.allocator, v);
+    try testing.expectEqualStrings("val", v.getScalar("key").?);
+    try testing.expect(v.getList("key") == null);
+}
+
 /// Recursively free a tree allocated by `parse` (test helper; production code
 /// uses an arena instead).
 fn free(gpa: Allocator, v: Value) void {

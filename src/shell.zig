@@ -121,49 +121,73 @@ const head_pre_d =
 const fall_morning =
     \\    color-scheme: light;
     \\    --bg: #faf6ef; --fg: #3d2f23; --muted: #8a7360; --accent: #d97a2b;
+    \\    --warn: #b0432f;
     \\    --code-bg: rgba(120,90,60,.12); --border: rgba(120,90,60,.28);
+    \\    --collapse-closed-bg: rgba(120,90,60,.14); --collapse-open-bg: var(--bg);
+    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
     \\    --sidebar-bg: #f3ead9;
 ;
 const fall_evening =
     \\    color-scheme: dark;
     \\    --bg: #16211a; --fg: #e6e4d6; --muted: #a3a888; --accent: #a8b968;
+    \\    --warn: #e0b568;
     \\    --code-bg: rgba(255,255,255,.07); --border: rgba(168,185,104,.25);
+    \\    --collapse-closed-bg: rgba(0,0,0,.25); --collapse-open-bg: rgba(255,255,255,.05);
+    \\    --collapse-shadow: none;
     \\    --sidebar-bg: #101a14;
 ;
 const winter_morning =
     \\    color-scheme: light;
     \\    --bg: #ffffff; --fg: #1d2a3a; --muted: #5b6b7f; --accent: #4a9edb;
+    \\    --warn: #c07a1e;
     \\    --code-bg: rgba(90,130,170,.12); --border: rgba(90,130,170,.30);
+    \\    --collapse-closed-bg: rgba(90,130,170,.14); --collapse-open-bg: var(--bg);
+    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
     \\    --sidebar-bg: #f2f7fc;
 ;
 const winter_evening =
     \\    color-scheme: dark;
     \\    --bg: #0d1626; --fg: #dce7f5; --muted: #8fa3c0; --accent: #7fb2ff;
+    \\    --warn: #f0b45c;
     \\    --code-bg: rgba(255,255,255,.08); --border: rgba(220,231,245,.16);
+    \\    --collapse-closed-bg: rgba(0,0,0,.28); --collapse-open-bg: rgba(255,255,255,.06);
+    \\    --collapse-shadow: none;
     \\    --sidebar-bg: #0a111e;
 ;
 const spring_morning =
     \\    color-scheme: light;
     \\    --bg: #fdf3f6; --fg: #43324a; --muted: #8b7392; --accent: #8a6fd1;
+    \\    --warn: #bf5f2a;
     \\    --code-bg: rgba(150,110,180,.12); --border: rgba(150,110,180,.26);
+    \\    --collapse-closed-bg: rgba(150,110,180,.14); --collapse-open-bg: var(--bg);
+    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
     \\    --sidebar-bg: #f6ecf9;
 ;
 const spring_evening =
     \\    color-scheme: dark;
     \\    --bg: #23262a; --fg: #e2e6e0; --muted: #9aa79b; --accent: #cf6fa3;
+    \\    --warn: #e0a35c;
     \\    --code-bg: rgba(255,255,255,.08); --border: rgba(207,111,163,.22);
+    \\    --collapse-closed-bg: rgba(0,0,0,.25); --collapse-open-bg: rgba(255,255,255,.06);
+    \\    --collapse-shadow: none;
     \\    --sidebar-bg: #1b1e21;
 ;
 const summer_morning =
     \\    color-scheme: light;
     \\    --bg: #fbf3d9; --fg: #2c3a2c; --muted: #8a8560; --accent: #5a9c3f;
+    \\    --warn: #b3572d;
     \\    --code-bg: rgba(90,130,60,.12); --border: rgba(90,130,60,.28);
+    \\    --collapse-closed-bg: rgba(90,130,60,.14); --collapse-open-bg: var(--bg);
+    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
     \\    --sidebar-bg: #f5e9bd;
 ;
 const summer_evening =
     \\    color-scheme: dark;
     \\    --bg: #170c0e; --fg: #ead9d9; --muted: #a88b8b; --accent: #c96a6a;
+    \\    --warn: #e0a95c;
     \\    --code-bg: rgba(255,255,255,.07); --border: rgba(234,217,217,.14);
+    \\    --collapse-closed-bg: rgba(0,0,0,.30); --collapse-open-bg: rgba(255,255,255,.05);
+    \\    --collapse-shadow: none;
     \\    --sidebar-bg: #120809;
 ;
 
@@ -220,7 +244,37 @@ const head_post_a =
     \\    margin: 1rem 0; padding: .25rem 1rem;
     \\    border-left: 4px solid var(--border); color: var(--muted);
     \\  }
+    \\  /* Alerts (009-alerts): typed blockquotes read as content, not asides.
+    \\     Informational types take the accent, urgent ones the warn hue. */
+    \\  blockquote.sx-alert { color: var(--fg); border-left-color: var(--accent); }
+    \\  .sx-alert-title { font-weight: 600; color: var(--accent); margin: .25rem 0; }
+    \\  .sx-alert-warning, .sx-alert-caution, .sx-alert-todo { border-left-color: var(--warn); }
+    \\  .sx-alert-warning .sx-alert-title, .sx-alert-caution .sx-alert-title, .sx-alert-todo .sx-alert-title { color: var(--warn); }
+    \\  .sx-alert-important, .sx-alert-question { border-left-color: var(--fg); }
+    \\  .sx-alert-important .sx-alert-title, .sx-alert-question .sx-alert-title { color: var(--fg); }
     \\  a { color: var(--accent); }
+    \\  ul.sx-plain { list-style: none; padding-left: 0; }
+    \\  /* Collapsible groups (007-collapse): the whole summary — the group's
+    \\     leader element — is the hitbox, with the nav-folder arrow. The whole
+    \\     details is one card whose background tracks focus: recessed (darker
+    \\     tint) while collapsed. Open state can't reliably read as "lighter
+    \\     than the page" (there's nowhere lighter to go on a light theme), so
+    \\     it drops the tint back to the page background and pops via
+    \\     `--collapse-shadow` instead (a real shadow on light themes, `none`
+    \\     on dark ones — a light fill already reads as emphasized there).
+    \\     Negative horizontal margin keeps the leader text aligned with the
+    \\     body column; the summary mirrors it so its own hover highlight
+    \\     (making the hitbox legible) bleeds to the same card edges. */
+    \\  .sx-collapse { background: var(--collapse-closed-bg); border-radius: 8px; padding: .35rem .75rem; margin: 1rem -.75rem; transition: background .15s ease, box-shadow .15s ease; }
+    \\  .sx-collapse[open] { background: var(--collapse-open-bg); box-shadow: var(--collapse-shadow, none); }
+    \\  .sx-collapse > summary { cursor: pointer; list-style: none; margin: -.35rem -.75rem; padding: .35rem .75rem; border-radius: 8px; transition: background .15s ease; text-indent: 0; }
+    \\  .sx-collapse > summary:hover { background: rgba(0,0,0,.07); }
+    \\  .sx-collapse > summary:hover::before { color: var(--accent); }
+    \\  .sx-collapse > summary::-webkit-details-marker { display: none; }
+    \\  .sx-collapse > summary::before { content: "\25B8"; display: inline-block; width: 1em; color: var(--muted); transition: transform .12s; }
+    \\  .sx-collapse[open] > summary::before { transform: rotate(90deg); }
+    \\  .sx-collapse > summary > * { display: inline; }
+    \\  .sx-collapse > summary.sx-collapse-bar { display: block; min-height: 1.6em; }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     \\  .sidebar {
     \\    position: fixed; top: 0; left: 0; width: 14rem; height: 100vh;
@@ -555,6 +609,19 @@ test "wrapPage emits sidebar, settings panel and content body" {
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"time\")") != null);
 }
 
+test "collapse summary resets text-indent so an ancestor indent() never reaches the arrow" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .repo_url = "", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    // A `// indent()` group wrapping a `// collapse()` group inherits
+    // text-indent onto <details>/<summary> via plain CSS inheritance (the
+    // groups nest, so there is no shared Attrs to guard in the emitter);
+    // the summary rule must reset it back to 0 so the disclosure arrow
+    // never shifts into the leader text.
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-collapse > summary { cursor: pointer; list-style: none; margin: -.35rem -.75rem; padding: .35rem .75rem; border-radius: 8px; transition: background .15s ease; text-indent: 0; }") != null);
+}
+
 test "standalone shell has no nav and no repo link" {
     const shell = standalone("My Doc");
     const page = try wrapPage(std.testing.allocator, shell, "<p>hi</p>\n");
@@ -573,4 +640,23 @@ test "empty repo_url omits the repo-link anchor entirely" {
     // The stylesheet still defines the `.repo-link` class either way; what must
     // be absent is the anchor element itself.
     try std.testing.expect(std.mem.indexOf(u8, page, "<a class=\"repo-link\"") == null);
+}
+
+test "wrapPage wires the pre-paint theme bootstrap and never the reload script" {
+    const sh: Shell = .{
+        .title = "T",
+        .brand = "B",
+        .home_href = "/",
+        .repo_url = "",
+        .nav_html = "",
+    };
+    const page = try wrapPage(std.testing.allocator, sh, "<p>x</p>\n");
+    defer std.testing.allocator.free(page);
+    // The head bootstrap restores season/time before first paint.
+    try std.testing.expect(std.mem.indexOf(u8, page, "data-season") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "data-time") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage") != null);
+    // The live-reload script is spliced in server.zig only — a wrapped page
+    // (what static export emits) must never contain it.
+    try std.testing.expect(std.mem.indexOf(u8, page, reload_script) == null);
 }

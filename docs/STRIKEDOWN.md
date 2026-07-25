@@ -133,10 +133,53 @@ creating a layout element and never counts under the rule.
 | `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/design/003-skinny.md`)* |
 | `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/design/005-center.md`) |
 | `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/design/006-color.md`) |
+| `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/design/007-collapse.md`) |
+| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/design/011-indent.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `grid(0)`, `center(5)`,
-`color(red)`, `glow(5)` all leave their line as prose.
+`color(red)`, `collapse(true)`, `indent(x)`, `glow(5)` all leave their line
+as prose.
+
+### Collapsible groups
+
+A group carrying `collapse()` folds away behind its **leader** until the
+reader opens it; `collapse(open)` arrives already open. The leader is the
+group's first content element — it never folds, it always carries an
+open/close indicator, and the whole element is the control. A group with at
+most one content element has no leader to show: it renders an anonymous
+**empty bar** (indicator only) and folds everything beneath it. Other
+commands on the same group apply to the *folded body*, not the leader.
+Open/closed state belongs to the reading, not the document — nothing
+persists. `collapse` is a layout command, so collapsible groups do not nest
+(the layout-level rule strips the inner `collapse` with a warning), and
+renderers without interactivity (print, PDF) show collapsible groups
+expanded.
+
+### Indentation
+
+`indent(n)` insets a block's own first line only — normal typographic tab
+indentation, not a margin shift: the rest of a wrapped paragraph stays flush
+against the body's left edge. On a group, the same command indents *each*
+content element inside it (every paragraph, heading, etc. gets its own
+first-line inset), not the group as a single shifted box — the HTML backend
+achieves this by emitting the indent as CSS `text-indent` once on the
+wrapper, an inherited, first-line-only property that reaches every
+descendant block independently.
+
+A **tab prefix** — one or more literal tab characters at column 0 of a
+content line — is sugar for the same data: the tabs are stripped and the
+block they start carries the equivalent `indent(n)`, one step per tab. It
+starts a new block (breaking a preceding paragraph, ending quote lazy
+continuation) exactly like any other block-starting form. Tabs count only at
+column 0; a tab before a list marker stays list-nesting, and a tab before a
+directive line (`//`, `/cmd()`, `:`) leaves the line inert prose — both
+already mean something else. Space-led lines are unaffected either way.
+
+`indent` is non-layout: nesting *scopes* rather than stacks — an inner
+`indent(n)` overrides the inherited value for its own subtree, the same
+inner-wins cascade `color` uses, so indents never count under the
+layout-level rule and nest freely.
 
 ### Color roles and the inline color span
 
@@ -189,9 +232,21 @@ spec for closing them.
   paragraphs within the quote; a plain line directly after a `>` line
   **lazily continues** the open quote paragraph. A blank line — or any line
   starting a new block form — ends the quote.
+- **Alerts** — a blockquote whose *first* content is `[!TYPE]` becomes a
+  callout titled by its type: `NOTE`, `TIP`, `IMPORTANT`, `WARNING`,
+  `CAUTION` (GFM's five) plus `TODO`, `EXAMPLE`, `QUESTION` (superset),
+  matched case-insensitively. Text after the marker on its line starts the
+  first paragraph (superset — GFM wants the marker alone); everything else
+  follows normal blockquote rules. An unknown type is no marker: the quote
+  stays plain and the text literal. (`docs/design/009-alerts.md`)
 - **Lists** — unordered (`-`/`*`/`+`) and ordered (`1.`), nested by
   indentation (≥ 2 columns), `[ ]`/`[x]` task boxes. A plain line — indented
   or not — **lazily continues** the open item (the same rule as quotes).
+  A **raw list** (superset) uses the `. ` marker: unordered, rendered with
+  no visible marker; otherwise a full list (nesting, task boxes, the rules
+  below). Marker kinds never mix at one level — a `. ` item beside a `- `
+  item starts a sibling list, the same split ordered vs unordered makes.
+  (`docs/design/008-raw-lists.md`)
   Blank lines between items do **not** end the list: after a blank, a marker
   that continues it (a sibling of the same orderedness, or a nested item)
   resumes; anything else ends it. Rendering stays tight regardless of blank
@@ -270,6 +325,49 @@ secondary text; the [key point].color(accent) still pops
 // end aside
 ```
 
+A collapsed FAQ entry — the question stays visible, the answer folds:
+
+```
+// faq collapse()
+
+**What is strikedown?**
+
+A typography-first superset of markdown.
+
+// end faq
+```
+
+A raw list — three markerless lines that stay a list:
+
+```
+. one
+. two
+. three
+```
+
+An indented group — each paragraph gets its own first-line inset, not the
+group as a whole:
+
+```
+// aside indent()
+
+first paragraph
+
+second paragraph
+
+// end aside
+```
+
+An alert, long form and the same-line superset form:
+
+```
+> [!NOTE]
+> body line one
+> body line two
+
+> [!warning] one-liner body
+```
+
 A merged, lazily-continued quote (two paragraphs):
 
 ```
@@ -290,8 +388,15 @@ Degradation — every line below is an ordinary paragraph:
 /usr/bin/env foo            (not a command: no parens)
 /skinny(50%) extra          (trailing text)
 /color(red)                 (unknown color role)
+/collapse(true)             (unknown collapse argument)
+/indent(x)                  (unknown indent argument)
 [x].color(bright)           (inline near-miss: unknown role → literal text)
 [z](https://z.dev).color(muted)   (the link wins its `[`; postfix is prose)
 :thin-grid grid(2) skinny(80%)   (reserved namespace, nothing defined yet)
 (name)# not a heading       (retired prefix: plain prose)
+.item                       (no space after the dot: not a raw-list marker)
 ```
+
+And two quote-shaped near-misses: `> [!IDEA] hm` is a plain blockquote with
+literal text (unknown type), as is a `[!NOTE]` appearing anywhere but the
+quote's first content.

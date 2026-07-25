@@ -8,12 +8,17 @@
 //! prefix were removed pending a design that fits the strikedown = content /
 //! strike = rendering-style split; see git history at 0.0.2.)
 //!
-//! The plumbing stays wired so typography can return as data, not plumbing
-//! work: `strike.yaml`'s `header:` still loads `.sxh` files (project layered
-//! over site, see `project.zig`) and seeds every document's working sheet. A
-//! future directive grows the `Directive` union and `Sheet` fields here, an
-//! attribute on the tree node it styles, and the emitter arm that reads it —
-//! never an emitter special case keyed on content.
+//! The plumbing stays wired so the namespace can return as data, not
+//! plumbing work: `strike.yaml`'s `header:` still loads `.sxh` files
+//! (project layered over site, see `project.zig`) and seeds every document's
+//! working sheet. The intended direction is **command aliases**
+//! (`:thin-grid grid(2) skinny(80%)` defines `thin-grid`; `// thin-grid`
+//! uses it): a `Sheet` maps alias names to raw command tokens, and
+//! strikedown expands a reference by feeding those tokens through the
+//! existing `parseCommand`/`applyCommand` → `Attrs` path — aliases resolve
+//! to commands and ride the command → attribute → emitter pipeline, adding
+//! zero new attribute plumbing and never an emitter special case keyed on
+//! content.
 //!
 //! Fail-soft, like `yaml.zig`: a line that doesn't parse as a known directive
 //! is simply not a directive (in a document it stays prose; in a `.sxh` it is

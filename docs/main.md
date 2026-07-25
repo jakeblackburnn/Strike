@@ -20,18 +20,21 @@ docs
 └── [ui](UI.md)
 
 
-## v0.0.7 
+## v0.0.7 (done)
 - fix single command chains
 
 ## v0.1.0 scope 
 think about how to clarify the internal model of the document and terminology
 think about how to refactor for future changes 
+document this ^^^
 
 - deepen test suite
 - deep refactor
 
 ## ideas for future changes 
-
 element-type-specific commands, e.g.,  // ###.color(accent)
-
+more commands in general, more layout options and more styling options
+more ability to control groups via alias definitions and sxh header files
+improvements and more features for the UI 
+more project management features
 

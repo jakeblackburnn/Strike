@@ -554,3 +554,104 @@ test "fingerprint is deterministic and moves when a file changes" {
     hashDir(testing.io, &h3, tmp.dir);
     try testing.expect(h1.final() != h3.final());
 }
+
+test "classifyTarget: extension and existence decide file vs dir" {
+    // No .md/.sx extension: always a dir, no stat needed.
+    try testing.expect(classifyTarget(testing.io, "somedir") == .dir);
+    // Right extension but nothing on disk: falls back to dir.
+    try testing.expect(classifyTarget(testing.io, "missing.md") == .dir);
+    // An existing .md file classifies as a single-file target.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.md", .data = "# A\n" });
+    var buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}/a.md", .{&tmp.sub_path});
+    try testing.expect(classifyTarget(testing.io, path) == .file);
+}
+
+test "buildRoutes + lookupRoute: cached responses; reload script only in watch mode" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "doc.md", .data = "# Hello\n" });
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const loaded = try project.loadFile(testing.io, a, tmp.dir, "doc.md");
+
+    var routes: std.ArrayList(Route) = .empty;
+    try buildRoutes(a, &routes, loaded, false);
+    const resp = lookupRoute(routes.items, "/").?;
+    try testing.expect(std.mem.startsWith(u8, resp, "HTTP/1.0 200 OK\r\n"));
+    try testing.expect(std.mem.indexOf(u8, resp, "Hello") != null);
+    // Static serving never carries the reload script (serve-only splice).
+    try testing.expect(std.mem.indexOf(u8, resp, shell.reload_script) == null);
+    try testing.expect(lookupRoute(routes.items, "/nope") == null);
+
+    var watch_routes: std.ArrayList(Route) = .empty;
+    try buildRoutes(a, &watch_routes, loaded, true);
+    const watched = lookupRoute(watch_routes.items, "/").?;
+    try testing.expect(std.mem.indexOf(u8, watched, shell.reload_script) != null);
+}
+
+test "serveAsset: known extensions only, traversal rejected, misses fall through" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "pix.png", .data = "PNGDATA" });
+
+    const resp = (try serveAsset(testing.allocator, testing.io, tmp.dir, "/pix.png")).?;
+    defer testing.allocator.free(resp);
+    try testing.expect(std.mem.startsWith(u8, resp, "HTTP/1.0 200 OK\r\n"));
+    try testing.expect(std.mem.indexOf(u8, resp, "Content-Type: image/png\r\n") != null);
+    try testing.expect(std.mem.endsWith(u8, resp, "\r\n\r\nPNGDATA"));
+
+    // `..` and empty segments are rejected before any read.
+    try testing.expect((try serveAsset(testing.allocator, testing.io, tmp.dir, "/../pix.png")) == null);
+    try testing.expect((try serveAsset(testing.allocator, testing.io, tmp.dir, "//pix.png")) == null);
+    // Unknown extension and missing file both fall through to the 404 path.
+    try testing.expect((try serveAsset(testing.allocator, testing.io, tmp.dir, "/doc.md")) == null);
+    try testing.expect((try serveAsset(testing.allocator, testing.io, tmp.dir, "/missing.png")) == null);
+}
+
+test "fingerprint moves on file deletion and rename" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.md", .data = "# A\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.md", .data = "# B\n" });
+
+    var h1 = std.hash.Wyhash.init(0);
+    hashDir(testing.io, &h1, tmp.dir);
+
+    try tmp.dir.deleteFile(testing.io, "b.md");
+    var h2 = std.hash.Wyhash.init(0);
+    hashDir(testing.io, &h2, tmp.dir);
+    try testing.expect(h1.final() != h2.final());
+
+    // Same bytes under a new name still moves the hash (names feed it).
+    try tmp.dir.rename("a.md", tmp.dir, "c.md", testing.io);
+    var h3 = std.hash.Wyhash.init(0);
+    hashDir(testing.io, &h3, tmp.dir);
+    try testing.expect(h2.final() != h3.final());
+}
+
+test "buildGeneration: a routed generation from a target; a missing target errors" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "doc.md", .data = "# Gen\n" });
+    var buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}/doc.md", .{&tmp.sub_path});
+
+    var gen = try buildGeneration(testing.allocator, testing.io, .{ .file = path }, 3);
+    defer gen.arena.deinit();
+    try testing.expectEqual(@as(u64, 3), gen.id);
+    const resp = lookupRoute(gen.routes, "/").?;
+    try testing.expect(std.mem.indexOf(u8, resp, "Gen") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, shell.reload_script) != null);
+    try testing.expect(gen.fingerprint != 0);
+
+    // The caller's swap-or-keep logic hinges on this error return.
+    if (buildGeneration(testing.allocator, testing.io, .{ .dir = ".zig-cache/tmp/strike-missing-target" }, 1)) |*g| {
+        var bad = g.*;
+        bad.arena.deinit();
+        return error.TestUnexpectedResult;
+    } else |_| {}
+}

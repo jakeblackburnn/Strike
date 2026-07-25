@@ -125,6 +125,8 @@ fn parseServeArgs(args: anytype) !ServeArgs {
             parsed.open = true;
         } else if (std.mem.eql(u8, a, "--no-open")) {
             parsed.open = false;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            return error.UnknownFlag; // never mistake a typoed flag for the target dir
         } else if (!have_dir) {
             parsed.dir = a;
             have_dir = true;
@@ -170,6 +172,8 @@ fn parseRenderArgs(args: anytype) !RenderArgs {
             parsed.fragment = true;
         } else if (std.mem.eql(u8, a, "--header")) {
             parsed.header = args.next() orelse return error.MissingValue;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            return error.UnknownFlag;
         } else if (parsed.path == null) {
             parsed.path = a;
         } else return error.UnexpectedArgument;
@@ -225,6 +229,8 @@ fn parseBuildArgs(args: anytype) !BuildArgs {
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "-o")) {
             parsed.out_dir = args.next() orelse return error.MissingValue;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            return error.UnknownFlag;
         } else if (!have_dir) {
             parsed.dir = a;
             have_dir = true;
@@ -291,6 +297,8 @@ fn parseInitArgs(args: anytype) !InitArgs {
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--site")) {
             parsed.site_level = true;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            return error.UnknownFlag;
         } else if (!have_dir) {
             parsed.dir = a;
             have_dir = true;
@@ -408,6 +416,28 @@ test "parseServeArgs rejects a non-numeric port and a second positional" {
 
     var two_dirs: SliceArgs = .{ .items = &.{ "a", "b" } };
     try testing.expectError(error.UnexpectedArgument, parseServeArgs(&two_dirs));
+}
+
+test "all parsers reject unknown flags instead of taking them as the target" {
+    var serve_typo: SliceArgs = .{ .items = &.{ "--prot", "9000" } };
+    try testing.expectError(error.UnknownFlag, parseServeArgs(&serve_typo));
+
+    var render_typo: SliceArgs = .{ .items = &.{ "notes.md", "--fragmnet" } };
+    try testing.expectError(error.UnknownFlag, parseRenderArgs(&render_typo));
+
+    var build_typo: SliceArgs = .{ .items = &.{"--out"} };
+    try testing.expectError(error.UnknownFlag, parseBuildArgs(&build_typo));
+
+    var init_typo: SliceArgs = .{ .items = &.{"--stie"} };
+    try testing.expectError(error.UnknownFlag, parseInitArgs(&init_typo));
+}
+
+test "parseRenderArgs and parseServeArgs report missing flag values" {
+    var no_out: SliceArgs = .{ .items = &.{ "notes.md", "-o" } };
+    try testing.expectError(error.MissingValue, parseRenderArgs(&no_out));
+
+    var no_host: SliceArgs = .{ .items = &.{"--host"} };
+    try testing.expectError(error.MissingValue, parseServeArgs(&no_host));
 }
 
 test "parseRenderArgs parses the file, -o, --fragment, and --header" {

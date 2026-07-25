@@ -66,43 +66,101 @@ pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// The gap between grid sections. A future gap() command would replace this
+/// constant with an `Attrs` field read below.
+const grid_gap = "1.5rem";
+
+/// Emit ` style="…"` (leading space included) from a block's attrs — or
+/// nothing at all when every styling attr is unset (structural attrs like
+/// `collapse` shape elements instead and never land here). The single owner
+/// of CSS declaration order: grid, width, center, color, indent (the order
+/// the render tests lock; extend at the end). `columns` only ever appears on
+/// group blocks — the parser sets attrs nowhere else, and grid arranges
+/// sections, which only groups have — so the grid CSS needs no non-group
+/// guard.
+fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs) Writer.Error!void {
+    if (!attrs.anyStyle()) return;
+    try w.writeAll(" style=\"");
+    var sep = false;
+    if (attrs.columns) |n| {
+        try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:" ++ grid_gap, .{n});
+        sep = true;
+    }
+    if (attrs.width_pct) |pct| {
+        if (sep) try w.writeByte(';');
+        try w.print("width:{d}%;margin-inline:auto", .{pct});
+        sep = true;
+    }
+    if (attrs.centered) {
+        if (sep) try w.writeByte(';');
+        try w.writeAll("text-align:center");
+        sep = true;
+    }
+    if (attrs.text_color) |role| {
+        if (sep) try w.writeByte(';');
+        try w.print("color:var(--{t})", .{role});
+        sep = true;
+    }
+    if (attrs.indent != 0) {
+        if (sep) try w.writeByte(';');
+        try w.print("text-indent:{d}rem", .{attrs.indent * 2});
+    }
+    try w.writeByte('"');
+}
+
 fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.Error!void {
     switch (block.kind) {
         .heading => |h| {
             try w.print("<h{d} id=\"", .{h.level});
             try escapeAttrInto(w, h.id);
-            try w.writeAll("\">");
+            try w.writeByte('"');
+            try writeStyleAttr(w, block.attrs);
+            try w.writeByte('>');
             try emitInlines(w, h.inlines, link_base);
             try w.print("</h{d}>\n", .{h.level});
         },
         .paragraph => |inls| {
-            try w.writeAll("<p>");
+            try w.writeAll("<p");
+            try writeStyleAttr(w, block.attrs);
+            try w.writeByte('>');
             try emitInlines(w, inls, link_base);
             try w.writeAll("</p>\n");
         },
-        .quote => |paras| {
-            try w.writeAll("<blockquote>\n");
-            for (paras) |inls| {
+        .quote => |q| {
+            try w.writeAll("<blockquote");
+            if (q.alert) |a| try w.print(" class=\"sx-alert sx-alert-{t}\"", .{a});
+            try writeStyleAttr(w, block.attrs);
+            try w.writeAll(">\n");
+            if (q.alert) |a| {
+                try w.writeAll("<p class=\"sx-alert-title\">");
+                try w.writeAll(alertLabel(a));
+                try w.writeAll("</p>\n");
+            }
+            for (q.paras) |inls| {
                 try w.writeAll("<p>");
                 try emitInlines(w, inls, link_base);
                 try w.writeAll("</p>\n");
             }
             try w.writeAll("</blockquote>\n");
         },
-        .list => |list| try emitList(w, list, link_base),
+        .list => |list| try emitList(w, list, block.attrs, link_base),
         .code => |code| {
+            try w.writeAll("<pre");
+            try writeStyleAttr(w, block.attrs);
             if (code.lang.len > 0) {
-                try w.writeAll("<pre><code class=\"language-");
+                try w.writeAll("><code class=\"language-");
                 try escapeAttrInto(w, code.lang);
                 try w.writeAll("\">");
             } else {
-                try w.writeAll("<pre><code>");
+                try w.writeAll("><code>");
             }
             try escapeInto(w, code.text);
             try w.writeAll("</code></pre>\n");
         },
         .table => |table| {
-            try w.writeAll("<table>\n<thead>\n<tr>");
+            try w.writeAll("<table");
+            try writeStyleAttr(w, block.attrs);
+            try w.writeAll(">\n<thead>\n<tr>");
             for (table.header, 0..) |cell, ci| {
                 try writeCell(w, "th", strikedown.alignAt(table.aligns, ci), cell, link_base);
             }
@@ -117,39 +175,25 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
             try w.writeAll("</tbody>\n</table>\n");
         },
         .math => |tex| {
+            // Display math emits raw `\[…\]` for MathJax with no wrapper
+            // element, so there is nothing to hang a style attribute on; a
+            // future styled-math decision means choosing a wrapper first.
             try w.writeAll("\\[");
             try escapeInto(w, tex);
             try w.writeAll("\\]\n");
         },
-        .rule => try w.writeAll("<hr/>\n"),
+        .rule => {
+            try w.writeAll("<hr");
+            try writeStyleAttr(w, block.attrs);
+            try w.writeAll("/>\n");
+        },
         .group => |g| {
+            if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base);
             // Styles are inline (not shell CSS) so fragments and static
             // exports are self-contained; the classes are hooks for future
             // reader styling.
             try w.writeAll("<div class=\"sx-group\"");
-            if (g.columns != null or g.width_pct != null or g.centered or g.text_color != null) {
-                try w.writeAll(" style=\"");
-                var sep = false;
-                if (g.columns) |n| {
-                    try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:1.5rem", .{n});
-                    sep = true;
-                }
-                if (g.width_pct) |pct| {
-                    if (sep) try w.writeByte(';');
-                    try w.print("width:{d}%;margin-inline:auto", .{pct});
-                    sep = true;
-                }
-                if (g.centered) {
-                    if (sep) try w.writeByte(';');
-                    try w.writeAll("text-align:center");
-                    sep = true;
-                }
-                if (g.text_color) |role| {
-                    if (sep) try w.writeByte(';');
-                    try w.print("color:var(--{t})", .{role});
-                }
-                try w.writeByte('"');
-            }
+            try writeStyleAttr(w, block.attrs);
             try w.writeAll(">\n");
             for (g.sections) |section| {
                 try w.writeAll("<div class=\"sx-group-sec\">\n");
@@ -161,12 +205,65 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
     }
 }
 
-fn emitList(w: *Writer, list: strikedown.List, link_base: []const u8) Writer.Error!void {
-    if (list.ordered and list.start != 1) {
-        try w.print("<ol start=\"{d}\">\n", .{list.start});
+/// A collapsible group (007-collapse): a disclosure element whose summary is
+/// the group's *leader* — its first block, when it has at least two — and
+/// whose remaining content sits in a body wrapper. The group's styling attrs
+/// go on the body, never on the disclosure element itself (a grid style
+/// there would make the summary a grid item); `collapse` reaches the
+/// emitter only as element shape. A group with one block or none gets the
+/// empty-bar summary and folds everything.
+fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: []const u8) Writer.Error!void {
+    var total: usize = 0;
+    for (g.sections) |section| total += section.len;
+    const has_leader = total >= 2 and g.sections[0].len > 0;
+    try w.writeAll("<details class=\"sx-group sx-collapse\"");
+    if (c == .open) try w.writeAll(" open");
+    try w.writeAll(">\n");
+    if (has_leader) {
+        try w.writeAll("<summary>");
+        try emitBlock(w, g.sections[0][0], link_base);
+        try w.writeAll("</summary>\n");
     } else {
-        try w.writeAll(if (list.ordered) "<ol>\n" else "<ul>\n");
+        try w.writeAll("<summary class=\"sx-collapse-bar\"></summary>\n");
     }
+    try w.writeAll("<div class=\"sx-collapse-body\"");
+    try writeStyleAttr(w, attrs);
+    try w.writeAll(">\n");
+    for (g.sections, 0..) |section, si| {
+        try w.writeAll("<div class=\"sx-group-sec\">\n");
+        const body = if (has_leader and si == 0) section[1..] else section;
+        for (body) |b| try emitBlock(w, b, link_base);
+        try w.writeAll("</div>\n");
+    }
+    try w.writeAll("</div>\n</details>\n");
+}
+
+/// The alert's rendered title text — the type name, capitalized.
+fn alertLabel(a: strikedown.Alert) []const u8 {
+    return switch (a) {
+        .note => "Note",
+        .tip => "Tip",
+        .important => "Important",
+        .warning => "Warning",
+        .caution => "Caution",
+        .todo => "Todo",
+        .example => "Example",
+        .question => "Question",
+    };
+}
+
+/// `attrs` styles the outer `<ul>`/`<ol>` only; nested lists (`Item.Tail`)
+/// aren't `Block`s and can't carry attrs — the recursion passes `.{}`.
+fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_base: []const u8) Writer.Error!void {
+    try w.writeAll(if (list.ordered) "<ol" else "<ul");
+    // Raw lists render markerless; the class is the hook, reader CSS
+    // removes bullets and marker indentation (008-raw-lists).
+    if (list.plain) try w.writeAll(" class=\"sx-plain\"");
+    try writeStyleAttr(w, attrs);
+    if (list.ordered and list.start != 1) {
+        try w.print(" start=\"{d}\"", .{list.start});
+    }
+    try w.writeAll(">\n");
     for (list.items) |item| {
         try w.writeAll("<li>");
         if (item.task) |checked| {
@@ -183,7 +280,7 @@ fn emitList(w: *Writer, list: strikedown.List, link_base: []const u8) Writer.Err
             },
             .list => |sub| {
                 try w.writeByte('\n');
-                try emitList(w, sub, link_base);
+                try emitList(w, sub, .{}, link_base);
             },
         };
         try w.writeAll("</li>\n");
@@ -467,6 +564,24 @@ test "task lists" {
     );
 }
 
+test "raw list: markerless ul with the sx-plain hook" {
+    try expectRender(
+        "<ul class=\"sx-plain\">\n<li>one</li>\n<li>two</li>\n<li>three</li>\n</ul>\n",
+        ". one\n. two\n. three",
+    );
+}
+
+test "raw list: mixed markers split; task boxes still work" {
+    try expectRender(
+        "<ul>\n<li>bulleted</li>\n</ul>\n<ul class=\"sx-plain\">\n<li>raw</li>\n</ul>\n",
+        "- bulleted\n. raw",
+    );
+    try expectRender(
+        "<ul class=\"sx-plain\">\n<li><input type=\"checkbox\" disabled> todo</li>\n</ul>\n",
+        ". [ ] todo",
+    );
+}
+
 test "list item continuation lines join the item" {
     try expectRender("<ul>\n<li>a b</li>\n</ul>\n", "- a\n  b");
 }
@@ -653,6 +768,27 @@ test "reserved `:` directive lines are prose" {
     try expectRender("<p>(note)# not a heading</p>\n", "(note)# not a heading");
 }
 
+test "alert: canonical multi-line form" {
+    try expectRender(
+        "<blockquote class=\"sx-alert sx-alert-note\">\n<p class=\"sx-alert-title\">Note</p>\n<p>body line one body line two</p>\n</blockquote>\n",
+        "> [!NOTE]\n> body line one\n> body line two",
+    );
+}
+
+test "alert: same-line text, case-insensitive type" {
+    try expectRender(
+        "<blockquote class=\"sx-alert sx-alert-warning\">\n<p class=\"sx-alert-title\">Warning</p>\n<p>one-liner body</p>\n</blockquote>\n",
+        "> [!warning] one-liner body",
+    );
+}
+
+test "alert: unknown type degrades to a plain quote" {
+    try expectRender(
+        "<blockquote>\n<p>[!IDEA] hm</p>\n</blockquote>\n",
+        "> [!IDEA] hm",
+    );
+}
+
 test "quote paragraphs: merge, bare-> split, lazy continuation" {
     try expectRender("<blockquote>\n<p>a b</p>\n</blockquote>\n", "> a\n> b");
     try expectRender(
@@ -721,6 +857,44 @@ test "center renders a text-centering wrapper" {
     );
     // center takes no arguments — args deactivate the line
     try expectRender("<p>/center(5)</p>\n", "/center(5)");
+}
+
+test "collapse: the first element becomes the summary leader" {
+    try expectRender(
+        "<details class=\"sx-group sx-collapse\">\n" ++
+            "<summary><p><strong>What is strikedown?</strong></p>\n</summary>\n" ++
+            "<div class=\"sx-collapse-body\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>A typography-first superset of markdown.</p>\n</div>\n" ++
+            "</div>\n</details>\n",
+        "// faq collapse()\n\n**What is strikedown?**\n\nA typography-first superset of markdown.\n\n// end faq",
+    );
+}
+
+test "collapse: open variant; a lone element gets the empty bar" {
+    try expectRender(
+        "<details class=\"sx-group sx-collapse\" open>\n" ++
+            "<summary class=\"sx-collapse-bar\"></summary>\n" ++
+            "<div class=\"sx-collapse-body\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>only one paragraph here</p>\n</div>\n" ++
+            "</div>\n</details>\n",
+        "/collapse(open)\n\nonly one paragraph here",
+    );
+}
+
+test "collapse: other command styles land on the body, never the details" {
+    try expectRender(
+        "<details class=\"sx-group sx-collapse\">\n" ++
+            "<summary><p>lead</p>\n</summary>\n" ++
+            "<div class=\"sx-collapse-body\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n" ++
+            "</div>\n</details>\n",
+        "// g collapse() grid(2)\n\nlead\n\na\n\n// --\n\nb\n\n// end g",
+    );
+}
+
+test "collapse: bad args degrade the line to prose" {
+    try expectRender("<p>/collapse(true)</p>\n", "/collapse(true)");
 }
 
 test "single command wraps the next content element" {
@@ -844,4 +1018,63 @@ test "color span restricted forms degrade to prose" {
     // unknown role and escaped bracket stay literal
     try expectRender("<p>[x].color(red)</p>\n", "[x].color(red)");
     try expectRender("<p>[x].color(accent)</p>\n", "\\[x].color(accent)");
+}
+
+test "indent: tab prefix renders text-indent steps on the block itself" {
+    try expectRender(
+        "<p style=\"text-indent:2rem\">indented paragraph</p>\n",
+        "\tindented paragraph",
+    );
+    try expectRender(
+        "<h2 id=\"deep-heading\" style=\"text-indent:4rem\">deep heading</h2>\n",
+        "\t\t## deep heading",
+    );
+    // The stripped line is what multi-line parsers re-read: a tabbed quote
+    // opener still forms a quote, indented.
+    try expectRender(
+        "<blockquote style=\"text-indent:2rem\">\n<p>quoted</p>\n</blockquote>\n",
+        "\t> quoted",
+    );
+}
+
+test "indent command renders on groups and single-command wrappers" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:4rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>pushed in</p>\n</div>\n</div>\n",
+        "/indent(2)\n\npushed in",
+    );
+    // Indent joins other commands at the end of the declaration order.
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:80%;margin-inline:auto;text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// g skinny(80%) indent()\n\na\n\n// end g",
+    );
+    // Degradation: bad args keep the line prose.
+    try expectRender("<p>/indent(0)</p>\n", "/indent(0)");
+}
+
+test "indent on a group cascades to each child via CSS inheritance, not per-child attrs" {
+    // text-indent is set once on the wrapper; every child paragraph is
+    // plain (no style of its own) and picks up its own first-line indent
+    // purely by CSS inheritance — the same wrapper-only pattern color()
+    // already uses (docs/design/006-color.md).
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>first</p>\n<p>second</p>\n</div>\n</div>\n",
+        "// g indent()\n\nfirst\n\nsecond\n\n// end g",
+    );
+}
+
+test "indent nesting overrides rather than accumulates" {
+    // An inner indent(1) inside an outer indent(2) group renders 1 step
+    // at that point, not 3 — plain CSS text-indent semantics (011-indent,
+    // corrected 2026-07-22): nesting scopes the override, it doesn't stack.
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:4rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>para</p>\n</div>\n</div>\n" ++
+            "</div>\n</div>\n",
+        "// outer indent(2)\n\n// inner indent()\n\npara\n\n// end inner\n\n// end outer",
+    );
 }
