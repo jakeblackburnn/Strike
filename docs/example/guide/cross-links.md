@@ -15,9 +15,10 @@ an ordinary file link. One spelling works in both worlds.
 
 **Up a level**
 
-. [The site's front page](../main.md)
+. [This project's home](../main.md)
 . [The markdown subset](../markdown.md)
 . [A specific section](../markdown.md#tables) — fragments survive
+. [Another project](../../reference/main.md) — `../` climbs as far as you like
 
 // end links
 
@@ -30,6 +31,7 @@ untouched:
 | --- | --- |
 | `../markdown.md` | rewritten to the document's route |
 | `../markdown.md#tables` | rewritten, fragment preserved |
+| `../../reference/main.md` | rewritten — resolution crosses projects freely |
 | `/absolute/path` | untouched |
 | `https://ziglang.org` | untouched |
 | `#a-fragment` | untouched |
@@ -39,3 +41,9 @@ untouched:
   climbs exactly the way it does on disk. The extension is dropped and a
   trailing `main` collapses into its folder's route, which is why the first
   link on this page points at the folder rather than a page called "main".
+
+> [!NOTE]
+> Rewriting needs a site to rewrite *into*. `strike serve` and `strike build`
+> have one; `strike render`, which renders a single file and knows nothing about
+> its neighbours, leaves a `.md` target exactly as written — a route it invented
+> would point at a page that doesn't exist.

@@ -39,7 +39,7 @@ one-line form.
   groups — nameless, one section holding the one element — so the emitter,
   the layout-level rule, and future backends need no second path. It is
   exactly "an anonymous single-element layout element."
-- **Layout-level rule** applies (see `docs/STRIKEDOWN.md`): inside a group
+- **Layout-level rule** applies (see `docs/reference/STRIKEDOWN.md`): inside a group
   that already carries a layout command, the wrapper still forms but the
   command is ignored with a warning.
 - `/grid(n)` is grammatical but pointless on one element: it applies and

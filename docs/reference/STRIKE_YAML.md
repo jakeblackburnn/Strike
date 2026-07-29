@@ -19,7 +19,6 @@ Controls the whole site: the `/` project picker and global defaults.
 
 ```yaml
 title: strikedown   # picker heading + browser title base
-repo: https://github.com/you/strike   # default sidebar repo-link for every page
 theme: winter evening  # default theme: a season (fall|winter|spring|summer), a time
                     # (morning|evening), or both; light/dark are aliases for
                     # morning/evening. Readers can still override in Settings.
@@ -62,7 +61,6 @@ Controls one project's display metadata and its sidebar nav.
 ```yaml
 title: Data Mining                       # display name (else the prettified folder name)
 description: CSCI 436/536 — course notes  # shown on the generated project home
-repo: https://github.com/you/dm          # per-project repo link (overrides the site repo)
 home: FINAL_REVIEW_GUIDE.md              # doc served at /<project> (else a generated index)
 header: theme.sxh                        # project typography header, layered over the site one
 
@@ -122,7 +120,7 @@ becomes the page at its containing folder's route:
 strikedown itself, as **`:` directive lines**. A `.sxh` header file is a shared
 collection of such directives that `header:` attaches to a whole scope. The directive
 namespace is currently **reserved** — no `:` directive is defined, so `.sxh` contents
-are inert and every in-document `:` line is ordinary prose (see `docs/STRIKEDOWN.md`).
+are inert and every in-document `:` line is ordinary prose (see `docs/reference/STRIKEDOWN.md`).
 The plumbing works and stays: `header:` paths are relative to the file's own directory
 (content root for the site scope, the project folder for a project); a project header
 layers over the site header. `.sxh` files are never documents — they don't appear in
@@ -133,7 +131,6 @@ nav or routes. A missing/unreadable header prints a warning and is ignored.
 | Key | Scope | Effect |
 | --- | --- | --- |
 | `title` | site / project | Picker/browser title (site); project display name (project) |
-| `repo` | site / project | Sidebar repo-link URL; project value overrides site |
 | `theme` | site | Default season (`fall`/`winter`/`spring`/`summer`) and/or time (`morning`/`evening`; `light`/`dark` alias) before the reader picks |
 | `width` | site | Default content width in rem |
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
@@ -148,6 +145,14 @@ nav or routes. A missing/unreadable header prints a warning and is ignored.
 
 Paths in `labels`, `order`, and `hidden` are **project-relative** (e.g. `topo/algo_ref`),
 use forward slashes, and include the file extension for documents.
+
+## Not configurable
+
+The sidebar's brand links to the **current project's root** (`/<project>`, or `/` for a
+root project), and beneath it a fixed subtitle credits strike itself. Neither is a yaml
+key: the first is derived from where the reader is, the second is attribution rather
+than configuration. There is no per-site repo link — if you want one, put it in your
+`main.*`, where author content belongs.
 
 ## How values resolve
 

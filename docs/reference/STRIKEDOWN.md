@@ -2,7 +2,7 @@
 
 The spec of record for strikedown (`.sx`), a typography-first superset of
 markdown. Every form, its meaning, and its canonical examples live here;
-`docs/design/NNN-*.md` records how each decision was reached (history), and
+`docs/reference/design/NNN-*.md` records how each decision was reached (history), and
 this file is what wins when they disagree. Everything in this document is
 implementation-independent: each sentence must stay true for every backend
 (HTML today, PDF planned), so nothing here names tags, CSS, or files.
@@ -89,7 +89,7 @@ content into a group. Grammar:
 A `/command(args)` line — `/` immediately followed by exactly one command
 token and nothing else — applies its command to the **very next content
 element**, as if that one element were a nameless one-section group.
-(`docs/design/002-single-command.md`.)
+(`docs/reference/design/002-single-command.md`.)
 
 - `//` is checked first; a second `/` always means the group family.
 - **Activation**: the command must parse cleanly *and* a content element
@@ -130,12 +130,12 @@ creating a layout element and never counts under the rule.
 | Command | Meaning |
 | --- | --- |
 | `grid(n)` | n columns; sections fill left-to-right and wrap. n ≥ 1. A section count ≠ n still renders, with a warning. |
-| `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/design/003-skinny.md`)* |
-| `wide(N%)` | the mirror of `skinny`: the element/group takes N% of the main body's width, centered, bleeding evenly into both margins. N is 101–200, `%` required. `wide()` defaults to 125%. (`docs/design/012-wide.md`) |
-| `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/design/005-center.md`) |
-| `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/design/006-color.md`) |
-| `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/design/007-collapse.md`) |
-| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/design/011-indent.md`, `015-paragraph-indent.md`) |
+| `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/reference/design/003-skinny.md`)* |
+| `wide(N%)` | the mirror of `skinny`: the element/group takes N% of the main body's width, centered, bleeding evenly into both margins. N is 101–200, `%` required. `wide()` defaults to 125%. (`docs/reference/design/012-wide.md`) |
+| `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/reference/design/005-center.md`) |
+| `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/reference/design/006-color.md`) |
+| `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/reference/design/007-collapse.md`) |
+| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
@@ -149,7 +149,7 @@ written on the same opener, the last one wins.
 
 A command means one thing, but content elements are not alike, and some of
 them realize that meaning differently (a list's `indent` moves its markers
-too — see "Indentation"). `docs/design/013-command-realization.md` tracks
+too — see "Indentation"). `docs/reference/design/013-command-realization.md` tracks
 which of those cells are decided; most are still open.
 
 ### Collapsible groups
@@ -182,12 +182,12 @@ A **list** is the exception, because its marker column is part of the element
 and not part of its text: an indented list moves as a whole, markers and items
 together, so a numbered list's numbers travel with their items rather than the
 indent landing between them. A sublist inside an indented list is not shifted
-again — its parent already moved. (`docs/design/013-command-realization.md`,
+again — its parent already moved. (`docs/reference/design/013-command-realization.md`,
 which also tracks the still-open cases: quotes, code blocks, and tables
 currently inset their contents rather than moving as boxes.)
 
 **Leading whitespace** on a paragraph is sugar for one step of the same data
-(`docs/design/015-paragraph-indent.md`): a paragraph whose **first line**
+(`docs/reference/design/015-paragraph-indent.md`): a paragraph whose **first line**
 begins with any whitespace — one space, two, four, or a tab — carries
 `indent(1)`. The amount and kind are deliberately not significant (the
 convention is two or four spaces); depth beyond one step is `indent(n)`.
@@ -210,7 +210,7 @@ Strikedown never names concrete colors. A **color role** is a slot in the
 renderer's theme — `accent` (the theme's signature color), `muted`
 (secondary text), `fg` (body text, the reset) — and each renderer/theme
 decides what a role looks like, so colored documents follow the reader's
-theme (`docs/design/006-color.md`).
+theme (`docs/reference/design/006-color.md`).
 
 `color` is also the one command with an **inline** position: a **color
 span** `[text].color(role)` colors a run of inline content mid-line. The
@@ -229,7 +229,7 @@ Color is deliberately restricted where interactions would be ambiguous:
 
 ### The layout-level rule
 
-The rule is **per command** (`docs/design/004-per-command-layout.md`): a
+The rule is **per command** (`docs/reference/design/004-per-command-layout.md`): a
 layout command on a group (or `/` line) whose ancestor group already carries
 the *same* command is **ignored with a warning** — the group/wrapper still
 forms, so document structure never depends on depth. Different commands nest
@@ -263,7 +263,7 @@ recording the result here.
   matched case-insensitively. Text after the marker on its line starts the
   first paragraph (superset — GFM wants the marker alone); everything else
   follows normal blockquote rules. An unknown type is no marker: the quote
-  stays plain and the text literal. (`docs/design/009-alerts.md`)
+  stays plain and the text literal. (`docs/reference/design/009-alerts.md`)
 - **Lists** — unordered (`-`/`*`/`+`) and ordered (`1.`), nested by
   indentation (≥ 2 columns), `[ ]`/`[x]` task boxes. A plain line — indented
   or not — **lazily continues** the open item (the same rule as quotes).
@@ -271,7 +271,7 @@ recording the result here.
   no visible marker; otherwise a full list (nesting, task boxes, the rules
   below). Marker kinds never mix at one level — a `. ` item beside a `- `
   item starts a sibling list, the same split ordered vs unordered makes.
-  (`docs/design/008-raw-lists.md`)
+  (`docs/reference/design/008-raw-lists.md`)
   Blank lines between items do **not** end the list: after a blank, a marker
   that continues it (a sibling of the same orderedness, or a nested item)
   resumes; anything else ends it. Rendering stays tight regardless of blank

@@ -2,7 +2,7 @@
 
 **Status: shipped** (decision dictated by Jack, 2026-07-29)
 
-Supersedes the **tab-prefix** spelling of `docs/design/011-indent.md`. The
+Supersedes the **tab-prefix** spelling of `docs/reference/design/011-indent.md`. The
 `indent(n)` command that note decided is unchanged and remains the way to ask
 for depth.
 
@@ -162,6 +162,6 @@ that is *about* nesting (an outline element), not to whitespace on a paragraph â
 the lesson of candidate B is that indentation width should never be the carrier
 of meaning that a command can state outright.
 
-The realization matrix (`docs/design/013-command-realization.md`) is unaffected:
+The realization matrix (`docs/reference/design/013-command-realization.md`) is unaffected:
 this note changes only how a paragraph *acquires* `indent`, never what `indent`
 means on any element type.

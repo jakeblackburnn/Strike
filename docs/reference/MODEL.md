@@ -196,7 +196,7 @@ Backend obligations, in spec terms:
   emitter threads an enclosing group's indent down the walk so a box-mode
   element can realize it itself rather than inheriting the wrong property.
   Most (command, element) pairs are still undecided:
-  `docs/design/013-command-realization.md` is the matrix and the place they
+  `docs/reference/design/013-command-realization.md` is the matrix and the place they
   get decided. A second backend has no CSS inheritance to fall back on and
   must realize every pair explicitly.
 - **Structural commands** (`isStructural`; today only `collapse`) are
@@ -220,7 +220,7 @@ the `Parser.warnings` append sites — not restructuring emitters.
 ## Extension recipes
 
 The moves an implementation makes to extend the language, in model terms.
-Language changes need a design note first (`docs/DESIGN.md`), and every
+Language changes need a design note first (`docs/reference/DESIGN.md`), and every
 canonical spec example becomes a parser test in `src/strikedown.zig` plus an
 end-to-end test in `src/render_html.zig`.
 

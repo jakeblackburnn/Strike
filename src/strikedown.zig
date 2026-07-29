@@ -13,7 +13,7 @@
 //!   - ATX headings (`#` .. `######`) with auto anchor ids (see `slugify`)
 //!   - paragraphs (soft-wrapped lines are joined with a space); leading
 //!     whitespace on a paragraph's first line indents it one step
-//!     (`docs/design/015-paragraph-indent.md`) — paragraphs only, and the
+//!     (`docs/reference/design/015-paragraph-indent.md`) — paragraphs only, and the
 //!     amount of whitespace is deliberately not significant
 //!   - unordered (`-`/`*`/`+`) and ordered (`1.`) lists, nested by
 //!     indentation, with `- [ ]`/`- [x]` task boxes; a plain line lazily
@@ -30,17 +30,17 @@
 //!     inert (see `sheet.zig`); a recognized line is consumed, emits no block
 //!   - group directives (`// two_lists grid(2)` … `// --` … `// end`) —
 //!     bracketing content into sections that layout commands arrange (see
-//!     `docs/design/001-groups.md`); a `//` line is a directive **iff it
+//!     `docs/reference/design/001-groups.md`); a `//` line is a directive **iff it
 //!     parses cleanly**, otherwise prose
 //!   - single-command directives (`/skinny(60%)`) applying one command to the
-//!     very next content element (see `docs/design/002-single-command.md`)
+//!     very next content element (see `docs/reference/design/002-single-command.md`)
 //!
 //! Inline grammar, in precedence order: backslash escape, `` `code` ``,
 //! `$math$`, `![alt](src)`, `[text](url)`, `[text].color(role)` color spans
-//! (see `docs/design/006-color.md`), `<http…>` and bare-URL autolinks,
+//! (see `docs/reference/design/006-color.md`), `<http…>` and bare-URL autolinks,
 //! `***`/`**`/`*` emphasis, `~~strikethrough~~`. Emphasis delimiters and
 //! inline-math `$` obey flanking/adjacency rules so prose asterisks and
-//! dollars stay literal (`docs/design/014-flanking.md`). Code/math bodies
+//! dollars stay literal (`docs/reference/design/014-flanking.md`). Code/math bodies
 //! are never inline-parsed.
 //!
 //! Layout and typography land as *data on tree nodes* — command-derived
@@ -48,7 +48,7 @@
 //! emitter special cases. A group whose attrs carry a layout command is a
 //! *layout element*; one carrying only non-layout commands (`color`) is a
 //! *styled container*; one with no commands is a plain container
-//! (`docs/MODEL.md` maps the full taxonomy to these types). Every superset
+//! (`docs/reference/MODEL.md` maps the full taxonomy to these types). Every superset
 //! form must degrade to inert prose in plain markdown documents that never
 //! activate it.
 
@@ -142,7 +142,7 @@ pub const Group = struct {
     sections: [][]Block,
 };
 
-/// A theme color role (`docs/design/006-color.md`). Strikedown never names
+/// A theme color role (`docs/reference/design/006-color.md`). Strikedown never names
 /// concrete colors — a role resolves to whatever the reader's active theme
 /// defines for it (HTML: `var(--accent)` etc.), so colored text tracks theme
 /// switches; other backends map roles to their own palettes.
@@ -156,7 +156,7 @@ pub const TextColor = enum {
     }
 };
 
-/// A collapsible group's initial state (`docs/design/007-collapse.md`).
+/// A collapsible group's initial state (`docs/reference/design/007-collapse.md`).
 /// `collapse()` folds the group closed behind its leader; `collapse(open)`
 /// starts it open. State is per page load — nothing persists.
 pub const Collapse = enum { closed, open };
@@ -167,7 +167,7 @@ pub const Heading = struct {
     inlines: []Inline,
 };
 
-/// A blockquote, optionally typed as an alert (`docs/design/009-alerts.md`).
+/// A blockquote, optionally typed as an alert (`docs/reference/design/009-alerts.md`).
 pub const Quote = struct {
     /// Set when the quote's first content is an `[!TYPE]` marker; unknown
     /// types leave the quote plain (the marker stays literal text).
@@ -188,7 +188,7 @@ pub const Code = struct {
 
 pub const List = struct {
     ordered: bool,
-    /// A raw list (`. ` items, `docs/design/008-raw-lists.md`): unordered,
+    /// A raw list (`. ` items, `docs/reference/design/008-raw-lists.md`): unordered,
     /// rendered with no item marker. Marker kinds don't mix at one level.
     plain: bool = false,
     /// The first item's written number (GFM: it sets the list start; later
@@ -236,7 +236,7 @@ pub const Inline = union(enum) {
     em: []Inline,
     strong_em: []Inline,
     strike: []Inline,
-    /// `[text].color(role)` — a colored span (`docs/design/006-color.md`).
+    /// `[text].color(role)` — a colored span (`docs/reference/design/006-color.md`).
     color_span: struct { color: TextColor, children: []Inline },
 };
 
@@ -292,7 +292,7 @@ const Parser = struct {
     /// inside a group; outside they stay prose (`isGroupInterrupt`).
     group_depth: usize = 0,
     /// How many open groups carry each layout command. The layout-level rule
-    /// is per-command (`docs/STRIKEDOWN.md`): a layout command whose counter
+    /// is per-command (`docs/reference/STRIKEDOWN.md`): a layout command whose counter
     /// is already > 0 — an open ancestor carries the same command — is
     /// ignored with a warning; other commands on the same opener still apply.
     layout_depth: std.enums.EnumArray(CommandTag, usize) = .initFill(0),
@@ -703,7 +703,7 @@ const Parser = struct {
         };
     }
 
-    /// The layout-level rule, per command (`docs/STRIKEDOWN.md`): clear
+    /// The layout-level rule, per command (`docs/reference/STRIKEDOWN.md`): clear
     /// each layout command in `attrs` that an open ancestor already carries,
     /// warning per stripped command. `name` is the group's name for the
     /// warning (null for a single-command directive). Commands that don't
@@ -788,15 +788,28 @@ const Parser = struct {
     }
 };
 
-/// Turn heading text into an anchor slug: lowercased, `a-z0-9` kept, every
-/// other run of characters collapsed to a single `-`, no leading/trailing `-`.
-/// Falls back to `"section"` when nothing survives. Exported for future
-/// TOC/copy-link features. Caller owns the result.
+/// Turn heading text into an anchor slug: lowercased, `a-z0-9` and non-ASCII
+/// text kept, every other run of characters collapsed to a single `-`, no
+/// leading/trailing `-`. Falls back to `"section"` when nothing survives.
+/// Exported for future TOC/copy-link features. Caller owns the result.
 pub fn slugify(gpa: Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var pending_dash = false;
     for (text) |c| {
+        // Non-ASCII bytes survive verbatim. Every byte of a UTF-8 sequence is
+        // >= 0x80, so multi-byte characters come through whole rather than
+        // collapsing to a dash — without this, `# 中文` slugs to nothing and
+        // falls back to "section", colliding with every other non-Latin
+        // heading in the document. Case is left alone here (folding `É` needs
+        // Unicode tables this project doesn't carry), so a mixed heading can
+        // slug to mixed case; ids are exact strings, so that's cosmetic.
+        if (c >= 0x80) {
+            if (pending_dash and out.items.len > 0) try out.append(gpa, '-');
+            pending_dash = false;
+            try out.append(gpa, c);
+            continue;
+        }
         const lower = std.ascii.toLower(c);
         if ((lower >= 'a' and lower <= 'z') or (lower >= '0' and lower <= '9')) {
             if (pending_dash and out.items.len > 0) try out.append(gpa, '-');
@@ -873,7 +886,7 @@ fn isBlank(line: []const u8) bool {
 /// `Parser.interruptsFlow` bundles all three and is what flowing-text loops
 /// call. A clean single-command line counts even when its follower later
 /// makes it inert prose — a small accepted divergence
-/// (`docs/design/002-single-command.md`) that keeps this check context-free.
+/// (`docs/reference/design/002-single-command.md`) that keeps this check context-free.
 fn isBlockStart(t: []const u8) bool {
     return headingLevel(t) != null or
         isHorizontalRule(t) or
@@ -895,7 +908,7 @@ fn trimIndent(line: []const u8) []const u8 {
 }
 
 /// Does a paragraph starting at this raw (untrimmed) line carry the one-step
-/// whitespace indent (`docs/design/015-paragraph-indent.md`)? Any leading
+/// whitespace indent (`docs/reference/design/015-paragraph-indent.md`)? Any leading
 /// whitespace — one space, four, or a tab — means one step; the amount and
 /// kind are deliberately not significant. Only paragraphs consult this: every
 /// other block form is classified from the trimmed line and ignores leading
@@ -925,7 +938,7 @@ fn isHorizontalRule(t: []const u8) bool {
 /// quote's first content line. `rest` is the text after the marker (same-line
 /// body; empty when the marker stands alone). The marker must be followed by
 /// a space or end-of-line, and an unknown type is no marker at all — the
-/// quote stays plain and the text literal (`docs/design/009-alerts.md`).
+/// quote stays plain and the text literal (`docs/reference/design/009-alerts.md`).
 fn parseAlertMarker(content: []const u8) ?struct { alert: Alert, rest: []const u8 } {
     if (!std.mem.startsWith(u8, content, "[!")) return null;
     const close = std.mem.indexOfScalar(u8, content, ']') orelse return null;
@@ -942,7 +955,7 @@ fn isUnorderedItem(t: []const u8) bool {
     return t.len >= 2 and (t[0] == '-' or t[0] == '*' or t[0] == '+') and t[1] == ' ';
 }
 
-/// A raw-list item marker: `. ` (`docs/design/008-raw-lists.md`).
+/// A raw-list item marker: `. ` (`docs/reference/design/008-raw-lists.md`).
 fn isPlainItem(t: []const u8) bool {
     return t.len >= 2 and t[0] == '.' and t[1] == ' ';
 }
@@ -1016,7 +1029,7 @@ fn orderedMarker(t: []const u8) ?OrderedMarker {
 
 // ---- group directives ----------------------------------------------------------
 
-/// One classified group-directive line (`docs/design/001-groups.md`).
+/// One classified group-directive line (`docs/reference/design/001-groups.md`).
 const GroupLine = union(enum) {
     open: Open,
     /// `// --`: the innermost open group's next section starts.
@@ -1233,7 +1246,7 @@ fn groupLabel(name: []const u8) []const u8 {
 }
 
 /// Classify a (left-trimmed) line as a single-command directive
-/// (`docs/design/002-single-command.md`): `/` immediately followed by exactly
+/// (`docs/reference/design/002-single-command.md`): `/` immediately followed by exactly
 /// one command token and nothing else. The char after the slash keeps the two
 /// directive families apart (`//` is a group line), and `parseCommand`'s
 /// strictness is the degradation story — `/usr/bin/env`, `/skinny (50%)`, or
@@ -1271,28 +1284,82 @@ fn isTableSeparator(t: []const u8) bool {
     return true;
 }
 
-/// Strip at most one leading and one trailing boundary pipe (an escaped
-/// trailing `\|` is cell content, not a boundary).
+/// Strip at most one leading and one trailing boundary pipe. Separator rows
+/// only — they can hold nothing but `-`, `:`, `|` and spaces, so there are no
+/// escapes to worry about here; `splitCells` handles its own boundaries.
 fn stripBoundaryPipes(s: []const u8) []const u8 {
     var r = s;
     if (r.len > 0 and r[0] == '|') r = r[1..];
-    if (r.len > 0 and r[r.len - 1] == '|' and (r.len < 2 or r[r.len - 2] != '\\'))
-        r = r[0 .. r.len - 1];
+    if (r.len > 0 and r[r.len - 1] == '|') r = r[0 .. r.len - 1];
     return r;
 }
 
-/// Split a table row into trimmed cells on unescaped `|`s. `\|` survives
-/// inside a cell for the inline parser's escape handling to unwrap later.
-fn splitCells(gpa: Allocator, cells: *std.ArrayList([]const u8), row: []const u8) !void {
-    const s = stripBoundaryPipes(std.mem.trim(u8, row, " "));
+/// Split a table row into trimmed cells at every unescaped `|`.
+///
+/// GFM splits cells *before* parsing inlines, so a pipe that is part of a
+/// cell's content must be written `\|` — including inside a code span, whose
+/// body is never inline-parsed afterwards. That makes this the only place the
+/// escape can be undone, so `\|` becomes a literal `|` here while every other
+/// backslash escape is left for `parseInlines`. A backslash consumes the byte
+/// after it outright, so `\\|` is an escaped backslash followed by a real
+/// delimiter.
+///
+/// A cell that carried no `\|` is a slice of `row`; one that did is rebuilt in
+/// `gpa` (the parse arena).
+fn splitCells(gpa: Allocator, cells: *std.ArrayList([]const u8), row: []const u8) Allocator.Error!void {
+    const trimmed = std.mem.trim(u8, row, " ");
+    const s = if (trimmed.len > 0 and trimmed[0] == '|') trimmed[1..] else trimmed;
     var start: usize = 0;
+    var escaped_pipes: usize = 0;
     var i: usize = 0;
-    while (i <= s.len) : (i += 1) {
-        if (i == s.len or (s[i] == '|' and (i == 0 or s[i - 1] != '\\'))) {
-            try cells.append(gpa, std.mem.trim(u8, s[start..i], " "));
+    while (i < s.len) {
+        if (s[i] == '\\' and i + 1 < s.len) {
+            if (s[i + 1] == '|') escaped_pipes += 1;
+            i += 2;
+            continue;
+        }
+        if (s[i] == '|') {
+            try appendCell(gpa, cells, s[start..i], escaped_pipes);
+            escaped_pipes = 0;
             start = i + 1;
         }
+        i += 1;
     }
+    // A row's single trailing boundary pipe leaves `start` at the end with
+    // cells already collected; a row that genuinely ends in an empty cell
+    // (`| a | |`) reached the end through its own delimiter and keeps it.
+    if (start < s.len or cells.items.len == 0)
+        try appendCell(gpa, cells, s[start..], escaped_pipes);
+}
+
+/// Trim one cell and append it, unescaping its `escaped_pipes` `\|` sequences.
+/// Allocates only when there is at least one — trimming removes spaces, and a
+/// `\|` pair holds none, so the count still applies after the trim.
+fn appendCell(gpa: Allocator, cells: *std.ArrayList([]const u8), raw: []const u8, escaped_pipes: usize) Allocator.Error!void {
+    const cell = std.mem.trim(u8, raw, " ");
+    if (escaped_pipes == 0) return cells.append(gpa, cell);
+
+    const out = try gpa.alloc(u8, cell.len - escaped_pipes);
+    var w: usize = 0;
+    var i: usize = 0;
+    while (i < cell.len) {
+        if (cell[i] == '\\' and i + 1 < cell.len) {
+            if (cell[i + 1] == '|') {
+                out[w] = '|';
+                w += 1;
+            } else {
+                out[w] = cell[i];
+                out[w + 1] = cell[i + 1];
+                w += 2;
+            }
+            i += 2;
+            continue;
+        }
+        out[w] = cell[i];
+        w += 1;
+        i += 1;
+    }
+    try cells.append(gpa, out[0..w]);
 }
 
 /// Read per-column alignment from the separator row (`:--`, `:-:`, `--:`).
@@ -1326,7 +1393,7 @@ fn parseLink(s: []const u8) ?Link {
 const ColorSpan = struct { text: []const u8, color: TextColor, consumed: usize };
 
 /// Parse `[text].color(role)` starting at the leading `[`
-/// (`docs/design/006-color.md`). Same first-`]` scan as `parseLink` — which
+/// (`docs/reference/design/006-color.md`). Same first-`]` scan as `parseLink` — which
 /// is the restriction story: a link's `[label](url)` wins the `[` first, so
 /// `.color()` never attaches to a link, and spans don't nest (the earliest
 /// `].color(` closes the span; the rest stays literal). Unknown roles fail
@@ -1382,7 +1449,7 @@ fn parseAngleAutolink(s: []const u8) ?[]const u8 {
     return url;
 }
 
-// ---- delimiter flanking (docs/design/014-flanking.md) ------------------------
+// ---- delimiter flanking (docs/reference/design/014-flanking.md) ------------------------
 // Emphasis delimiters are context-sensitive: `a * b * c` is asterisks in prose,
 // not emphasis around a space. CommonMark decides this with left/right-flanking
 // delimiter runs, and these three helpers are that definition, applied by every
@@ -1448,7 +1515,7 @@ fn findClosingRun(text: []const u8, from: usize, marker: []const u8) ?usize {
 }
 
 /// The closing `$` of an inline-math span opened at `open`, or null if this `$`
-/// doesn't open one (docs/design/014-flanking.md): the opener must be followed
+/// doesn't open one (docs/reference/design/014-flanking.md): the opener must be followed
 /// by a non-space character, the closer preceded by one and not followed by a
 /// digit, and the body must be non-empty. Non-qualifying candidates are skipped.
 fn findMathClose(text: []const u8, open: usize) ?usize {
@@ -1824,6 +1891,30 @@ test "table rows are padded to the header width at parse time" {
     try testing.expectEqual(@as(usize, 1), table.rows.len);
     try testing.expectEqual(@as(usize, 2), table.rows[0].len);
     try testing.expectEqual(@as(usize, 0), table.rows[0][1].len); // padded cell is empty
+}
+
+test "table cells: `\\|` unescapes at split time, `\\\\|` still delimits" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    const arena = arena_state.allocator();
+    defer arena_state.deinit();
+
+    // One cell whose code span holds a real pipe. The escape has to come off
+    // here, because the code body is never inline-parsed afterwards.
+    const code = (try parse(arena, "| `a\\|b` |\n|---|", .empty)).blocks[0].kind.table;
+    try testing.expectEqual(@as(usize, 1), code.header.len);
+    try testing.expectEqualStrings("a|b", code.header[0][0].code);
+
+    // A backslash consumes the byte after it, so the pipe here is a delimiter
+    // and the first cell keeps a literal backslash.
+    const esc = (try parse(arena, "| a\\\\|b |\n|---|---|", .empty)).blocks[0].kind.table;
+    try testing.expectEqual(@as(usize, 2), esc.header.len);
+    try testing.expectEqualStrings("a\\", esc.header[0][0].text);
+    try testing.expectEqualStrings("b", esc.header[1][0].text);
+
+    // Unescaped pipes split even inside backticks — GFM's rule, kept so a
+    // table renders identically here and on GitHub.
+    const raw = (try parse(arena, "| `a|b` |\n|---|---|", .empty)).blocks[0].kind.table;
+    try testing.expectEqual(@as(usize, 2), raw.header.len);
 }
 
 test "reserved `:` directive lines are prose" {
@@ -2516,6 +2607,27 @@ test "slugify" {
     try testing.expectEqualStrings("k-means-k-3", s3);
 }
 
+test "slugify keeps non-ASCII text instead of dropping it" {
+    const gpa = testing.allocator;
+    // Accented Latin: the whole word survives, ASCII still lowercases.
+    const s1 = try slugify(gpa, "Café");
+    defer gpa.free(s1);
+    try testing.expectEqualStrings("café", s1);
+    // A script with no ASCII at all used to slug to the "section" fallback.
+    const s2 = try slugify(gpa, "中文");
+    defer gpa.free(s2);
+    try testing.expectEqualStrings("中文", s2);
+    // Mixed text: ASCII punctuation still collapses to one dash, and ASCII
+    // still lowercases while non-ASCII keeps its case (no Unicode tables).
+    const s3 = try slugify(gpa, "Über: die Größe!");
+    defer gpa.free(s3);
+    try testing.expectEqualStrings("Über-die-größe", s3);
+    // Two distinct non-Latin headings no longer collide on "section".
+    const s4 = try slugify(gpa, "日本語");
+    defer gpa.free(s4);
+    try testing.expect(!std.mem.eql(u8, s2, s4));
+}
+
 test "color command: on groups, with other commands, and as a single command" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -2669,7 +2781,7 @@ test "inline precedence: image beats link at `![`, color span needs its exact fo
     try testing.expect(p2[2] == .color_span);
 }
 
-// ---- flanking (docs/design/014-flanking.md) ----
+// ---- flanking (docs/reference/design/014-flanking.md) ----
 
 /// A paragraph that parsed to exactly one literal `.text` run — i.e. every
 /// delimiter in it stayed prose.
@@ -2748,7 +2860,7 @@ test "flanking: real inline math still parses" {
     try expectAllLiteral(arena, "a $$ b");
 }
 
-// ---- paragraph indentation (docs/design/015-paragraph-indent.md) ----
+// ---- paragraph indentation (docs/reference/design/015-paragraph-indent.md) ----
 
 test "indent: any leading whitespace indents a paragraph one step" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);

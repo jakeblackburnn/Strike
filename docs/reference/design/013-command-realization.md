@@ -4,7 +4,7 @@
 2026-07-25, and is shipped; every other cell is **open** — this note is the
 place they get decided, not a record that they have been.)
 
-> Read this as a working model, not settled spec. `docs/STRIKEDOWN.md` carries
+> Read this as a working model, not settled spec. `docs/reference/STRIKEDOWN.md` carries
 > only the cells that have actually been decided; everything marked *open*
 > below is subject to change and nothing should be implemented from it.
 
@@ -29,7 +29,7 @@ of CSS's inheritance to hide behind.
 ## Terminology
 
 - **Meaning** — what a command says, backend-neutral: "inset this element
-  from the left by n steps". One per command, recorded in `docs/MODEL.md`.
+  from the left by n steps". One per command, recorded in `docs/reference/MODEL.md`.
 - **Realization** — how one element type carries out that meaning. Per
   (command, element type) pair, and a backend's business.
 - **Flowing prose** — an element whose left edge is simply where its text

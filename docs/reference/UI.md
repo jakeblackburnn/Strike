@@ -1,7 +1,7 @@
 # Strike reader — UI philosophy
 
 The principles behind the reader's chrome (`src/shell.zig` + the generated pages in
-`src/site.zig`). Decisions here bind future UI work the way `docs/STRIKEDOWN.md` binds
+`src/site.zig`). Decisions here bind future UI work the way `docs/reference/STRIKEDOWN.md` binds
 the language: where habit or a passing preference disagrees with this file, this file
 wins.
 
@@ -29,6 +29,11 @@ prominence in `main.*`.
   homepage it lists the projects — so every page is reachable from the sidebar no
   matter what the author put in `main.*`.
 - Navigation first: brand, nav tree, and (at the bottom) the settings triggers.
+- **The brand is a way back.** It shows the current project's title and links to that
+  project's own root — the reader's "up", never a jump out of where they are. Under it
+  sits the chrome's one outbound link: a small muted subtitle crediting strike. Both are
+  fixed, not configurable; a link to the author's own repo is author content and belongs
+  in `main.*`.
 - **The right edge is the collapse control.** No arrow buttons: hovering the sidebar
   warms the edge line, hovering the edge itself lights it in the accent color, and
   clicking it toggles. The sidebar slides away; the edge strip slides to the screen's

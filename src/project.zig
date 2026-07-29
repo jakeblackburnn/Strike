@@ -5,9 +5,8 @@
 //! `.md`/`.sx` files (recursively, through subfolders) are its documents. A
 //! project may carry a `strike.yaml` that overrides nav labels, ordering,
 //! hidden paths, the home document, and display metadata; a site-level
-//! `strike.yaml` (at the content root) carries the picker title, default repo
-//! link, theme, width, and project order. Everything auto-discovers without any
-//! YAML.
+//! `strike.yaml` (at the content root) carries the picker title, theme, width,
+//! and project order. Everything auto-discovers without any YAML.
 //!
 //! If the content root itself has `.md`/`.sx` files directly inside (a "flat"
 //! layout, like a repo's `docs/` folder), the *entire tree* is scanned as one
@@ -72,7 +71,6 @@ pub const Project = struct {
     slug: []const u8,
     title: []const u8,
     description: []const u8, // "" if none
-    repo: []const u8,
     season: []const u8, // site default theme season ("", "fall", ...)
     time: []const u8, // site default theme time ("", "morning", "evening")
     width: []const u8, // site default content width ("" or bare rem number)
@@ -87,7 +85,6 @@ pub const Project = struct {
 
 pub const Site = struct {
     title: []const u8,
-    repo: []const u8,
     season: []const u8, // "" or a season name ("fall", "winter", "spring", "summer")
     time: []const u8, // "" (auto), "morning", or "evening"
     width: []const u8, // "" or a bare number (rem)
@@ -105,8 +102,6 @@ pub const Site = struct {
     /// used for the picker intro. Projects carry their own layered copy.
     sheet: sheet.Sheet = .empty,
 };
-
-const default_repo = "https://example.com/strike";
 
 /// Per-project parsed config + the accumulating document list, threaded through
 /// the recursive scan.
@@ -180,7 +175,6 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     const theme = parseTheme(site_cfg.getScalar("theme") orelse "");
     return .{
         .title = site_cfg.getScalar("title") orelse "strikedown",
-        .repo = site_cfg.getScalar("repo") orelse default_repo,
         .season = theme.season,
         .time = theme.time,
         .width = site_cfg.getScalar("width") orelse "",
@@ -250,7 +244,6 @@ fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8
         .slug = slug,
         .title = cfg.getScalar("title") orelse default_title,
         .description = cfg.getScalar("description") orelse "",
-        .repo = cfg.getScalar("repo") orelse site_cfg.getScalar("repo") orelse default_repo,
         .season = site_theme.season,
         .time = site_theme.time,
         .width = site_cfg.getScalar("width") orelse "",
@@ -353,7 +346,7 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
 
 /// Load a single .md/.sx file (a path relative to `dir`) as a synthetic
 /// single-page `Site`: one root project whose home is the file, routed at
-/// `/`. No nav, no repo link — the quick-preview path for `strike serve <file>`.
+/// `/`. No nav — the quick-preview path for `strike serve <file>`.
 pub fn loadFile(io: std.Io, gpa: Allocator, dir: std.Io.Dir, path: []const u8) !Site {
     const doc = try readMainDoc(io, gpa, dir, path, "/");
     const projects = try gpa.alloc(Project, 1);
@@ -361,7 +354,6 @@ pub fn loadFile(io: std.Io, gpa: Allocator, dir: std.Io.Dir, path: []const u8) !
         .slug = "",
         .title = doc.title,
         .description = "",
-        .repo = "",
         .season = "",
         .time = "",
         .width = "",
@@ -369,7 +361,7 @@ pub fn loadFile(io: std.Io, gpa: Allocator, dir: std.Io.Dir, path: []const u8) !
         .tree = &.{},
         .docs = &.{},
     };
-    return .{ .title = doc.title, .repo = "", .season = "", .time = "", .width = "", .projects = projects };
+    return .{ .title = doc.title, .season = "", .time = "", .width = "", .projects = projects };
 }
 
 /// Read `name` from `dir` into a heap `Doc` served at `route` — for docs
@@ -932,7 +924,6 @@ test "loadFile builds a synthetic single-page Site routed at /" {
     const site = try loadFile(testing.io, arena.allocator(), tmp.dir, "notes.md");
 
     try testing.expectEqualStrings("My Notes", site.title);
-    try testing.expectEqualStrings("", site.repo); // no repo link in the shell
     const p = site.projects[0];
     try testing.expectEqualStrings("/", p.home.?.route);
     try testing.expectEqual(@as(usize, 0), p.docs.len);

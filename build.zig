@@ -19,18 +19,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // `zig build run` -> serve `example/` (a fresh clone gets a live demo).
-    // Args after `--` replace that default entirely, so
+    // `zig build run` -> serve `docs/` (a fresh clone gets a live demo: the
+    // reference docs and the example tour, as a two-project site). Args after
+    // `--` replace that default entirely, so
     // `zig build run -- serve mynotes --watch` works.
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
     } else {
-        run_cmd.addArgs(&.{ "serve", "example" });
+        run_cmd.addArgs(&.{ "serve", "docs" });
     }
 
-    const run_step = b.step("run", "Build and run strike (default: serve example/)");
+    const run_step = b.step("run", "Build and run strike (default: serve docs/)");
     run_step.dependOn(&run_cmd.step);
 
     // `zig build test` -> run the unit tests in every src/*.zig file. (Imported

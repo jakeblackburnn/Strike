@@ -71,6 +71,9 @@ table or a figure that suffocates at the body width.
 concrete color, so text follows the reader's theme. Inline, the same command
 spells [a single accent phrase].color(accent) mid-sentence.
 
+Roles nest, and the inner one wins, so [`fg` reads as a reset].color(fg) back to
+the body color from inside a muted region.
+
 // end muted_aside
 
 // faq collapse()
@@ -79,11 +82,42 @@ spells [a single accent phrase].color(accent) mid-sentence.
 
 The first content element is the *leader*: it stays visible and becomes the
 control. Everything after it folds away until the reader opens it.
-`collapse(open)` starts expanded instead.
 
 Other commands on the same group apply to the folded body, not the leader.
 
 // end faq
+
+// faq_open collapse(open)
+
+**`collapse(open)` is the same fold, starting expanded**
+
+Use it when the body is the point and the fold is a courtesy — the reader can
+still collapse it, but nothing is hidden on arrival.
+
+// end faq_open
+
+`grid` takes any column count, not just two:
+
+// three grid(3)
+
+**One**
+
+Narrow columns want short content.
+
+// --
+
+**Two**
+
+Three across is about the limit at the default reading width.
+
+// --
+
+**Three**
+
+A `grid(n)` opened with the wrong number of sections warns on stderr and still
+renders.
+
+// end three
 
 ## Indentation
 

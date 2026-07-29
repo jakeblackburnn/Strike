@@ -1,0 +1,22 @@
+# Project config for the reference docs. Site-wide settings (theme, width,
+# serve defaults) live one level up in docs/strike.yaml; this file only shapes
+# how this project reads.
+
+title: Reference
+description: The language spec, the internal model, the config reference, and the design record.
+
+order:                  # nav order; unlisted entries follow alphabetically
+  - STRIKEDOWN.md
+  - MODEL.md
+  - STRIKE_YAML.md
+  - UI.md
+  - DESIGN.md
+  - design
+
+labels:                 # nav labels; otherwise the first heading, then the filename
+  STRIKEDOWN.md: The language
+  MODEL.md: The internal model
+  STRIKE_YAML.md: strike.yaml
+  UI.md: Reader UI
+  DESIGN.md: Design process
+  design: Design notes

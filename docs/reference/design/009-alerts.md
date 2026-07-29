@@ -11,7 +11,7 @@ bullet is superseded on colors only.
 ## Problem
 
 `> [!NOTE]` and friends — GFM's alert blockquotes — render as literal text.
-Closing the GFM gap itself needs no design note (docs/DESIGN.md); GFM is the
+Closing the GFM gap itself needs no design note (docs/reference/DESIGN.md); GFM is the
 spec: a blockquote whose first line is exactly `[!TYPE]` becomes a styled
 callout titled by its type. This note records only the **superset deltas**
 strikedown adds on top, since those change what a document means beyond GFM.

@@ -1,0 +1,70 @@
+# One flavor
+
+This file is named `syntax.sx`. Every other page in this project is a `.md`
+file, and that is the only difference between them — rename this one to
+`syntax.md` and not one byte of the output changes.
+
+## Why there are no dialects
+
+strike has no flavor switch, no dialect flag, and no branch in the renderer that
+asks which extension it is looking at. There is one parser and one pipeline:
+
+. plain markdown is a **subset** of strikedown, so every `.md` file is already a
+  valid strikedown document
+. superset syntax is **additive**, so it works in a `.md` file too — nothing
+  gates it behind the extension
+
+/skinny(80%)
+
+/center()
+
+The extension is a hint to your editor, not an instruction to the renderer.
+
+## So what is it for?
+
+Two reasons to reach for `.sx`:
+
+// why grid(2)
+
+**Signalling intent**
+
+A `.sx` extension tells a reader — human or tool — that this document leans on
+the superset and will look wrong in a plain markdown viewer.
+
+// --
+
+**Keeping `.md` honest**
+
+If a folder is going to be read on GitHub as well as through strike, keeping the
+superset in `.sx` files makes the split explicit.
+
+// end why
+
+> [!NOTE]
+> Neither reason is enforced. A `.md` file full of groups and commands renders
+> exactly the same as this one, and a `.sx` file containing nothing but plain
+> markdown is a perfectly ordinary document.
+
+## The same features, in a .sx file
+
+Here is superset syntax doing superset things, in a file with the other
+extension — proof by construction.
+
+// proof grid(2) color(muted)
+
+`grid(2)` on a group whose opener also carries `color(muted)`: two commands, one
+directive line.
+
+// --
+
+The [layout page](layout.md) explains both, and this is a cross-document link
+resolving from a `.sx` file to a `.md` one — which also needs no special case.
+
+// end proof
+
+/indent(2)
+
+Math works too: $\nabla \cdot \mathbf{E} = \rho / \varepsilon_0$.
+
+  And a whitespace-indented paragraph is still one step of indent, because the
+  block loop that reads it never learned what file it was reading.

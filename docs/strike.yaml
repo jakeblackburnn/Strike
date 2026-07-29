@@ -1,0 +1,22 @@
+# Site config for this folder, which is a working strike site: `zig build run`
+# serves it, and every top-level folder beside this file is one project, so `/`
+# is the project picker. `main.md` here is the picker's intro — a `main.*` at
+# the content root doesn't count as a loose document, which is what keeps this
+# in picker mode instead of collapsing into one root project.
+#
+# Every key is optional — delete this file and the site still works.
+
+title: strike documentation
+
+theme: winter evening   # season (fall|winter|spring|summer) and/or time (morning|evening)
+width: 46               # default content width in rem; readers override in Settings
+
+serve:                  # defaults for `strike serve docs`
+  watch: true
+
+projects:               # picker order; unlisted projects follow alphabetically
+  - reference
+  - example
+
+# Each project's display name and blurb live in its own strike.yaml `title:`
+# and `description:` — see reference/strike.yaml and example/strike.yaml.

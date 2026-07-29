@@ -50,11 +50,41 @@ a later one*.
 >
 > A bare `>` line starts a second one.
 
+Alerts are typed blockquotes — a `[!TYPE]` marker on the first line. There are
+eight types, and all eight are here:
+
 > [!NOTE]
-> Alerts are typed blockquotes: NOTE, TIP, IMPORTANT, WARNING, CAUTION, plus
-> TODO, EXAMPLE and QUESTION.
+> Something worth knowing, in passing.
+
+> [!TIP]
+> A shortcut you would not have guessed.
+
+> [!IMPORTANT]
+> Don't skip this one.
 
 > [!WARNING] The body can also start on the marker's own line.
+
+> [!CAUTION]
+> Stronger than a warning: this is how you lose work.
+
+> [!TODO]
+> Unfinished — a note to yourself that survives into the rendered page.
+
+> [!EXAMPLE]
+> `strike serve docs --watch`
+
+> [!QUESTION]
+> Should this section say more? Alerts are as good for open questions as for
+> answers.
+
+## Horizontal rules
+
+Three or more `-`, `*`, or `_` on a line of their own draw a rule:
+
+---
+
+Above and below that line are two separate paragraphs. A rule is a content
+element like any other, so a `/cmd()` line can take one.
 
 ## Code
 
@@ -95,3 +125,9 @@ a bare URL: https://ziglang.org
 
 A [link to another document](layout.md) resolves to its route here, and stays
 a working file link on GitHub.
+
+Images use the same syntax with a leading `!`, and their targets are left
+content-relative — `logo.svg` sits next to this file on disk, and `strike serve`
+hands it out from there:
+
+![the strike logo](logo.svg)

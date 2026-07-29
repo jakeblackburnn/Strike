@@ -1,10 +1,10 @@
 //! Turns a loaded `project.Site` into finished HTML pages: the `/` picker, each
 //! project's home, and each document, all with their project's sidebar nav.
 //!
-//! This is the single shared implementation of "render this Site" — the `serve`
-//! and `build` CLI subcommands (`main.zig`) and `build.zig`'s comptime static
-//! export all call `renderAll` so page assembly can't drift between the live
-//! server and the static-export path the way it used to.
+//! This is the single shared implementation of "render this Site" — both the
+//! `serve` and `build` CLI subcommands (`main.zig`) call `renderAll`, so page
+//! assembly can't drift between the live server and the static-export path the
+//! way it used to.
 //!
 //! If `site.projects` contains the implicit root project (`slug == ""`, see
 //! `project.zig`), its home takes over route `/` instead of the picker — there
@@ -110,6 +110,14 @@ pub fn homeHref(base: []const u8) []const u8 {
     return if (base.len > 0) base else "/";
 }
 
+/// The href of one project's own root — where its sidebar brand links. A root
+/// project (empty slug) *is* the front page; every other project sits at
+/// `<base>/<slug>`. Caller owns the result.
+pub fn projectHref(gpa: Allocator, p: project.Project) ![]const u8 {
+    if (p.slug.len == 0) return gpa.dupe(u8, homeHref(p.base));
+    return std.fmt.allocPrint(gpa, "{s}/{s}", .{ p.base, p.slug });
+}
+
 /// Map a rendered page to its on-disk export path: the front page (picker or
 /// root-project home) -> `"index.html"`; a project home -> `"<slug>/index.html"`;
 /// a document -> `"<route>.html"`. `base` (the site's base path, "" if none) is
@@ -145,8 +153,8 @@ pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
     const picker_shell: Shell = .{
         .title = site.title,
         .brand = site.title,
+        // The picker is not inside a project; its brand links to itself.
         .home_href = homeHref(site.base),
-        .repo_url = site.repo,
         .nav_html = nav,
         .season = site.season,
         .time = site.time,
@@ -184,11 +192,12 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
 
     const nav = try renderNav(gpa, p.slug, p.tree, "");
     defer gpa.free(nav);
+    const brand_href = try projectHref(gpa, p);
+    defer gpa.free(brand_href);
     const home_shell: Shell = .{
         .title = p.title,
         .brand = p.title,
-        .home_href = homeHref(p.base),
-        .repo_url = p.repo,
+        .home_href = brand_href,
         .nav_html = nav,
         .season = p.season,
         .time = p.time,
@@ -204,11 +213,12 @@ pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 
     defer gpa.free(nav);
     const body = try render_html.render(gpa, d.md, .{ .sheet = p.sheet, .link_base = d.route_dir });
     defer gpa.free(body);
+    const brand_href = try projectHref(gpa, p);
+    defer gpa.free(brand_href);
     const doc_shell: Shell = .{
         .title = d.title,
         .brand = p.title,
-        .home_href = homeHref(p.base),
-        .repo_url = p.repo,
+        .home_href = brand_href,
         .nav_html = nav,
         .season = p.season,
         .time = p.time,
@@ -360,10 +370,10 @@ test "renderNav returns empty string for an empty tree" {
 
 test "renderPicker default is a heading and a plain link list" {
     var projects = [_]project.Project{
-        .{ .slug = "a", .title = "A & Co", .description = "desc", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
-        .{ .slug = "b", .title = "B", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
+        .{ .slug = "a", .title = "A & Co", .description = "desc", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
+        .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .projects = &projects };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
     const body = try renderPicker(testing.allocator, site);
     defer testing.allocator.free(body);
 
@@ -381,7 +391,6 @@ test "renderProjectHome escapes generated-index title, description and labels" {
         .slug = "p",
         .title = "Title <script>",
         .description = "desc & more",
-        .repo = "",
         .season = "",
         .time = "",
         .width = "",
@@ -405,10 +414,10 @@ test "renderAll renders the picker, each project home, and each doc" {
     var a_tree = [_]project.NavNode{.{ .doc = &doc1 }};
     var b_tree = [_]project.NavNode{.{ .doc = &doc2 }};
     var projects = [_]project.Project{
-        .{ .slug = "a", .title = "A", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &a_tree, .docs = &a_docs },
-        .{ .slug = "b", .title = "B", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &b_tree, .docs = &b_docs },
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &a_tree, .docs = &a_docs },
+        .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &b_tree, .docs = &b_docs },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .projects = &projects };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
 
     // `renderAll`'s `Page.route` is a mix of allocated (project homes) and
     // borrowed (picker's "/", docs' `Doc.route`) strings — the same
@@ -438,10 +447,10 @@ test "renderAll gives the root project's home route \"/\" instead of a picker" {
     var root_tree = [_]project.NavNode{.{ .doc = &root_doc }};
     var sub_tree = [_]project.NavNode{.{ .doc = &sub_doc }};
     var projects = [_]project.Project{
-        .{ .slug = "", .title = "Site", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &root_tree, .docs = &root_docs },
-        .{ .slug = "blog", .title = "Blog", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &sub_tree, .docs = &sub_docs },
+        .{ .slug = "", .title = "Site", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &root_tree, .docs = &root_docs },
+        .{ .slug = "blog", .title = "Blog", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &sub_tree, .docs = &sub_docs },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .projects = &projects };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -466,9 +475,9 @@ test "renderAll emits a folder page for a folder with a main.*" {
     };
     var docs = [_]*project.Doc{&doc};
     var projects = [_]project.Project{
-        .{ .slug = "p", .title = "P", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &tree, .docs = &docs },
+        .{ .slug = "p", .title = "P", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &tree, .docs = &docs },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .projects = &projects };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -497,10 +506,10 @@ test "renderNav links a folder's label to its main page and marks it active" {
 
 test "picker page sidebar nav lists every project" {
     var projects = [_]project.Project{
-        .{ .slug = "a", .title = "A", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
-        .{ .slug = "b", .title = "B", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
+        .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .projects = &projects };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
     const page = try renderPickerPage(testing.allocator, site);
     defer testing.allocator.free(page);
 
@@ -511,9 +520,9 @@ test "renderPicker: site main.* dictates the entire page" {
     var main_doc = testDoc("/", "Intro");
     main_doc.md = "# Intro\n\nwelcome";
     var projects = [_]project.Project{
-        .{ .slug = "a", .title = "A", .description = "", .repo = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .projects = &projects, .main = &main_doc };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects, .main = &main_doc };
     const body = try renderPicker(testing.allocator, site);
     defer testing.allocator.free(body);
 
@@ -577,9 +586,9 @@ test "renderAll routes and picker links carry the site base" {
     var docs = [_]*project.Doc{&doc};
     var tree = [_]project.NavNode{.{ .doc = &doc }};
     var projects = [_]project.Project{
-        .{ .slug = "a", .title = "A", .description = "", .repo = "", .season = "", .time = "", .width = "", .base = "/docs", .home = null, .tree = &tree, .docs = &docs },
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .base = "/docs", .home = null, .tree = &tree, .docs = &docs },
     };
-    const site: project.Site = .{ .title = "Site", .repo = "", .season = "", .time = "", .width = "", .base = "/docs", .projects = &projects };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .base = "/docs", .projects = &projects };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -588,7 +597,51 @@ test "renderAll routes and picker links carry the site base" {
     try testing.expectEqualStrings("/docs", pages[0].route); // the front page
     try testing.expectEqual(.picker, pages[0].kind);
     try testing.expectEqualStrings("/docs/a", pages[1].route);
-    // picker card + brand home link both point under the base
+    // The picker links each project under the base; the picker's own brand
+    // links to the front page, since the picker sits in no project.
     try testing.expect(std.mem.indexOf(u8, pages[0].html, "href=\"/docs/a\"") != null);
-    try testing.expect(std.mem.indexOf(u8, pages[1].html, "href=\"/docs\"") != null);
+    try testing.expect(std.mem.indexOf(u8, pages[0].html, "class=\"brand-home\" href=\"/docs\"") != null);
+    // A project page's brand links to that project's root, base included.
+    try testing.expect(std.mem.indexOf(u8, pages[1].html, "class=\"brand-home\" href=\"/docs/a\"") != null);
+}
+
+test "the sidebar brand links to the current project's root" {
+    var doc = testDoc("/blog/post", "Post");
+    var docs = [_]*project.Doc{&doc};
+    var tree = [_]project.NavNode{.{ .doc = &doc }};
+    const p: project.Project = .{
+        .slug = "blog",
+        .title = "Blog",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &tree,
+        .docs = &docs,
+    };
+    // From a document deep in the project, the brand still points at /blog —
+    // not at the site root, and not at the document.
+    const page = try renderDocPage(testing.allocator, p, &doc);
+    defer testing.allocator.free(page);
+    try testing.expect(std.mem.indexOf(u8, page, "class=\"brand-home\" href=\"/blog\">Blog</a>") != null);
+
+    // A root project *is* the front page, so its brand links there.
+    var root_doc = testDoc("/hello", "Hello");
+    var root_docs = [_]*project.Doc{&root_doc};
+    var root_tree = [_]project.NavNode{.{ .doc = &root_doc }};
+    const root: project.Project = .{
+        .slug = "",
+        .title = "Site",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &root_tree,
+        .docs = &root_docs,
+    };
+    const root_page = try renderDocPage(testing.allocator, root, &root_doc);
+    defer testing.allocator.free(root_page);
+    try testing.expect(std.mem.indexOf(u8, root_page, "class=\"brand-home\" href=\"/\">Site</a>") != null);
 }

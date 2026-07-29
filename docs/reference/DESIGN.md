@@ -29,11 +29,11 @@ need goes through the language process.
 
 | Document | Governs |
 | --- | --- |
-| `docs/STRIKEDOWN.md` | The language spec — every form, its meaning, canonical examples. Implementation-independent: every sentence must stay true for the PDF backend. |
-| `docs/design/NNN-*.md` | One design note per language feature — the candidates considered and the decision made. History; the spec is truth. |
-| `docs/MODEL.md` | The internal model of record — the document tree, the pipeline, the taxonomy↔types mapping, and the extension recipes implementations follow. |
-| `docs/UI.md` | Reader chrome principles. |
-| `docs/STRIKE_YAML.md` | Reader/config reference. |
+| `docs/reference/STRIKEDOWN.md` | The language spec — every form, its meaning, canonical examples. Implementation-independent: every sentence must stay true for the PDF backend. |
+| `docs/reference/design/NNN-*.md` | One design note per language feature — the candidates considered and the decision made. History; the spec is truth. |
+| `docs/reference/MODEL.md` | The internal model of record — the document tree, the pipeline, the taxonomy↔types mapping, and the extension recipes implementations follow. |
+| `docs/reference/UI.md` | Reader chrome principles. |
+| `docs/reference/STRIKE_YAML.md` | Reader/config reference. |
 
 ## When a design note is required
 
@@ -46,7 +46,7 @@ fixes toward already-specified behavior, and refactors.
 
 ## Design note lifecycle
 
-Notes live at `docs/design/NNN-slug.md`, numbered sequentially, never deleted.
+Notes live at `docs/reference/design/NNN-slug.md`, numbered sequentially, never deleted.
 
 - **draft** — candidates and analysis exist; no decision yet. Nothing is implemented
   from a draft.
@@ -74,5 +74,5 @@ This repo is developed with AI assistance; the process is shaped around that:
 - **Spec examples are the tests.** Each canonical example in an accepted note becomes a
   parser test in `src/strikedown.zig` and an end-to-end test in `src/render_html.zig`,
   quoting the example.
-- **Implementation follows the recipes** in `docs/MODEL.md` ("Extension recipes") —
+- **Implementation follows the recipes** in `docs/reference/MODEL.md` ("Extension recipes") —
   the design note says *what*; the recipe says *how*.

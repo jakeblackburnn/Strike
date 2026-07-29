@@ -2,7 +2,7 @@
 
 **Status: shipped** (decision dictated by Jack, 2026-07-16; implemented and tested the
 same day). No new syntax — this note revises the *semantics* of the layout-level rule
-(`001-groups.md`, `002-single-command.md`, `docs/STRIKEDOWN.md`).
+(`001-groups.md`, `002-single-command.md`, `docs/reference/STRIKEDOWN.md`).
 
 ## Problem
 

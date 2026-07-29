@@ -18,7 +18,7 @@
 //!     Color roles emit as `var(--<role>)` references, resolved by the active
 //!     theme in `shell.zig` — links/blockquotes/code keep their own
 //!     element-selector colors inside colored regions (deliberate; see
-//!     `docs/design/006-color.md`)
+//!     `docs/reference/design/006-color.md`)
 //!
 //! The end-to-end `expectRender` tests at the bottom are the renderer's
 //! specification — they predate the parse/emit split and must keep passing
@@ -44,7 +44,13 @@ pub const Options = struct {
     /// with an optional `#fragment`) resolve against it into extensionless
     /// routes; absolute URLs, site-absolute paths, and non-doc targets pass
     /// through untouched.
-    link_base: []const u8 = "",
+    ///
+    /// `null` means **no site**: a doc-relative target is left exactly as
+    /// written, because there is no route table for it to resolve against.
+    /// That is the right answer for `strike render`, which renders one file
+    /// with no project around it — rewriting `other.md` to `/other` there
+    /// invents a link to a page that does not exist.
+    link_base: ?[]const u8 = null,
 };
 
 /// Render strikedown/markdown source to an HTML fragment (no surrounding
@@ -70,7 +76,7 @@ pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) ![]u8 {
 /// constant with an `Attrs` field read below.
 const grid_gap = "1.5rem";
 
-/// How a block realizes `indent` (`docs/design/013-command-realization.md`):
+/// How a block realizes `indent` (`docs/reference/design/013-command-realization.md`):
 /// flowing prose takes the typographic first-line tab, an element that owns a
 /// structural left edge (a list's marker column) shifts as a whole box.
 const IndentMode = enum { first_line, box };
@@ -133,7 +139,7 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
 /// carried down rather than left entirely to the cascade. Inner wins — a
 /// block's own `attrs.indent` overrides what it inherited, matching the
 /// language's scoping rule.
-fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8, inherited_indent: usize) Writer.Error!void {
+fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?[]const u8, inherited_indent: usize) Writer.Error!void {
     const indent = if (block.attrs.indent != 0) block.attrs.indent else inherited_indent;
     switch (block.kind) {
         .heading => |h| {
@@ -244,7 +250,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8, inherit
 /// there would make the summary a grid item); `collapse` reaches the
 /// emitter only as element shape. A group with one block or none gets the
 /// empty-bar summary and folds everything.
-fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: []const u8, indent: usize) Writer.Error!void {
+fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: ?[]const u8, indent: usize) Writer.Error!void {
     var total: usize = 0;
     for (g.sections) |section| total += section.len;
     const has_leader = total >= 2 and g.sections[0].len > 0;
@@ -287,7 +293,7 @@ fn alertLabel(a: strikedown.Alert) []const u8 {
 /// `attrs` styles the outer `<ul>`/`<ol>` only; nested lists (`Item.Tail`)
 /// aren't `Block`s and can't carry attrs — the recursion passes `.{}`, which
 /// also keeps a sublist from re-applying an indent its parent already shifted.
-fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_base: []const u8) Writer.Error!void {
+fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_base: ?[]const u8) Writer.Error!void {
     try w.writeAll(if (list.ordered) "<ol" else "<ul");
     // Raw lists render markerless; the class is the hook, reader CSS
     // removes bullets and marker indentation (008-raw-lists).
@@ -322,7 +328,7 @@ fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_bas
 }
 
 /// One `<th>`/`<td>` with its alignment style and inline content.
-fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const strikedown.Inline, link_base: []const u8) Writer.Error!void {
+fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const strikedown.Inline, link_base: ?[]const u8) Writer.Error!void {
     try w.writeByte('<');
     try w.writeAll(tag);
     switch (al) {
@@ -338,7 +344,7 @@ fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const st
     try w.writeByte('>');
 }
 
-fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: []const u8) Writer.Error!void {
+fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const u8) Writer.Error!void {
     for (inls) |inl| switch (inl) {
         .text => |s| try escapeInto(w, s),
         .code => |s| {
@@ -360,8 +366,15 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: []const u
         },
         .link => |l| {
             try w.writeAll("<a href=\"");
-            if (docLinkPath(l.url)) |path| {
-                try writeDocHref(w, link_base, path, l.url[path.len..]);
+            // Only a renderer that knows the site rewrites doc-relative
+            // targets; with no `link_base` there is no route to rewrite to,
+            // so the target stays exactly as the author wrote it.
+            if (link_base) |base| {
+                if (docLinkPath(l.url)) |path| {
+                    try writeDocHref(w, base, path, l.url[path.len..]);
+                } else {
+                    try escapeAttrInto(w, l.url);
+                }
             } else {
                 try escapeAttrInto(w, l.url);
             }
@@ -469,7 +482,7 @@ fn expectRender(expected: []const u8, md: []const u8) !void {
     try std.testing.expectEqualStrings(expected, got);
 }
 
-fn expectRenderAt(link_base: []const u8, expected: []const u8, md: []const u8) !void {
+fn expectRenderAt(link_base: ?[]const u8, expected: []const u8, md: []const u8) !void {
     const got = try render(std.testing.allocator, md, .{ .link_base = link_base });
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings(expected, got);
@@ -496,6 +509,13 @@ test "heading anchor ids" {
     );
     // all-punctuation heading falls back to "section"
     try expectRender("<h1 id=\"section\">???</h1>\n", "# ???");
+    // non-Latin headings keep their text, so they get distinct ids instead of
+    // both collapsing onto the "section" fallback
+    try expectRender(
+        "<h1 id=\"中文\">中文</h1>\n<h1 id=\"日本語\">日本語</h1>\n",
+        "# 中文\n\n# 日本語",
+    );
+    try expectRender("<h2 id=\"café\">Café</h2>\n", "## Café");
 }
 
 test "paragraph joins soft-wrapped lines" {
@@ -524,7 +544,7 @@ test "triple-star renders nested bold+italic, not a leftover asterisk" {
     try expectRender("<p>a <strong><em>b</em></strong> c</p>\n", "a ***b*** c");
 }
 
-// The canonical examples of docs/design/014-flanking.md, end to end.
+// The canonical examples of docs/reference/design/014-flanking.md, end to end.
 
 test "flanking: asterisks in prose render literally" {
     try expectRender("<p>a * b * c</p>\n", "a * b * c");
@@ -558,11 +578,12 @@ test "links" {
 
 test "doc-relative .md/.sx links resolve to routes" {
     // from the site root: extension drops, subfolder path survives
-    try expectRender(
+    try expectRenderAt(
+        "",
         "<p><a href=\"/design/001-groups\">groups</a></p>\n",
         "[groups](design/001-groups.md)",
     );
-    try expectRender("<p><a href=\"/notes\">n</a></p>\n", "[n](notes.sx)");
+    try expectRenderAt("", "<p><a href=\"/notes\">n</a></p>\n", "[n](notes.sx)");
     // from a nested doc: sibling and `../` targets resolve against link_base
     try expectRenderAt(
         "/design",
@@ -578,7 +599,8 @@ test "doc-relative .md/.sx links resolve to routes" {
     try expectRenderAt("", "<p><a href=\"/a\">a</a></p>\n", "[a](../../a.md)");
     try expectRenderAt("/p", "<p><a href=\"/p/a\">a</a></p>\n", "[a](./a.md)");
     // a fragment survives the rewrite
-    try expectRender(
+    try expectRenderAt(
+        "",
         "<p><a href=\"/spec#anchors\">s</a></p>\n",
         "[s](spec.md#anchors)",
     );
@@ -586,6 +608,21 @@ test "doc-relative .md/.sx links resolve to routes" {
     try expectRenderAt("/p", "<p><a href=\"/p/sub\">s</a></p>\n", "[s](sub/main.md)");
     try expectRenderAt("/p", "<p><a href=\"/p\">home</a></p>\n", "[home](main.md)");
     try expectRenderAt("", "<p><a href=\"/\">home</a></p>\n", "[home](main.md)");
+}
+
+test "without a site, doc-relative targets are left exactly as written" {
+    // `strike render` has no project around the file and so no route table.
+    // Rewriting here used to invent `/other`, a link to a page that does not
+    // exist; the source stays a working file link instead.
+    try expectRender("<p><a href=\"other.md\">o</a></p>\n", "[o](other.md)");
+    try expectRender("<p><a href=\"notes.sx\">n</a></p>\n", "[n](notes.sx)");
+    try expectRender(
+        "<p><a href=\"design/spec.md#anchors\">s</a></p>\n",
+        "[s](design/spec.md#anchors)",
+    );
+    try expectRender("<p><a href=\"../up.md\">u</a></p>\n", "[u](../up.md)");
+    // Everything that never rewrote is unaffected either way.
+    try expectRender("<p><a href=\"https://z.dev\">z</a></p>\n", "[z](https://z.dev)");
 }
 
 test "non-doc link targets pass through untouched" {
@@ -654,12 +691,14 @@ test "raw list: mixed markers split; task boxes still work" {
 test "a list of links and code spans renders every item intact" {
     // Regression: items share one flow buffer, and code/link inlines slice
     // their input — earlier items used to render overwritten bytes.
-    try expectRender(
+    try expectRenderAt(
+        "",
         "<ul>\n<li><a href=\"/one\">a</a> <code>code</code></li>\n" ++
             "<li><a href=\"/two\">b</a> <code>more</code></li>\n</ul>\n",
         "- [a](one.md) `code`\n- [b](two.md) `more`",
     );
-    try expectRender(
+    try expectRenderAt(
+        "",
         "<blockquote>\n<p><a href=\"/one\">a</a> <code>code</code></p>\n" ++
             "<p><a href=\"/two\">b</a></p>\n</blockquote>\n",
         "> [a](one.md) `code`\n>\n> [b](two.md)",
@@ -829,6 +868,29 @@ test "escaped pipe stays inside its cell" {
         "<table>\n<thead>\n<tr><th>a|b</th></tr>\n</thead>\n<tbody>\n" ++
             "<tr><td>x</td></tr>\n</tbody>\n</table>\n",
         "| a\\|b |\n|---|\n| x |",
+    );
+    // GFM splits cells before parsing inlines, so a pipe inside a code span
+    // needs the same escape — and since code bodies are never inline-parsed,
+    // the cell splitter is what has to undo it. Previously this kept a
+    // literal backslash in the rendered `<code>`.
+    try expectRender(
+        "<table>\n<thead>\n<tr><th><code>a|b</code></th></tr>\n</thead>\n<tbody>\n" ++
+            "<tr><td>x</td></tr>\n</tbody>\n</table>\n",
+        "| `a\\|b` |\n|---|\n| x |",
+    );
+    // An escaped *backslash* before a pipe leaves the pipe a real delimiter:
+    // two cells, the first ending in a literal backslash.
+    try expectRender(
+        "<table>\n<thead>\n<tr><th>a\\</th><th>b</th></tr>\n</thead>\n<tbody>\n" ++
+            "<tr><td>x</td><td>y</td></tr>\n</tbody>\n</table>\n",
+        "| a\\\\|b |\n|---|---|\n| x | y |",
+    );
+    // An *unescaped* pipe still splits, code span or not — GFM's rule, so a
+    // table renders the same here as it does on GitHub.
+    try expectRender(
+        "<table>\n<thead>\n<tr><th>`a</th><th>b`</th></tr>\n</thead>\n<tbody>\n" ++
+            "<tr><td>x</td><td>y</td></tr>\n</tbody>\n</table>\n",
+        "| `a|b` |\n|---|---|\n| x | y |",
     );
 }
 
@@ -1124,7 +1186,7 @@ test "color span restricted forms degrade to prose" {
     try expectRender("<p>[x].color(accent)</p>\n", "\\[x].color(accent)");
 }
 
-// The canonical examples of docs/design/015-paragraph-indent.md, end to end.
+// The canonical examples of docs/reference/design/015-paragraph-indent.md, end to end.
 
 test "indent: a whitespace-led paragraph renders one step, whatever the whitespace" {
     try expectRender(
@@ -1168,7 +1230,7 @@ test "indent on a group cascades to each child via CSS inheritance, not per-chil
     // text-indent is set once on the wrapper; every child paragraph is
     // plain (no style of its own) and picks up its own first-line indent
     // purely by CSS inheritance — the same wrapper-only pattern color()
-    // already uses (docs/design/006-color.md).
+    // already uses (docs/reference/design/006-color.md).
     try expectRender(
         "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
             "<div class=\"sx-group-sec\">\n<p>first</p>\n<p>second</p>\n</div>\n</div>\n",

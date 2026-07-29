@@ -7,9 +7,9 @@
 //!   strike build  [dir] [-o outdir]                   Export a content directory to static HTML.
 //!   strike init   [dir] [--site]                      Scaffold a starter strike.yaml.
 //!
-//! `serve`'s HTTP server itself lives in `server.zig`; `build` shares the
-//! exact same `site.renderAll`/`site.outPath` pipeline `build.zig`'s comptime
-//! static export uses, so the two can't drift.
+//! `serve`'s HTTP server itself lives in `server.zig`; `build` renders through
+//! the same `site.renderAll`/`site.outPath` pipeline `serve` does, so the
+//! static export and the live preview can't drift.
 
 const std = @import("std");
 const project = @import("project.zig");
@@ -239,9 +239,9 @@ fn parseBuildArgs(args: anytype) !BuildArgs {
     return parsed;
 }
 
-/// Static-export `dir` to `out_dir`, sharing `site.renderAll`/`site.outPath`
-/// with `build.zig`'s comptime export — the CLI equivalent of `zig build`,
-/// usable without a Zig toolchain once `strike` is installed.
+/// Static-export `dir` to `out_dir` through the same
+/// `site.renderAll`/`site.outPath` pipeline `serve` renders with. This is the
+/// only static export there is — `zig build` only compiles the CLI.
 fn cmdBuild(gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     const parsed = try parseBuildArgs(args);
 
@@ -279,7 +279,6 @@ const project_yaml_template =
 ;
 const site_yaml_template =
     \\title: strikedown
-    \\# repo: https://github.com/you/strike
     \\# theme: winter evening  # season (fall|winter|spring|summer) and/or time (morning|evening)
     \\# width: 44
     \\# base: /docs        # mount the site under a subpath of an existing website

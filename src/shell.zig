@@ -15,14 +15,19 @@ const escapeAttrInto = html.escapeAttrInto;
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
+/// The strike project itself. The sidebar's brand subtitle always links here —
+/// it is attribution, not configuration, so no yaml key sets it.
+pub const project_url = "https://github.com/jakeblackburnn/Strike";
+
 /// The per-page chrome threaded into `wrapPage`: the document title, the sidebar
-/// brand text and its home link, the repo-link URL, and the pre-rendered
-/// `.sidebar-nav` contents (empty for the project picker).
+/// brand text and the link it carries (the current project's own root), and the
+/// pre-rendered `.sidebar-nav` contents (empty for the project picker).
 pub const Shell = struct {
     title: []const u8,
     brand: []const u8,
+    /// Where the brand links: the root of the project being read (`/<slug>`,
+    /// or `/` for a root project and the picker).
     home_href: []const u8,
-    repo_url: []const u8,
     nav_html: []const u8,
     /// Site default theme (season + time) and width, used as the pre-paint
     /// fallback when the reader has no `localStorage` preference yet.
@@ -33,10 +38,11 @@ pub const Shell = struct {
 };
 
 /// A minimal shell for standalone rendering with no project/site context
-/// (`strike render`): no sidebar nav and no repo link (both degrade to nothing
-/// in `wrapPage`), brand falls back to the page's own title.
+/// (`strike render`): no sidebar nav (it degrades to nothing in `wrapPage`),
+/// brand falls back to the page's own title, and there is no project root to
+/// link to.
 pub fn standalone(title: []const u8) Shell {
-    return .{ .title = title, .brand = title, .home_href = "#", .repo_url = "", .nav_html = "" };
+    return .{ .title = title, .brand = title, .home_href = "#", .nav_html = "" };
 }
 
 /// The `--watch` live-reload client. `server.zig` splices this before
@@ -70,14 +76,8 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     try w.writeAll(head_post_b);
     try escapeInto(w, shell.brand);
     try w.writeAll(head_post_c);
-    if (shell.repo_url.len > 0) {
-        try w.writeAll(repo_link_pre);
-        try escapeAttrInto(w, shell.repo_url);
-        try w.writeAll(repo_link_post);
-    }
-    try w.writeAll(head_post_d);
     try w.writeAll(shell.nav_html);
-    try w.writeAll(head_post_e);
+    try w.writeAll(head_post_d);
     try w.writeAll(body_html);
     try w.writeAll(page_tail);
     return out.toOwnedSlice();
@@ -296,14 +296,16 @@ const head_post_a =
     \\    background: var(--sidebar-bg);
     \\    transition: transform .2s ease;
     \\  }
-    \\  .sidebar-brand { display: flex; align-items: center; gap: .5rem; font-weight: 600; font-size: 1.05rem; letter-spacing: .02em; }
-    \\  .repo-link { display: inline-flex; color: var(--muted); }
-    \\  .repo-link:hover { color: var(--accent); }
-    \\  .repo-link svg { display: block; }
-    \\  .sidebar-nav { flex: 1; min-height: 0; overflow-y: auto; }
-    \\  .sidebar-brand { justify-content: space-between; }
+    \\  /* Brand block: the project title links to that project's own root, with
+    \\     a small muted subtitle crediting strike (a text link, per UI.md — the
+    \\     one outbound link in the chrome). */
+    \\  .sidebar-head { display: flex; flex-direction: column; gap: .1rem; }
+    \\  .sidebar-brand { font-weight: 600; font-size: 1.05rem; letter-spacing: .02em; }
     \\  .brand-home { color: inherit; text-decoration: none; }
     \\  .brand-home:hover { color: var(--accent); }
+    \\  .brand-repo { font-size: .75rem; color: var(--muted); text-decoration: none; }
+    \\  .brand-repo:hover { color: var(--accent); text-decoration: underline; }
+    \\  .sidebar-nav { flex: 1; min-height: 0; overflow-y: auto; }
     \\  .nav-tree { list-style: none; margin: 0; padding: 0; font-size: .88rem; }
     \\  .nav-tree .nav-tree { margin-left: .4rem; border-left: 1px solid var(--border); padding-left: .25rem; }
     \\  .nav-tree li { margin: .05rem 0; }
@@ -378,36 +380,27 @@ const head_post_a =
     \\</head>
     \\<body>
     \\<aside class="sidebar">
-    \\  <div class="sidebar-brand">
-    \\    <a class="brand-home" href="
+    \\  <div class="sidebar-head">
+    \\    <div class="sidebar-brand"><a class="brand-home" href="
 ;
 
-// `head_post_a` ends mid-attribute so `wrapPage` can splice the brand's home
-// `href`, the brand text, the repo-link `href`, and the rendered sidebar nav.
+// `head_post_a` ends mid-attribute so `wrapPage` can splice the brand's link
+// (the current project's root), the brand text, and the rendered sidebar nav.
 const head_post_b =
     \\">
 ;
+
+// The brand subtitle is a constant: it credits strike itself, so unlike the
+// brand above it needs nothing from the page.
 const head_post_c =
-    \\</a>
-;
-
-// The repo-link anchor itself — spliced in by `wrapPage` only when
-// `shell.repo_url` is non-empty, so a standalone page (no repo to link to)
-// omits it entirely instead of rendering a link to nowhere.
-const repo_link_pre =
-    \\    <a class="repo-link" href="
-;
-const repo_link_post =
-    \\" target="_blank" rel="noopener noreferrer" aria-label="Strike repository" title="Strike repository">
-    \\      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-    \\    </a>
-;
-
-const head_post_d =
+    \\</a></div>
+    \\    <a class="brand-repo" href="
+++ project_url ++
+    \\" target="_blank" rel="noopener noreferrer">built with strike</a>
     \\  </div>
     \\  <nav class="sidebar-nav">
 ;
-const head_post_e =
+const head_post_d =
     \\</nav>
     \\  <div class="sidebar-settings">
     \\    <button id="theme-toggle" class="settings-toggle" type="button" aria-expanded="false">Theme</button>
@@ -574,7 +567,6 @@ test "wrapPage emits sidebar, settings panel and content body" {
         .title = "Doc",
         .brand = "Data Mining",
         .home_href = "/",
-        .repo_url = "https://example.com/strike",
         .nav_html = "<ul class=\"nav-tree\"></ul>",
     };
     const page = try wrapPage(std.testing.allocator, shell, "<p>hi</p>\n");
@@ -610,9 +602,10 @@ test "wrapPage emits sidebar, settings panel and content body" {
     try std.testing.expect(std.mem.indexOf(u8, page, ".sidebar:hover + .sidebar-edge::before") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar-edge { left: -.75rem; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"sidebar\")") != null);
-    // Repository link with the external-link icon next to the brand.
-    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"repo-link\"") != null);
+    // The brand subtitle credits strike and opens in a new tab.
+    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"brand-repo\" href=\"" ++ project_url ++ "\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "target=\"_blank\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ">built with strike</a>") != null);
     // Content width is driven by the CSS variable the slider sets.
     try std.testing.expect(std.mem.indexOf(u8, page, "max-width: var(--content-width, 44rem)") != null);
     // The seasonal rules and the no-flash bootstrap are wired up.
@@ -623,7 +616,7 @@ test "wrapPage emits sidebar, settings panel and content body" {
 }
 
 test "collapse summary resets text-indent so an ancestor indent() never reaches the arrow" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .repo_url = "", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -635,7 +628,7 @@ test "collapse summary resets text-indent so an ancestor indent() never reaches 
     try std.testing.expect(std.mem.indexOf(u8, page, ".sx-collapse > summary { cursor: pointer; list-style: none; margin: -.35rem -.75rem; padding: .35rem .75rem; border-radius: 8px; transition: background .15s ease; text-indent: 0; }") != null);
 }
 
-test "standalone shell has no nav and no repo link" {
+test "standalone shell has no nav and no project root to link to" {
     const shell = standalone("My Doc");
     const page = try wrapPage(std.testing.allocator, shell, "<p>hi</p>\n");
     defer std.testing.allocator.free(page);
@@ -643,16 +636,8 @@ test "standalone shell has no nav and no repo link" {
     try std.testing.expect(std.mem.indexOf(u8, page, "<title>My Doc</title>") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "brand-home\" href=\"#\">My Doc</a>") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "<nav class=\"sidebar-nav\"></nav>") != null);
-}
-
-test "empty repo_url omits the repo-link anchor entirely" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .repo_url = "", .nav_html = "" };
-    const page = try wrapPage(std.testing.allocator, shell, "");
-    defer std.testing.allocator.free(page);
-
-    // The stylesheet still defines the `.repo-link` class either way; what must
-    // be absent is the anchor element itself.
-    try std.testing.expect(std.mem.indexOf(u8, page, "<a class=\"repo-link\"") == null);
+    // The subtitle is attribution, so even a standalone page carries it.
+    try std.testing.expect(std.mem.indexOf(u8, page, ">built with strike</a>") != null);
 }
 
 test "wrapPage wires the pre-paint theme bootstrap and never the reload script" {
@@ -660,7 +645,6 @@ test "wrapPage wires the pre-paint theme bootstrap and never the reload script" 
         .title = "T",
         .brand = "B",
         .home_href = "/",
-        .repo_url = "",
         .nav_html = "",
     };
     const page = try wrapPage(std.testing.allocator, sh, "<p>x</p>\n");

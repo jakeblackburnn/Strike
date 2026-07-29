@@ -1,6 +1,6 @@
 .{
     .name = .strike,
-    .version = "0.1.0",
+    .version = "0.0.11",
     .fingerprint = 0xdc727c09a88b780,
     .minimum_zig_version = "0.16.0",
     .paths = .{

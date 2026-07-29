@@ -3,11 +3,11 @@
 **Status: draft** <!-- draft | accepted (decision dictated by <who>, <date>) |
 shipped (<date>) | rejected/superseded (<why, one line>) -->
 
-<!-- Copy this file to docs/design/NNN-slug.md (next number, never reused).
-     The lifecycle and division of labor are governed by docs/DESIGN.md:
+<!-- Copy this file to docs/reference/design/NNN-slug.md (next number, never reused).
+     The lifecycle and division of labor are governed by docs/reference/DESIGN.md:
      the AI diverges (candidates, analysis), the human dictates the Decision;
      nothing is implemented from a draft. Notes are history once shipped —
-     docs/STRIKEDOWN.md is the spec of record. -->
+     docs/reference/STRIKEDOWN.md is the spec of record. -->
 
 ## Problem
 

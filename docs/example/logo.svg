@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" width="120" height="40" role="img" aria-label="strike">
+  <rect width="120" height="40" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.35"/>
+  <text x="16" y="27" font-family="Georgia, serif" font-size="20" fill="currentColor">strike</text>
+  <line x1="14" y1="21" x2="76" y2="21" stroke="currentColor" stroke-width="1.5"/>
+</svg>
