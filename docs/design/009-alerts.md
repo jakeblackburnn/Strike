@@ -2,6 +2,12 @@
 
 **Status: accepted** (decision dictated by Jack, 2026-07-20)
 
+**Amended 2026-07-25** (visual, implementation only — no language change): the type
+title rendered at body size on an accent-colored bar, which read as louder than the
+content it introduced. Restyled to a small uppercase tag, and the accent dropped from
+the alert palette entirely. See "Visual treatment" below; the Decision's rendering
+bullet is superseded on colors only.
+
 ## Problem
 
 `> [!NOTE]` and friends — GFM's alert blockquotes — render as literal text.
@@ -91,6 +97,29 @@ class="sx-alert-title">Warning</p>\n<p>one-liner body</p>\n</blockquote>`
 
 Degradation: `> [!IDEA] hm` is a plain blockquote containing the literal
 text `[!IDEA] hm`; `> before [!NOTE]` never activates (not first).
+
+## Visual treatment (reader CSS, `src/shell.zig`)
+
+Not part of the language — the HTML backend only emits the classes above. Added
+2026-07-25, replacing the original accent-keyed styling.
+
+- **The title is a tag, not a sentence**: `.75rem`, uppercase, `.08em` letter-spacing,
+  weight 600, and a tight `margin: 0 0 .15rem`. It names the type at a glance and
+  gets out of the way. The quote's own content keeps body size and body color —
+  every rule here reaches `.sx-alert-title` and the bar only.
+- **The bar mirrors the title color, and neither is ever the accent.** Three buckets:
+  informational (`note`, `tip`, `example`, `question`) take `--muted`; urgent
+  (`warning`, `caution`, `todo`) take `--warn`; `important` takes `--fg`. The accent
+  is the reader's own signature color — spending it on every note made the most
+  common alert type the loudest thing on the page. This supersedes the Decision's
+  "informational types take the accent" line, and moves `question` out of the `--fg`
+  bucket it originally shared with `important`.
+- Alert boxes sit slightly tighter than plain blockquotes (`padding: .15rem .9rem`,
+  `margin: .85rem 0`) so the smaller title doesn't float in spacing sized for body
+  text. Plain blockquotes are unchanged.
+- Five of the eight types are therefore identical in color, distinguished only by the
+  tag text. That is deliberate — note 009 rejected per-type icons, and eight distinct
+  hues across eight seasonal palettes is not a thing worth maintaining.
 
 ## Future direction
 

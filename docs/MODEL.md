@@ -39,6 +39,13 @@ each position, left to right (precedence breaks ties at the *same* position;
 an earlier opener wins over a later, higher-precedence one). Code and math
 bodies are never inline-parsed.
 
+Flowing text (a paragraph, a quote paragraph, a list item and its lazy
+continuations) gathers its lines into one space-joined string *first* and
+inline-parses that string **once** — inline syntax is a property of the joined
+text, never of a single source line, so a span may open on one line and close
+on a later one (`*asdf` / `asdf*` is one emphasis). The joining helper is
+`appendFlowLine`; for list items `flushFlow` ends the run.
+
 Block classification has one structural rule worth naming — the
 **`isBlockStart` companion rule**: every block form needs an arm in
 `isBlockStart` (so a preceding paragraph doesn't swallow its first line as a
@@ -85,10 +92,14 @@ Block
 
 Attrs                            ← every command writes exactly one field
 ├── columns:    ?usize           ← grid(n)      (layout)
-├── width_pct:  ?usize           ← skinny(N%)   (layout)
+├── width_pct:  ?usize           ← skinny(N%) / wide(N%)  (layout)
+│                                  one field, two commands: ≤ 100 is skinny,
+│                                  > 100 is wide (the ranges are disjoint by
+│                                  grammar, which is what tells them apart)
 ├── centered:   bool             ← center()     (layout)
 ├── text_color: ?TextColor       ← color(role)  (non-layout)
-└── collapse:   ?Collapse        ← collapse()   (layout, structural)
+├── collapse:   ?Collapse        ← collapse()   (layout, structural)
+└── indent:     usize            ← indent(n) / a tab prefix  (non-layout)
 
 Inline: text · code · math · image · link · autolink ·
         strong · em · strong_em · strike · color_span(color, children)
@@ -129,7 +140,7 @@ are *types* and which are *roles* — the distinction resolves every fuzzy edge.
 | styled container             | *a role*: a group whose attrs carry only non-layout commands (e.g. `color`) |
 | plain container              | *a role*: a group with empty attrs                |
 | section                      | one `[]Block` in `Group.sections`                 |
-| command                      | `Command` (union: grid, skinny, center, color, collapse) |
+| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, indent) |
 | directive (group / single-command / alias) | `GroupLine` / `parseSingleCommandLine` / `sheet` namespace — transient parse classifications; directives never appear in the tree |
 | color role                   | `TextColor` (accent, muted, fg)                   |
 
@@ -150,9 +161,11 @@ here only as the first backend's interpretation.
 | ------------ | ---------------------------------------------------------- | ------- | ---------------- |
 | `grid(n)`    | arrange the group's sections in `n` columns                | yes     | CSS grid, fixed gap |
 | `skinny(N%)` | render at N% of the body column's width, centered in it (bare `skinny()` = 75%, provisional) | yes | `width:N%;margin-inline:auto` |
+| `wide(N%)` | render at N% of the body column's width, centered in it, overflowing evenly on both sides (bare `wide()` = 125%) | yes | `width:N%;margin-inline:calc((100% - N%) / 2)` |
 | `center()`   | center-align contained text                                | yes     | `text-align:center` |
 | `color(role)`| set contained text to a theme role's color                 | no      | `color:var(--role)` |
 | `collapse()` / `collapse(open)` | fold the group behind its leader (first block when it has ≥ 2; an empty bar otherwise), closed/open initially | yes | `<details>`/`<summary>` + a body wrapper — element shape, not style |
+| `indent(n)` | inset the element from the left by `n` steps | no | realization depends on the element type — see below |
 
 Backend obligations, in spec terms:
 
@@ -170,8 +183,21 @@ Backend obligations, in spec terms:
   warns but keeps all sections; the backend renders what's there (the HTML
   grid flows extras into new rows).
 - **Attribute emission is uniform**: one helper renders a block's attrs; the
-  declaration order (grid, width, center, color) is owned there and locked by
-  the render tests. New commands extend at the end.
+  declaration order (grid, width, center, color, indent) is owned there and
+  locked by the render tests. New commands extend at the end.
+- **Realization is per element type.** A command's *meaning* is one thing;
+  how a given content element carries it out is another, and where an
+  element's own structure occupies the space the command acts on, the
+  structure moves with it. `indent` is the live case: flowing prose takes a
+  first-line inset (`text-indent`), while a list — which owns a marker column
+  — shifts as a whole box (`margin-left`, plus a `text-indent:0` reset so an
+  enclosing group's inherited value doesn't also move the item text). The
+  emitter threads an enclosing group's indent down the walk so a box-mode
+  element can realize it itself rather than inheriting the wrong property.
+  Most (command, element) pairs are still undecided:
+  `docs/design/013-command-realization.md` is the matrix and the place they
+  get decided. A second backend has no CSS inheritance to fall back on and
+  must realize every pair explicitly.
 - **Structural commands** (`isStructural`; today only `collapse`) are
   realized as *element shape*, not style declarations — `Attrs.anyStyle`
   skips them, so the shared style helper never emits an empty attribute for

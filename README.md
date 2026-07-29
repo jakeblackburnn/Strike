@@ -8,7 +8,7 @@
 Hey guy so this tool is meant to be a solution to the limitations of markdown, not just in terms of actual features, 
 but also the lack of a super usable way to read md files and organize them into projects. 
 
-Strikedown itself is the superset of markdown with additional features (these actual features are TBD for now). 
+Strikedown itself is the superset of markdown with additional features (more styling and layout options)
 The point of strikedown is to be able to yield better typographic flexibility in rendering documents than what markdown offers, 
 while maintaining the simplicity of just editing text files. 
 

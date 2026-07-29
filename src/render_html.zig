@@ -62,7 +62,7 @@ pub fn render(gpa: Allocator, src: []const u8, opts: Options) ![]u8 {
 pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) ![]u8 {
     var out: Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    for (doc.blocks) |block| try emitBlock(&out.writer, block, opts.link_base);
+    for (doc.blocks) |block| try emitBlock(&out.writer, block, opts.link_base, 0);
     return out.toOwnedSlice();
 }
 
@@ -70,15 +70,21 @@ pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) ![]u8 {
 /// constant with an `Attrs` field read below.
 const grid_gap = "1.5rem";
 
+/// How a block realizes `indent` (`docs/design/013-command-realization.md`):
+/// flowing prose takes the typographic first-line tab, an element that owns a
+/// structural left edge (a list's marker column) shifts as a whole box.
+const IndentMode = enum { first_line, box };
+
 /// Emit ` style="…"` (leading space included) from a block's attrs — or
 /// nothing at all when every styling attr is unset (structural attrs like
 /// `collapse` shape elements instead and never land here). The single owner
 /// of CSS declaration order: grid, width, center, color, indent (the order
-/// the render tests lock; extend at the end). `columns` only ever appears on
-/// group blocks — the parser sets attrs nowhere else, and grid arranges
-/// sections, which only groups have — so the grid CSS needs no non-group
-/// guard.
-fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs) Writer.Error!void {
+/// the render tests lock; extend at the end) — and of each command's
+/// *realization*, which for `indent` depends on the caller's `mode`.
+/// `columns` only ever appears on group blocks — the parser sets attrs
+/// nowhere else, and grid arranges sections, which only groups have — so the
+/// grid CSS needs no non-group guard.
+fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.Error!void {
     if (!attrs.anyStyle()) return;
     try w.writeAll(" style=\"");
     var sep = false;
@@ -88,7 +94,14 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs) Writer.Error!void {
     }
     if (attrs.width_pct) |pct| {
         if (sep) try w.writeByte(';');
-        try w.print("width:{d}%;margin-inline:auto", .{pct});
+        // skinny (≤ 100%) centers with auto margins; wide (> 100%) overflows
+        // its container, where `auto` computes to 0 and would push the box
+        // off to one side — the explicit negative calc bleeds it evenly.
+        if (pct <= 100) {
+            try w.print("width:{d}%;margin-inline:auto", .{pct});
+        } else {
+            try w.print("width:{d}%;margin-inline:calc((100% - {d}%) / 2)", .{ pct, pct });
+        }
         sep = true;
     }
     if (attrs.centered) {
@@ -103,25 +116,38 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs) Writer.Error!void {
     }
     if (attrs.indent != 0) {
         if (sep) try w.writeByte(';');
-        try w.print("text-indent:{d}rem", .{attrs.indent * 2});
+        switch (mode) {
+            .first_line => try w.print("text-indent:{d}rem", .{attrs.indent * 2}),
+            // The reset stops an ancestor group's inherited `text-indent`
+            // from nudging the contents of an already-shifted box.
+            .box => try w.print("margin-left:{d}rem;text-indent:0", .{attrs.indent * 2}),
+        }
     }
     try w.writeByte('"');
 }
 
-fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.Error!void {
+/// Emit one block. `inherited_indent` is the indent steps an enclosing group
+/// carries: the HTML backend renders a group's indent once on its wrapper and
+/// lets CSS inheritance reach every descendant's first line, but a box-mode
+/// element (a list) has to realize the same value itself, so the value is
+/// carried down rather than left entirely to the cascade. Inner wins — a
+/// block's own `attrs.indent` overrides what it inherited, matching the
+/// language's scoping rule.
+fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8, inherited_indent: usize) Writer.Error!void {
+    const indent = if (block.attrs.indent != 0) block.attrs.indent else inherited_indent;
     switch (block.kind) {
         .heading => |h| {
             try w.print("<h{d} id=\"", .{h.level});
             try escapeAttrInto(w, h.id);
             try w.writeByte('"');
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeByte('>');
             try emitInlines(w, h.inlines, link_base);
             try w.print("</h{d}>\n", .{h.level});
         },
         .paragraph => |inls| {
             try w.writeAll("<p");
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeByte('>');
             try emitInlines(w, inls, link_base);
             try w.writeAll("</p>\n");
@@ -129,7 +155,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
         .quote => |q| {
             try w.writeAll("<blockquote");
             if (q.alert) |a| try w.print(" class=\"sx-alert sx-alert-{t}\"", .{a});
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeAll(">\n");
             if (q.alert) |a| {
                 try w.writeAll("<p class=\"sx-alert-title\">");
@@ -143,10 +169,16 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
             }
             try w.writeAll("</blockquote>\n");
         },
-        .list => |list| try emitList(w, list, block.attrs, link_base),
+        .list => |list| {
+            // A list owns its marker column, so `indent` shifts the whole
+            // list rather than the item text (013-command-realization).
+            var attrs = block.attrs;
+            attrs.indent = indent;
+            try emitList(w, list, attrs, link_base);
+        },
         .code => |code| {
             try w.writeAll("<pre");
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             if (code.lang.len > 0) {
                 try w.writeAll("><code class=\"language-");
                 try escapeAttrInto(w, code.lang);
@@ -159,7 +191,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
         },
         .table => |table| {
             try w.writeAll("<table");
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeAll(">\n<thead>\n<tr>");
             for (table.header, 0..) |cell, ci| {
                 try writeCell(w, "th", strikedown.alignAt(table.aligns, ci), cell, link_base);
@@ -184,20 +216,20 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
         },
         .rule => {
             try w.writeAll("<hr");
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeAll("/>\n");
         },
         .group => |g| {
-            if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base);
+            if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base, indent);
             // Styles are inline (not shell CSS) so fragments and static
             // exports are self-contained; the classes are hooks for future
             // reader styling.
             try w.writeAll("<div class=\"sx-group\"");
-            try writeStyleAttr(w, block.attrs);
+            try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeAll(">\n");
             for (g.sections) |section| {
                 try w.writeAll("<div class=\"sx-group-sec\">\n");
-                for (section) |b| try emitBlock(w, b, link_base);
+                for (section) |b| try emitBlock(w, b, link_base, indent);
                 try w.writeAll("</div>\n");
             }
             try w.writeAll("</div>\n");
@@ -212,7 +244,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: []const u8) Writer.
 /// there would make the summary a grid item); `collapse` reaches the
 /// emitter only as element shape. A group with one block or none gets the
 /// empty-bar summary and folds everything.
-fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: []const u8) Writer.Error!void {
+fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: []const u8, indent: usize) Writer.Error!void {
     var total: usize = 0;
     for (g.sections) |section| total += section.len;
     const has_leader = total >= 2 and g.sections[0].len > 0;
@@ -221,18 +253,18 @@ fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: 
     try w.writeAll(">\n");
     if (has_leader) {
         try w.writeAll("<summary>");
-        try emitBlock(w, g.sections[0][0], link_base);
+        try emitBlock(w, g.sections[0][0], link_base, indent);
         try w.writeAll("</summary>\n");
     } else {
         try w.writeAll("<summary class=\"sx-collapse-bar\"></summary>\n");
     }
     try w.writeAll("<div class=\"sx-collapse-body\"");
-    try writeStyleAttr(w, attrs);
+    try writeStyleAttr(w, attrs, .first_line);
     try w.writeAll(">\n");
     for (g.sections, 0..) |section, si| {
         try w.writeAll("<div class=\"sx-group-sec\">\n");
         const body = if (has_leader and si == 0) section[1..] else section;
-        for (body) |b| try emitBlock(w, b, link_base);
+        for (body) |b| try emitBlock(w, b, link_base, indent);
         try w.writeAll("</div>\n");
     }
     try w.writeAll("</div>\n</details>\n");
@@ -253,13 +285,14 @@ fn alertLabel(a: strikedown.Alert) []const u8 {
 }
 
 /// `attrs` styles the outer `<ul>`/`<ol>` only; nested lists (`Item.Tail`)
-/// aren't `Block`s and can't carry attrs — the recursion passes `.{}`.
+/// aren't `Block`s and can't carry attrs — the recursion passes `.{}`, which
+/// also keeps a sublist from re-applying an indent its parent already shifted.
 fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_base: []const u8) Writer.Error!void {
     try w.writeAll(if (list.ordered) "<ol" else "<ul");
     // Raw lists render markerless; the class is the hook, reader CSS
     // removes bullets and marker indentation (008-raw-lists).
     if (list.plain) try w.writeAll(" class=\"sx-plain\"");
-    try writeStyleAttr(w, attrs);
+    try writeStyleAttr(w, attrs, .box);
     if (list.ordered and list.start != 1) {
         try w.print(" start=\"{d}\"", .{list.start});
     }
@@ -468,6 +501,17 @@ test "heading anchor ids" {
 test "paragraph joins soft-wrapped lines" {
     try expectRender("<p>one two</p>\n", "one\ntwo");
     try expectRender("<p>a</p>\n<p>b</p>\n", "a\n\nb");
+}
+
+test "inline spans may open on one soft-wrapped line and close on a later one" {
+    try expectRender("<p><em>asdf asdf</em></p>\n", "*asdf\nasdf*");
+    try expectRender("<p>a <strong>b c</strong> d</p>\n", "a **b\nc** d");
+    try expectRender("<p><code>x y</code></p>\n", "`x\ny`");
+    try expectRender(
+        "<blockquote>\n<p>q <em>e m</em></p>\n</blockquote>\n",
+        "> q *e\n> m*",
+    );
+    try expectRender("<ul>\n<li><em>one two</em></li>\n</ul>\n", "- *one\n  two*");
 }
 
 test "inline bold, italic and code" {
@@ -843,6 +887,26 @@ test "skinny renders a centered narrow wrapper" {
     );
 }
 
+test "wide renders a wrapper that bleeds evenly into both margins" {
+    // Over 100% the box overflows its container, where `margin-inline:auto`
+    // computes to 0 and would push it all to one side — hence the calc.
+    try expectRender(
+        "<div class=\"sx-group\" style=\"width:125%;margin-inline:calc((100% - 125%) / 2)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n",
+        "// figure wide()\n\na\n\n// end",
+    );
+    // Same slot in the declaration order skinny occupies: grid, then width.
+    try expectRender(
+        "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;width:150%;margin-inline:calc((100% - 150%) / 2)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n</div>\n",
+        "// g grid(2) wide(150%)\n\na\n\n// --\n\nb\n\n// end",
+    );
+    // Degradation: skinny's range and a missing % keep the line prose.
+    try expectRender("<p>// g wide(100%)</p>\n", "// g wide(100%)");
+    try expectRender("<p>/wide(150)</p>\n", "/wide(150)");
+}
+
 test "center renders a text-centering wrapper" {
     try expectRender(
         "<div class=\"sx-group\" style=\"text-align:center\">\n" ++
@@ -1062,6 +1126,64 @@ test "indent on a group cascades to each child via CSS inheritance, not per-chil
         "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
             "<div class=\"sx-group-sec\">\n<p>first</p>\n<p>second</p>\n</div>\n</div>\n",
         "// g indent()\n\nfirst\n\nsecond\n\n// end g",
+    );
+}
+
+test "indent on a list shifts the whole list, markers included" {
+    // A list owns its marker column, so the box moves rather than the item
+    // text — a text-indent here would drop the tab *between* the number and
+    // the item (013-command-realization). The reset keeps the wrapper's
+    // inherited text-indent from reaching the item text as well. (A tab
+    // prefix can't reach a list: note 011 leaves it as list nesting, so the
+    // command forms are how a list is ever indented.)
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol style=\"margin-left:2rem;text-indent:0\">\n<li>one</li>\n<li>two</li>\n</ol>\n" ++
+            "</div>\n</div>\n",
+        "/indent()\n\n1. one\n2. two",
+    );
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:4rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ul style=\"margin-left:4rem;text-indent:0\">\n<li>item</li>\n</ul>\n" ++
+            "</div>\n</div>\n",
+        "/indent(2)\n\n- item",
+    );
+}
+
+test "a group's indent reaches a list child as a box shift, a paragraph as a first line" {
+    // The wrapper still carries text-indent for flowing prose (the
+    // paragraph stays styleless and inherits); the list realizes the same
+    // inherited value in its own mode.
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>lead-in</p>\n" ++
+            "<ul style=\"margin-left:2rem;text-indent:0\">\n<li>item</li>\n</ul>\n" ++
+            "</div>\n</div>\n",
+        "// g indent()\n\nlead-in\n\n- item\n\n// end g",
+    );
+    // Inner wins: a nested indent overrides what it inherited, for the list too.
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\" style=\"text-indent:4rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ul style=\"margin-left:4rem;text-indent:0\">\n<li>item</li>\n</ul>\n" ++
+            "</div>\n</div>\n" ++
+            "</div>\n</div>\n",
+        "// g indent()\n\n/indent(2)\n\n- item\n\n// end g",
+    );
+}
+
+test "a sublist inside an indented list is not shifted again" {
+    try expectRender(
+        "<div class=\"sx-group\" style=\"text-indent:2rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ul style=\"margin-left:2rem;text-indent:0\">\n<li>outer\n" ++
+            "<ul>\n<li>inner</li>\n</ul>\n</li>\n</ul>\n" ++
+            "</div>\n</div>\n",
+        "/indent()\n\n- outer\n  - inner",
     );
 }
 

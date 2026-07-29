@@ -131,15 +131,26 @@ creating a layout element and never counts under the rule.
 | --- | --- |
 | `grid(n)` | n columns; sections fill left-to-right and wrap. n ≥ 1. A section count ≠ n still renders, with a warning. |
 | `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/design/003-skinny.md`)* |
+| `wide(N%)` | the mirror of `skinny`: the element/group takes N% of the main body's width, centered, bleeding evenly into both margins. N is 101–200, `%` required. `wide()` defaults to 125%. (`docs/design/012-wide.md`) |
 | `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/design/005-center.md`) |
 | `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/design/006-color.md`) |
 | `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/design/007-collapse.md`) |
 | `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/design/011-indent.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
-arguments deactivate the whole line — `skinny(50)`, `grid(0)`, `center(5)`,
-`color(red)`, `collapse(true)`, `indent(x)`, `glow(5)` all leave their line
-as prose.
+arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
+`center(5)`, `color(red)`, `collapse(true)`, `indent(x)`, `glow(5)` all leave
+their line as prose.
+
+`skinny` and `wide` are one width control with two names: both set the
+element's width as a percentage of the body column, and their ranges meet at
+100%. They combine with everything else but not usefully with each other —
+written on the same opener, the last one wins.
+
+A command means one thing, but content elements are not alike, and some of
+them realize that meaning differently (a list's `indent` moves its markers
+too — see "Indentation"). `docs/design/013-command-realization.md` tracks
+which of those cells are decided; most are still open.
 
 ### Collapsible groups
 
@@ -166,6 +177,14 @@ first-line inset), not the group as a single shifted box — the HTML backend
 achieves this by emitting the indent as CSS `text-indent` once on the
 wrapper, an inherited, first-line-only property that reaches every
 descendant block independently.
+
+A **list** is the exception, because its marker column is part of the element
+and not part of its text: an indented list moves as a whole, markers and items
+together, so a numbered list's numbers travel with their items rather than the
+indent landing between them. A sublist inside an indented list is not shifted
+again — its parent already moved. (`docs/design/013-command-realization.md`,
+which also tracks the still-open cases: quotes, code blocks, and tables
+currently inset their contents rather than moving as boxes.)
 
 A **tab prefix** — one or more literal tab characters at column 0 of a
 content line — is sugar for the same data: the tabs are stripped and the
@@ -264,6 +283,10 @@ spec for closing them.
   `$math$`, `![image](src)`, `[link](url)`, `[text].color(role)` color
   spans (superset — see "Color roles"), `<autolink>` and bare `http(s)://`
   URLs, `***bold-italic***` / `**bold**` / `*italic*`, `~~strikethrough~~`.
+  Inline syntax reads the *joined* text of a flowing element, not one source
+  line: a span may open on one soft-wrapped line and close on a later one
+  (`*asdf` then `asdf*` is one italic run), in paragraphs, quote paragraphs
+  and list items alike.
 - **Cross-document links** — a *relative* link target ending in `.md`/`.sx`
   (optional `#fragment`) addresses a sibling document by file path, resolved
   from the linking document's own directory (`design/spec.md`,

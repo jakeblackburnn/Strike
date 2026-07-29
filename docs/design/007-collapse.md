@@ -7,6 +7,12 @@ open-state card background was specified as "lighter than the page," which has n
 answer on a light theme (there's nowhere lighter to go than white). See "Visual
 treatment" below for the corrected reader-CSS behavior.
 
+**Amended 2026-07-25** (visual, implementation only — no language change): the
+closed-state card contrasted too hard with the page. Tint roughly halved on every
+season, a hairline bottom rule added while closed, and a slight closed-state shadow
+added **as a trial** (Jack: "just to try out for now and we may revert"). See the
+same section.
+
 ## Problem
 
 Long reference material — FAQ answers, digressions, appendix detail — costs
@@ -123,7 +129,16 @@ Recorded here because the first cut of it was wrong and worth not repeating.
 - **Closed** (`.sx-collapse`, no `[open]`): background is `--collapse-closed-bg`, a
   low-alpha tint (per-theme hue on light seasons, plain black on dark ones) painted
   over the page background — reads as recessed regardless of theme, since darkening
-  a light *or* dark background both work.
+  a light *or* dark background both work. Since 2026-07-25 that tint is roughly half
+  its original alpha (light seasons `.06`, dark ones `.12`–`.14`): the card should
+  read as *barely* a distinct surface, not as a panel. Two cues make up the
+  difference — a hairline bottom rule (`1px solid var(--border)`) and
+  `--collapse-closed-shadow`, a slight elevation shadow on light themes and `none` on
+  dark ones (same posture as `--collapse-shadow`). **The closed-state shadow is a
+  trial** and may be reverted; the rule and the reduced tint are not.
+- **The bottom rule is closed-only.** Opening sets `border-bottom-color: transparent`
+  rather than removing the border, so the card never shifts by a pixel; the open
+  state's elevation shadow carries it from there.
 - **Open** (`.sx-collapse[open]`): background is `--collapse-open-bg`. On dark
   themes this is a low-alpha *white* tint (lightening a dark background reads fine,
   so the group still reads as emphasized). On light themes lightening isn't

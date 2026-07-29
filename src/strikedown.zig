@@ -87,13 +87,16 @@ pub const Block = struct {
 
 /// Command-derived presentation attributes. Commands write these fields
 /// (`applyCommand`), emitters read them through one shared style helper —
-/// data all the way, never emitter special cases. Today only group blocks
-/// (including `/cmd()` desugarings) ever carry non-default attrs; future
+/// data all the way, never emitter special cases. Today group blocks
+/// (including `/cmd()` desugarings) carry non-default attrs, plus any block
+/// a literal tab prefix indents (note 011); future
 /// element-type-specific commands (`// ###.color(accent)`) will write these
 /// same fields onto heading/paragraph/… blocks with no further model change.
 pub const Attrs = struct {
     columns: ?usize = null, // from grid(n) (layout)
-    width_pct: ?usize = null, // from skinny(N%): % of the body column width (layout)
+    width_pct: ?usize = null, // from skinny(N%) or wide(N%): % of the body column
+    // width (layout). One field, two commands: ≤ 100 was written by skinny,
+    // > 100 by wide — the grammar keeps the ranges disjoint (see `Command.wide`)
     centered: bool = false, // from center(): center-align contained text (layout)
     text_color: ?TextColor = null, // from color(role): theme text color (non-layout)
     collapse: ?Collapse = null, // from collapse(): fold behind the leader (layout, structural)
@@ -413,7 +416,7 @@ const Parser = struct {
             var alert: ?Alert = null;
             var seen_content = false;
             var paras: std.ArrayList([]Inline) = .empty;
-            var cur: std.ArrayList(Inline) = .empty;
+            var cur: std.ArrayList(u8) = .empty;
             while (p.idx < p.lines.len) {
                 if (isBlank(p.lines[p.idx])) break;
                 const qt = std.mem.trimStart(u8, p.lines[p.idx], " ");
@@ -423,8 +426,10 @@ const Parser = struct {
                     content = std.mem.trimEnd(u8, content, " ");
                     if (content.len == 0) {
                         // Bare `>`: paragraph break within the quote.
-                        if (cur.items.len > 0) try paras.append(arena, try cur.toOwnedSlice(arena));
-                        cur = .empty;
+                        if (cur.items.len > 0) {
+                            try paras.append(arena, try parseInlines(arena, cur.items));
+                            cur.clearRetainingCapacity();
+                        }
                     } else {
                         // The quote's very first content may be an alert
                         // marker; trailing same-line text starts paragraph 1.
@@ -439,8 +444,7 @@ const Parser = struct {
                                 }
                             }
                         }
-                        if (cur.items.len > 0) try cur.append(arena, .{ .text = " " });
-                        try cur.appendSlice(arena, try parseInlines(arena, content));
+                        try appendFlowLine(arena, &cur, content);
                     }
                     p.idx += 1;
                     continue;
@@ -449,11 +453,10 @@ const Parser = struct {
                 // starts no block.
                 if (cur.items.len == 0) break;
                 if (p.interruptsFlow(qt)) break;
-                try cur.append(arena, .{ .text = " " });
-                try cur.appendSlice(arena, try parseInlines(arena, qt));
+                try appendFlowLine(arena, &cur, qt);
                 p.idx += 1;
             }
-            if (cur.items.len > 0) try paras.append(arena, try cur.toOwnedSlice(arena));
+            if (cur.items.len > 0) try paras.append(arena, try parseInlines(arena, cur.items));
             return .{ .kind = .{ .quote = .{ .alert = alert, .paras = try paras.toOwnedSlice(arena) } } };
         }
 
@@ -497,17 +500,16 @@ const Parser = struct {
         }
 
         // Paragraph: gather consecutive lines until a blank line or a new block.
-        var inls: std.ArrayList(Inline) = .empty;
-        try inls.appendSlice(arena, try parseInlines(arena, std.mem.trimEnd(u8, t, " ")));
+        var flow: std.ArrayList(u8) = .empty;
+        try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " "));
         p.idx += 1;
         while (p.idx < p.lines.len and !isBlank(p.lines[p.idx])) {
             const nt = std.mem.trim(u8, p.lines[p.idx], " ");
             if (p.interruptsFlow(nt)) break;
-            try inls.append(arena, .{ .text = " " });
-            try inls.appendSlice(arena, try parseInlines(arena, nt));
+            try appendFlowLine(arena, &flow, nt);
             p.idx += 1;
         }
-        return .{ .kind = .{ .paragraph = try inls.toOwnedSlice(arena) } };
+        return .{ .kind = .{ .paragraph = try parseInlines(arena, flow.items) } };
     }
 
     /// Parse one (possibly nested) list starting at `idx`, advancing past the
@@ -529,6 +531,9 @@ const Parser = struct {
         const plain = first.plain;
         var items: std.ArrayList(Item) = .empty;
         var tail: std.ArrayList(Item.Tail) = .empty;
+        // Raw text of the open soft-wrap run (an item's own line and the lines
+        // lazily continuing it); parsed as one string by `flushFlow`.
+        var flow: std.ArrayList(u8) = .empty;
         while (p.idx < p.lines.len) {
             const line = p.lines[p.idx];
             if (isBlank(line)) {
@@ -549,16 +554,16 @@ const Parser = struct {
             if (parseMarker(t)) |m| {
                 if (ind >= base + 2) {
                     if (items.items.len == 0) break;
+                    try flushFlow(arena, &flow, &items, &tail);
                     try tail.append(arena, .{ .list = try p.parseList() });
                     continue;
                 }
                 if (ind < base or m.ordered != ordered or m.plain != plain) break;
+                try flushFlow(arena, &flow, &items, &tail);
                 if (items.items.len > 0)
                     items.items[items.items.len - 1].tail = try tail.toOwnedSlice(arena);
-                try items.append(arena, .{
-                    .task = m.task,
-                    .text = try parseInlines(arena, std.mem.trimEnd(u8, t[m.content_start..], " ")),
-                });
+                try items.append(arena, .{ .task = m.task, .text = &.{} });
+                try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t[m.content_start..], " "));
                 p.idx += 1;
                 continue;
             }
@@ -566,12 +571,13 @@ const Parser = struct {
             // item; anything else ends the list (the block loop decides what
             // it is).
             if (items.items.len > 0 and !p.interruptsFlow(t)) {
-                try tail.append(arena, .{ .line = try parseInlines(arena, std.mem.trimEnd(u8, t, " ")) });
+                try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " "));
                 p.idx += 1;
                 continue;
             }
             break;
         }
+        try flushFlow(arena, &flow, &items, &tail);
         if (items.items.len > 0)
             items.items[items.items.len - 1].tail = try tail.toOwnedSlice(arena);
         return .{ .ordered = ordered, .plain = plain, .start = first.num, .items = try items.toOwnedSlice(arena) };
@@ -808,6 +814,37 @@ fn slugInUse(used: []const []const u8, slug: []const u8) bool {
 
 // ---- block helpers -----------------------------------------------------------
 
+/// Append one soft-wrapped line to a flow buffer, space-joined to whatever is
+/// already there. Every flowing-text block (paragraph, quote paragraph, list
+/// item) gathers its lines this way and inline-parses the buffer *once*, when
+/// the run ends: inline syntax is a property of the joined text, so a span may
+/// open on one line and close on a later one (`*asdf\nasdf*` is one emphasis,
+/// not two literal asterisks).
+fn appendFlowLine(arena: Allocator, buf: *std.ArrayList(u8), line: []const u8) Allocator.Error!void {
+    if (line.len == 0) return;
+    if (buf.items.len > 0) try buf.append(arena, ' ');
+    try buf.appendSlice(arena, line);
+}
+
+/// End a list item's soft-wrap run: inline-parse the gathered text into the
+/// open item's own content, or — when a nested list has already interrupted
+/// the item — into a trailing `.line` segment.
+fn flushFlow(
+    arena: Allocator,
+    flow: *std.ArrayList(u8),
+    items: *std.ArrayList(Item),
+    tail: *std.ArrayList(Item.Tail),
+) Allocator.Error!void {
+    if (flow.items.len == 0 or items.items.len == 0) return;
+    const inls = try parseInlines(arena, flow.items);
+    flow.clearRetainingCapacity();
+    if (tail.items.len == 0) {
+        items.items[items.items.len - 1].text = inls;
+    } else {
+        try tail.append(arena, .{ .line = inls });
+    }
+}
+
 fn isBlank(line: []const u8) bool {
     return std.mem.trim(u8, line, " \t").len == 0;
 }
@@ -1040,7 +1077,14 @@ fn parseGroupLine(t: []const u8) ?GroupLine {
 const Command = union(enum) {
     grid: usize,
     /// skinny(N%): render at N% of the body column width, centered.
+    /// Writes `width_pct` — see `wide` for the shared-field invariant.
     skinny: usize,
+    /// wide(N%): render at N% of the body column width, centered — the
+    /// mirror of `skinny`, bleeding evenly into both margins. Both commands
+    /// write the one `Attrs.width_pct` field and the grammar keeps their
+    /// ranges disjoint: a value ≤ 100 was written by `skinny`, > 100 by
+    /// `wide`. That invariant is what `hasCommand`/`clearCommand` read.
+    wide: usize,
     /// center(): center-align text within the surrounding layout element.
     center,
     /// color(role): set the contained text's theme color. Non-layout —
@@ -1077,6 +1121,13 @@ fn parseCommand(tok: []const u8) ?Command {
         if (n == 0 or n > 100) return null;
         return .{ .skinny = n };
     }
+    if (std.mem.eql(u8, word, "wide")) {
+        if (args.len == 0) return .{ .wide = 125 }; // bare wide(): the default width
+        if (args[args.len - 1] != '%') return null;
+        const n = std.fmt.parseInt(usize, args[0 .. args.len - 1], 10) catch return null;
+        if (n <= 100 or n > 200) return null; // 100% and below is skinny's range
+        return .{ .wide = n };
+    }
     if (std.mem.eql(u8, word, "center")) {
         if (args.len != 0) return null; // center() takes no arguments
         return .center;
@@ -1102,7 +1153,7 @@ fn parseCommand(tok: []const u8) ?Command {
 fn applyCommand(attrs: *Attrs, cmd: Command) void {
     switch (cmd) {
         .grid => |n| attrs.columns = n,
-        .skinny => |n| attrs.width_pct = n,
+        .skinny, .wide => |n| attrs.width_pct = n,
         .center => attrs.centered = true,
         .color => |role| attrs.text_color = role,
         .collapse => |c| attrs.collapse = c,
@@ -1118,7 +1169,7 @@ const CommandTag = std.meta.Tag(Command);
 /// error here until classified.
 fn isLayout(tag: CommandTag) bool {
     return switch (tag) {
-        .grid, .skinny, .center, .collapse => true,
+        .grid, .skinny, .wide, .center, .collapse => true,
         .color, .indent => false,
     };
 }
@@ -1130,7 +1181,7 @@ fn isLayout(tag: CommandTag) bool {
 fn isStructural(tag: CommandTag) bool {
     return switch (tag) {
         .collapse => true,
-        .grid, .skinny, .center, .color, .indent => false,
+        .grid, .skinny, .wide, .center, .color, .indent => false,
     };
 }
 
@@ -1138,7 +1189,10 @@ fn isStructural(tag: CommandTag) bool {
 fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
     return switch (tag) {
         .grid => attrs.columns != null,
-        .skinny => attrs.width_pct != null,
+        // The disjoint-range invariant (see `Command.wide`): one field, and
+        // which side of 100 the value sits on names the command that wrote it.
+        .skinny => attrs.width_pct != null and attrs.width_pct.? <= 100,
+        .wide => attrs.width_pct != null and attrs.width_pct.? > 100,
         .center => attrs.centered,
         .color => attrs.text_color != null,
         .collapse => attrs.collapse != null,
@@ -1151,7 +1205,11 @@ fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
 fn clearCommand(attrs: *Attrs, tag: CommandTag) void {
     switch (tag) {
         .grid => attrs.columns = null,
-        .skinny => attrs.width_pct = null,
+        // Each clears the shared width field only when the value is on its
+        // own side of 100 (the disjoint-range invariant).
+        .skinny, .wide => if (hasCommand(attrs.*, tag)) {
+            attrs.width_pct = null;
+        },
         .center => attrs.centered = false,
         .color => attrs.text_color = null,
         .collapse => attrs.collapse = null,
@@ -1527,8 +1585,20 @@ test "list: an unindented plain line lazily continues the open item" {
     try testing.expectEqual(@as(usize, 1), doc.blocks.len);
     const list = doc.blocks[0].kind.list;
     try testing.expectEqual(@as(usize, 1), list.items.len);
-    try testing.expectEqual(@as(usize, 1), list.items[0].tail.len);
-    try testing.expect(list.items[0].tail[0] == .line);
+    // The continuation joins the item's own flow (one inline run), so nothing
+    // lands in the tail — `.line` segments only appear after a nested list.
+    try testing.expectEqual(@as(usize, 0), list.items[0].tail.len);
+    try testing.expectEqualStrings("a wraps", list.items[0].text[0].text);
+}
+
+test "list: emphasis opened on an item line closes on its continuation" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(), "- *a\n  wraps*", .empty);
+    const list = doc.blocks[0].kind.list;
+    try testing.expectEqual(@as(usize, 1), list.items[0].text.len);
+    try testing.expect(list.items[0].text[0] == .em);
+    try testing.expectEqualStrings("a wraps", list.items[0].text[0].em[0].text);
 }
 
 test "list: blank lines between same-orderedness items don't end the list" {
@@ -1994,6 +2064,80 @@ test "skinny command: malformed args deactivate the line" {
         const doc = try parse(arena_state.allocator(), src, .empty);
         try testing.expect(doc.blocks[0].kind == .paragraph);
     }
+}
+
+test "wide command: on groups, bare default, and as a single command" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// figure wide(150%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 150), d1.blocks[0].attrs.width_pct.?);
+    const d2 = try parse(arena_state.allocator(), "// wide()\n\npara", .empty);
+    try testing.expectEqualStrings("", d2.blocks[0].kind.group.name);
+    try testing.expectEqual(@as(usize, 125), d2.blocks[0].attrs.width_pct.?);
+    const d3 = try parse(arena_state.allocator(), "/wide(140%)\n\n| a | b |\n| --- | --- |\n| 1 | 2 |", .empty);
+    try testing.expectEqual(@as(usize, 140), d3.blocks[0].attrs.width_pct.?);
+    try testing.expect(d3.blocks[0].kind.group.sections[0][0].kind == .table);
+    try testing.expectEqual(@as(usize, 0), d3.warnings.len);
+}
+
+test "wide command: malformed args and skinny's range deactivate the line" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    for ([_][]const u8{
+        "// g wide(150)", // the % is required
+        "// g wide(100%)", // 100 and below belongs to skinny
+        "// g wide(0%)",
+        "// g wide(300%)", // above the 200% ceiling
+        "// g wide(x%)",
+    }) |src| {
+        const doc = try parse(arena_state.allocator(), src, .empty);
+        try testing.expect(doc.blocks[0].kind == .paragraph);
+    }
+    // The boundaries themselves: 101% is the narrowest wide, 200% the widest.
+    const d1 = try parse(arena_state.allocator(), "// g wide(101%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 101), d1.blocks[0].attrs.width_pct.?);
+    const d2 = try parse(arena_state.allocator(), "// g wide(200%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 200), d2.blocks[0].attrs.width_pct.?);
+}
+
+test "wide is layout: wide-in-wide strips, skinny inside wide survives" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(),
+        \\// outer wide(150%)
+        \\
+        \\// inner wide(120%)
+        \\a
+        \\// end
+        \\
+        \\// end outer
+    , .empty);
+    const inner1 = d1.blocks[0].kind.group.sections[0][0];
+    try testing.expect(inner1.attrs.width_pct == null);
+    try testing.expectEqual(@as(usize, 1), d1.warnings.len);
+    // Separate counters: narrowing something inside a widened group is
+    // meaningful, so it is never stripped.
+    const d2 = try parse(arena_state.allocator(),
+        \\// outer wide(150%)
+        \\
+        \\// inner skinny(50%)
+        \\a
+        \\// end
+        \\
+        \\// end outer
+    , .empty);
+    const inner2 = d2.blocks[0].kind.group.sections[0][0];
+    try testing.expectEqual(@as(usize, 50), inner2.attrs.width_pct.?);
+    try testing.expectEqual(@as(usize, 0), d2.warnings.len);
+}
+
+test "wide and skinny share one width field: the last command on the opener wins" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// g skinny(50%) wide(150%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 150), d1.blocks[0].attrs.width_pct.?);
+    const d2 = try parse(arena_state.allocator(), "// g wide(150%) skinny(50%)\n\npara", .empty);
+    try testing.expectEqual(@as(usize, 50), d2.blocks[0].attrs.width_pct.?);
 }
 
 test "center command: on groups, with other commands, and as a single command" {
