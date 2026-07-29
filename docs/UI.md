@@ -1,8 +1,9 @@
 # Strike reader — UI philosophy
 
 The principles behind the reader's chrome (`src/shell.zig` + the generated pages in
-`src/site.zig`). Design decisions here bind future UI work the way CLAUDE.md's
-architecture invariants bind the code.
+`src/site.zig`). Decisions here bind future UI work the way `docs/STRIKEDOWN.md` binds
+the language: where habit or a passing preference disagrees with this file, this file
+wins.
 
 ## Content is sovereign
 

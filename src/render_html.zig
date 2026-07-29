@@ -524,6 +524,31 @@ test "triple-star renders nested bold+italic, not a leftover asterisk" {
     try expectRender("<p>a <strong><em>b</em></strong> c</p>\n", "a ***b*** c");
 }
 
+// The canonical examples of docs/design/014-flanking.md, end to end.
+
+test "flanking: asterisks in prose render literally" {
+    try expectRender("<p>a * b * c</p>\n", "a * b * c");
+    try expectRender("<p>5 * 4 * 3</p>\n", "5 * 4 * 3");
+    try expectRender("<p>~~ not strike ~~</p>\n", "~~ not strike ~~");
+    // …while hugging delimiters still emphasize.
+    try expectRender("<p><em>emphasis</em></p>\n", "*emphasis*");
+    try expectRender("<p><strong>\"quoted\"</strong></p>\n", "**\"quoted\"**");
+    try expectRender("<p>intra<em>word</em>em</p>\n", "intra*word*em");
+    try expectRender("<p><del>struck</del></p>\n", "~~struck~~");
+    // A candidate closer that can't close is skipped, not fatal.
+    try expectRender("<p><em>a * b</em></p>\n", "*a * b*");
+}
+
+test "flanking: prose dollars render literally, real math still typesets" {
+    try expectRender(
+        "<p>The book costs $5 and the pen costs $10.</p>\n",
+        "The book costs $5 and the pen costs $10.",
+    );
+    try expectRender("<p>then $HOME and $PATH are set</p>\n", "then $HOME and $PATH are set");
+    try expectRender("<p>$ x $</p>\n", "$ x $");
+    try expectRender("<p>real math \\(x^2\\) inline</p>\n", "real math $x^2$ inline");
+}
+
 test "links" {
     try expectRender(
         "<p><a href=\"https://z.dev\">Zig</a></p>\n",
@@ -623,6 +648,21 @@ test "raw list: mixed markers split; task boxes still work" {
     try expectRender(
         "<ul class=\"sx-plain\">\n<li><input type=\"checkbox\" disabled> todo</li>\n</ul>\n",
         ". [ ] todo",
+    );
+}
+
+test "a list of links and code spans renders every item intact" {
+    // Regression: items share one flow buffer, and code/link inlines slice
+    // their input — earlier items used to render overwritten bytes.
+    try expectRender(
+        "<ul>\n<li><a href=\"/one\">a</a> <code>code</code></li>\n" ++
+            "<li><a href=\"/two\">b</a> <code>more</code></li>\n</ul>\n",
+        "- [a](one.md) `code`\n- [b](two.md) `more`",
+    );
+    try expectRender(
+        "<blockquote>\n<p><a href=\"/one\">a</a> <code>code</code></p>\n" ++
+            "<p><a href=\"/two\">b</a></p>\n</blockquote>\n",
+        "> [a](one.md) `code`\n>\n> [b](two.md)",
     );
 }
 
@@ -1084,21 +1124,28 @@ test "color span restricted forms degrade to prose" {
     try expectRender("<p>[x].color(accent)</p>\n", "\\[x].color(accent)");
 }
 
-test "indent: tab prefix renders text-indent steps on the block itself" {
+// The canonical examples of docs/design/015-paragraph-indent.md, end to end.
+
+test "indent: a whitespace-led paragraph renders one step, whatever the whitespace" {
+    try expectRender(
+        "<p style=\"text-indent:2rem\">indented paragraph</p>\n",
+        "  indented paragraph",
+    );
     try expectRender(
         "<p style=\"text-indent:2rem\">indented paragraph</p>\n",
         "\tindented paragraph",
     );
-    try expectRender(
-        "<h2 id=\"deep-heading\" style=\"text-indent:4rem\">deep heading</h2>\n",
-        "\t\t## deep heading",
-    );
-    // The stripped line is what multi-line parsers re-read: a tabbed quote
-    // opener still forms a quote, indented.
-    try expectRender(
-        "<blockquote style=\"text-indent:2rem\">\n<p>quoted</p>\n</blockquote>\n",
-        "\t> quoted",
-    );
+    // Four spaces and two tabs are still one step — depth is `indent(n)`'s job.
+    try expectRender("<p style=\"text-indent:2rem\">deep</p>\n", "    deep");
+    try expectRender("<p style=\"text-indent:2rem\">deep</p>\n", "\t\tdeep");
+    try expectRender("<p>flush</p>\n", "flush");
+}
+
+test "indent: leading whitespace before a non-paragraph form changes nothing" {
+    try expectRender("<h2 id=\"heading\">heading</h2>\n", "  ## heading");
+    try expectRender("<blockquote>\n<p>quoted</p>\n</blockquote>\n", "\t> quoted");
+    try expectRender("<ul>\n<li>item</li>\n</ul>\n", "  - item");
+    try expectRender("<hr/>\n", "\t---");
 }
 
 test "indent command renders on groups and single-command wrappers" {

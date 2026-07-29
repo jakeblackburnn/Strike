@@ -99,7 +99,8 @@ Attrs                            ← every command writes exactly one field
 ├── centered:   bool             ← center()     (layout)
 ├── text_color: ?TextColor       ← color(role)  (non-layout)
 ├── collapse:   ?Collapse        ← collapse()   (layout, structural)
-└── indent:     usize            ← indent(n) / a tab prefix  (non-layout)
+└── indent:     usize            ← indent(n), or one step from a whitespace-
+                                   indented paragraph  (non-layout)
 
 Inline: text · code · math · image · link · autolink ·
         strong · em · strong_em · strike · color_span(color, children)
@@ -218,11 +219,10 @@ the `Parser.warnings` append sites — not restructuring emitters.
 
 ## Extension recipes
 
-The checklists in CLAUDE.md ("Extending the language") are the operational
-version; this is the model view of the same moves. Language changes need a
-design note first (`docs/DESIGN.md`), and every canonical spec example
-becomes a parser test in `strikedown.zig` plus an end-to-end test in
-`render_html.zig`.
+The moves an implementation makes to extend the language, in model terms.
+Language changes need a design note first (`docs/DESIGN.md`), and every
+canonical spec example becomes a parser test in `src/strikedown.zig` plus an
+end-to-end test in `src/render_html.zig`.
 
 - **A new inline form**: an `Inline` variant + its arm in the inline chain
   (mind precedence position) + its emitter arm.

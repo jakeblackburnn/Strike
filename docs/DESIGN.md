@@ -31,9 +31,9 @@ need goes through the language process.
 | --- | --- |
 | `docs/STRIKEDOWN.md` | The language spec — every form, its meaning, canonical examples. Implementation-independent: every sentence must stay true for the PDF backend. |
 | `docs/design/NNN-*.md` | One design note per language feature — the candidates considered and the decision made. History; the spec is truth. |
+| `docs/MODEL.md` | The internal model of record — the document tree, the pipeline, the taxonomy↔types mapping, and the extension recipes implementations follow. |
 | `docs/UI.md` | Reader chrome principles. |
 | `docs/STRIKE_YAML.md` | Reader/config reference. |
-| `.claude/CLAUDE.md` | The AI operating manual — architecture invariants, extension recipes, Zig notes. Points into `docs/`; duplicates nothing decided there. |
 
 ## When a design note is required
 
@@ -74,5 +74,5 @@ This repo is developed with AI assistance; the process is shaped around that:
 - **Spec examples are the tests.** Each canonical example in an accepted note becomes a
   parser test in `src/strikedown.zig` and an end-to-end test in `src/render_html.zig`,
   quoting the example.
-- **Implementation follows the checklist** in CLAUDE.md's "Extending the language" —
-  the design note says *what*; the checklist says *how*.
+- **Implementation follows the recipes** in `docs/MODEL.md` ("Extension recipes") —
+  the design note says *what*; the recipe says *how*.

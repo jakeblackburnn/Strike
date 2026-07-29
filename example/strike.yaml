@@ -1,0 +1,25 @@
+# Site + root-project config in one file. Loose docs sit at this folder's root,
+# so the whole tree is one implicit "root project": `/` is main.md's page and
+# guide/ nests into the nav rather than becoming a separate project.
+#
+# Every key here is optional — delete the file and the site still works.
+
+title: strikedown by example
+repo: https://github.com/jakeblackburnn/Strike
+theme: winter evening   # season (fall|winter|spring|summer) and/or time (morning|evening)
+width: 46               # default content width in rem; readers can override in Settings
+
+serve:                  # defaults for `strike serve example`
+  watch: true
+
+order:                  # nav order; unlisted entries follow alphabetically
+  - markdown.md
+  - layout.md
+  - degradation.md
+  - guide
+
+labels:                 # nav labels; otherwise the first heading, then the filename
+  markdown.md: The markdown subset
+  layout.md: Layout & commands
+  degradation.md: Degradation
+  guide: Guide

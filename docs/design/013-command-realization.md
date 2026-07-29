@@ -72,8 +72,8 @@ sublists are not shifted again: the parent list already moved, and the
 sublist's own indentation is list nesting, not this command.
 
 Note that a list can only ever *be* indented through a group or a `/indent(n)`
-line — note 011 leaves a tab before a list marker meaning list nesting, so the
-tab-prefix spelling never reaches a list.
+line — leading whitespace before a list marker is list nesting, and note 015
+confines the whitespace spelling to paragraphs, so it never reaches a list.
 
 ### `center` is where the heuristic gets tested
 

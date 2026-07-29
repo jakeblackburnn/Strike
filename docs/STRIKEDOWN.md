@@ -135,7 +135,7 @@ creating a layout element and never counts under the rule.
 | `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/design/005-center.md`) |
 | `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/design/006-color.md`) |
 | `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/design/007-collapse.md`) |
-| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/design/011-indent.md`) |
+| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/design/011-indent.md`, `015-paragraph-indent.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
@@ -186,14 +186,18 @@ again — its parent already moved. (`docs/design/013-command-realization.md`,
 which also tracks the still-open cases: quotes, code blocks, and tables
 currently inset their contents rather than moving as boxes.)
 
-A **tab prefix** — one or more literal tab characters at column 0 of a
-content line — is sugar for the same data: the tabs are stripped and the
-block they start carries the equivalent `indent(n)`, one step per tab. It
-starts a new block (breaking a preceding paragraph, ending quote lazy
-continuation) exactly like any other block-starting form. Tabs count only at
-column 0; a tab before a list marker stays list-nesting, and a tab before a
-directive line (`//`, `/cmd()`, `:`) leaves the line inert prose — both
-already mean something else. Space-led lines are unaffected either way.
+**Leading whitespace** on a paragraph is sugar for one step of the same data
+(`docs/design/015-paragraph-indent.md`): a paragraph whose **first line**
+begins with any whitespace — one space, two, four, or a tab — carries
+`indent(1)`. The amount and kind are deliberately not significant (the
+convention is two or four spaces); depth beyond one step is `indent(n)`.
+
+The rule reaches **paragraphs only**. Headings, quotes, lists, tables, code
+blocks, math blocks, and all three directive families ignore leading
+whitespace exactly as they always have, and use `indent(n)` when they want an
+inset. And only a paragraph's *first* line is read, so an indented line
+following a paragraph line is an ordinary soft-wrap continuation — an indented
+paragraph must be preceded by a blank line.
 
 `indent` is non-layout: nesting *scopes* rather than stacks — an inner
 `indent(n)` overrides the inherited value for its own subtree, the same
@@ -238,9 +242,11 @@ fine.
 
 ## The markdown subset
 
-A practical GFM subset. Gaps are tracked in CLAUDE.md's roadmap (setext
-headings, HTML blocks, footnotes/reference links, front matter); GFM is the
-spec for closing them.
+A practical GFM subset. Four standard-markdown forms are deliberately not
+implemented yet — **setext headings**, **HTML blocks**, **footnotes and
+reference links**, and **front matter**. They need no design note when they
+land: GFM is already their spec, so closing a gap means implementing to it and
+recording the result here.
 
 - **ATX headings** `#`–`######`, each with an anchor id slugified from its
   text and deduplicated per document (`-2`, `-3`, …).
@@ -277,7 +283,11 @@ spec for closing them.
 - **Fenced code** ```` ``` ```` with an info-string language; the body is
   verbatim, never inline-parsed.
 - **Display math** `$$…$$` and **inline math** `$…$` — the TeX passes
-  through raw (backends decide typesetting); never inline-parsed.
+  through raw (backends decide typesetting); never inline-parsed. An inline
+  span requires all of: the opening `$` followed by a non-whitespace
+  character, the closing `$` preceded by one and *not* followed by a digit,
+  and a non-empty body. So `costs $5 and $10` and `$HOME and $PATH` are prose,
+  while `$x^2$` is math.
 - **Horizontal rules** `---` / `***` / `___`.
 - **Inlines**, in precedence order: backslash escape, `` `code` ``,
   `$math$`, `![image](src)`, `[link](url)`, `[text].color(role)` color
@@ -287,6 +297,14 @@ spec for closing them.
   line: a span may open on one soft-wrapped line and close on a later one
   (`*asdf` then `asdf*` is one italic run), in paragraphs, quote paragraphs
   and list items alike.
+- **Flanking** — emphasis and strikethrough delimiters are context-sensitive,
+  by CommonMark's left/right-flanking rule: a delimiter run may open a span
+  only if it isn't followed by whitespace, and close one only if it isn't
+  preceded by whitespace (with punctuation on the far side relaxing each
+  clause). So `a * b * c` and `5 * 4 * 3` are literal asterisks, while
+  `**"quoted"**` and `intra*word*em` still emphasize. A candidate closer that
+  can't close is skipped rather than fatal: `*a * b*` is one emphasis
+  containing an asterisk.
 - **Cross-document links** — a *relative* link target ending in `.md`/`.sx`
   (optional `#fragment`) addresses a sibling document by file path, resolved
   from the linking document's own directory (`design/spec.md`,
@@ -368,6 +386,14 @@ A raw list — three markerless lines that stay a list:
 . three
 ```
 
+An indented paragraph — leading whitespace, no directive needed (and the
+second line is an ordinary continuation, not a second indent):
+
+```
+  this paragraph is indented one step,
+  and this line just wraps into it
+```
+
 An indented group — each paragraph gets its own first-line inset, not the
 group as a whole:
 
@@ -418,6 +444,10 @@ Degradation — every line below is an ordinary paragraph:
 :thin-grid grid(2) skinny(80%)   (reserved namespace, nothing defined yet)
 (name)# not a heading       (retired prefix: plain prose)
 .item                       (no space after the dot: not a raw-list marker)
+a * b * c                   (space-flanked delimiters: literal asterisks)
+5 * 4 * 3                   (same — multiplication, not emphasis)
+costs $5 and $10            (a digit after the closing candidate: not math)
+$HOME and $PATH             (space before the closing candidate: not math)
 ```
 
 And two quote-shaped near-misses: `> [!IDEA] hm` is a plain blockquote with

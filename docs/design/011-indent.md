@@ -1,7 +1,11 @@
 # 011 — The `indent` command and literal-tab indentation (`indent(n)`, `⇥`)
 
 **Status: shipped** (decision dictated by Jack, 2026-07-21; rendering bug
-corrected and merged into `docs/STRIKEDOWN.md` 2026-07-22)
+corrected and merged into `docs/STRIKEDOWN.md` 2026-07-22) — **the tab-prefix
+spelling below is superseded by `docs/design/015-paragraph-indent.md`
+(2026-07-29): leading whitespace of any kind indents a *paragraph* by one
+step, and no other element type responds to it. The `indent(n)` command
+decided here is unchanged.**
 
 ## Problem
 

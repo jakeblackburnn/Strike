@@ -1,14 +1,14 @@
 const std = @import("std");
-// The renderer is pure Zig + std, so the build can call it directly at
-// configure time to turn the project's markdown into static HTML.
-const project = @import("src/project.zig");
-const site = @import("src/site.zig");
+
+// This build script does one thing: compile the `strike` CLI. It deliberately
+// does *no* content rendering — turning a folder of .md/.sx into HTML is
+// `strike build`'s job, so the build never depends on any content existing
+// (a fresh clone has no content folder at all, and must still configure).
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // The markdown server executable.
     const exe = b.addExecutable(.{
         .name = "strike",
         .root_module = b.createModule(.{
@@ -19,36 +19,18 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // Render the whole `strikedown/` content folder — projects, subfolders, the
-    // picker — to `zig-out/html/`, preserving the route hierarchy as directories.
-    const wf = b.addWriteFiles();
-    var content_dir = b.build_root.handle.openDir(b.graph.io, "strikedown", .{ .iterate = true }) catch
-        @panic("could not open strikedown/");
-    defer content_dir.close(b.graph.io);
-    const loaded = project.load(b.graph.io, b.allocator, content_dir) catch @panic("could not scan strikedown/");
-    const pages = site.renderAll(b.allocator, loaded) catch @panic("OOM");
-
-    var rendered: std.ArrayList(Rendered) = .empty;
-    for (pages) |p| {
-        const out_rel = site.outPath(b.allocator, p, loaded.base) catch @panic("OOM");
-        installHtml(b, wf, out_rel, p.html);
-        rendered.append(b.allocator, .{ .src = p.src, .out = out_rel }) catch @panic("OOM");
-    }
-
-    // Print a banner reporting which markdown files were built.
-    const banner = Banner.create(b, rendered.toOwnedSlice(b.allocator) catch @panic("OOM"));
-    banner.step.dependOn(&exe.step);
-    b.getInstallStep().dependOn(&banner.step);
-
-    // `zig build run` -> build and start the server on `strikedown/`. Extra
-    // args after `--` (e.g. `zig build run -- --port 9000`) are forwarded, so
-    // `-- serve /other/dir` also works.
+    // `zig build run` -> serve `example/` (a fresh clone gets a live demo).
+    // Args after `--` replace that default entirely, so
+    // `zig build run -- serve mynotes --watch` works.
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    run_cmd.addArgs(&.{ "serve", "strikedown" });
-    if (b.args) |args| run_cmd.addArgs(args);
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    } else {
+        run_cmd.addArgs(&.{ "serve", "example" });
+    }
 
-    const run_step = b.step("run", "Build and run strike");
+    const run_step = b.step("run", "Build and run strike (default: serve example/)");
     run_step.dependOn(&run_cmd.step);
 
     // `zig build test` -> run the unit tests in every src/*.zig file. (Imported
@@ -72,39 +54,3 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(tests).step);
     }
 }
-
-/// Add `html` to the WriteFiles step at `rel` and install it under `html/<rel>`.
-fn installHtml(b: *std.Build, wf: *std.Build.Step.WriteFile, rel: []const u8, html: []const u8) void {
-    const install = b.addInstallFileWithDir(wf.add(rel, html), .prefix, b.fmt("html/{s}", .{rel}));
-    b.getInstallStep().dependOn(&install.step);
-}
-
-const Rendered = struct { src: []const u8, out: []const u8 };
-
-/// A tiny custom build step that reports which markdown files were rendered.
-const Banner = struct {
-    step: std.Build.Step,
-    rendered: []const Rendered,
-
-    fn create(b: *std.Build, rendered: []const Rendered) *Banner {
-        const self = b.allocator.create(Banner) catch @panic("OOM");
-        self.* = .{
-            .step = std.Build.Step.init(.{
-                .id = .custom,
-                .name = "build banner",
-                .owner = b,
-                .makeFn = make,
-            }),
-            .rendered = rendered,
-        };
-        return self;
-    }
-
-    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
-        _ = options;
-        const self: *Banner = @fieldParentPtr("step", step);
-        std.debug.print("\n  strike — rendered {d} file(s) from strikedown/ to zig-out/html/\n", .{self.rendered.len});
-        for (self.rendered) |r| std.debug.print("    strikedown/{s}  ->  html/{s}\n", .{ r.src, r.out });
-        std.debug.print("  run with: zig build run   (serves strikedown/ at http://127.0.0.1:8080)\n\n", .{});
-    }
-};

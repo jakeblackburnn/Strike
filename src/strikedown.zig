@@ -11,7 +11,10 @@
 //!
 //! The block grammar (a practical GFM subset plus strikedown additions):
 //!   - ATX headings (`#` .. `######`) with auto anchor ids (see `slugify`)
-//!   - paragraphs (soft-wrapped lines are joined with a space)
+//!   - paragraphs (soft-wrapped lines are joined with a space); leading
+//!     whitespace on a paragraph's first line indents it one step
+//!     (`docs/design/015-paragraph-indent.md`) — paragraphs only, and the
+//!     amount of whitespace is deliberately not significant
 //!   - unordered (`-`/`*`/`+`) and ordered (`1.`) lists, nested by
 //!     indentation, with `- [ ]`/`- [x]` task boxes; a plain line lazily
 //!     continues the open item, blank lines between items don't end the
@@ -35,8 +38,10 @@
 //! Inline grammar, in precedence order: backslash escape, `` `code` ``,
 //! `$math$`, `![alt](src)`, `[text](url)`, `[text].color(role)` color spans
 //! (see `docs/design/006-color.md`), `<http…>` and bare-URL autolinks,
-//! `***`/`**`/`*` emphasis, `~~strikethrough~~`. Code/math bodies are never
-//! inline-parsed.
+//! `***`/`**`/`*` emphasis, `~~strikethrough~~`. Emphasis delimiters and
+//! inline-math `$` obey flanking/adjacency rules so prose asterisks and
+//! dollars stay literal (`docs/design/014-flanking.md`). Code/math bodies
+//! are never inline-parsed.
 //!
 //! Layout and typography land as *data on tree nodes* — command-derived
 //! attributes in `Block.attrs` (e.g. `columns`, `text_color`) — never as
@@ -88,8 +93,8 @@ pub const Block = struct {
 /// Command-derived presentation attributes. Commands write these fields
 /// (`applyCommand`), emitters read them through one shared style helper —
 /// data all the way, never emitter special cases. Today group blocks
-/// (including `/cmd()` desugarings) carry non-default attrs, plus any block
-/// a literal tab prefix indents (note 011); future
+/// (including `/cmd()` desugarings) carry non-default attrs, plus any
+/// paragraph whose first line is whitespace-indented (note 015); future
 /// element-type-specific commands (`// ###.color(accent)`) will write these
 /// same fields onto heading/paragraph/… blocks with no further model change.
 pub const Attrs = struct {
@@ -100,7 +105,8 @@ pub const Attrs = struct {
     centered: bool = false, // from center(): center-align contained text (layout)
     text_color: ?TextColor = null, // from color(role): theme text color (non-layout)
     collapse: ?Collapse = null, // from collapse(): fold behind the leader (layout, structural)
-    indent: usize = 0, // from indent(n) or a literal tab prefix: first-line indent steps,
+    indent: usize = 0, // from indent(n), or one step from a whitespace-indented
+    // paragraph (note 015): first-line indent steps,
     // rendered as CSS text-indent — affects a block's own first line only, and on a
     // group cascades to each child via CSS inheritance (non-layout)
 
@@ -275,8 +281,9 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
 
 const Parser = struct {
     arena: Allocator,
-    /// Mutable so the tab-indent arm can strip a consumed prefix in place
-    /// (multi-line block parsers re-read the raw line).
+    /// The document's lines, raw (untrimmed) — block parsers trim as they
+    /// classify, and the paragraph arm reads the raw form to see a leading
+    /// whitespace indent (note 015).
     lines: [][]const u8,
     idx: usize = 0,
     /// Heading anchor slugs used so far in this document (for deduping).
@@ -296,7 +303,7 @@ const Parser = struct {
     /// it. Returns null for lines consumed without producing a block
     /// (typography directives).
     fn next(p: *Parser) Allocator.Error!?Block {
-        const t = std.mem.trimStart(u8, p.lines[p.idx], " ");
+        const t = trimIndent(p.lines[p.idx]);
 
         // Typography directive (`:` line): consumed, emits nothing. The `:`
         // namespace is reserved — `sheet.parseLine` recognizes nothing today
@@ -313,18 +320,6 @@ const Parser = struct {
     /// (and prefix-stripped, when a color prefix applied).
     fn parseBlock(p: *Parser, t: []const u8) Allocator.Error!Block {
         const arena = p.arena;
-
-        // Literal-tab indentation (011-indent): tabs in the line's leading
-        // whitespace indent the block the rest of the line starts, one step
-        // each — the same data an explicit `indent(n)` writes. The prefix is
-        // stripped from the stored line too, so multi-line parsers (quote,
-        // table) that re-read it see the content form.
-        if (tabIndent(t)) |ti| {
-            p.lines[p.idx] = ti.rest;
-            var block = try p.parseBlock(ti.rest);
-            block.attrs.indent = ti.steps;
-            return block;
-        }
 
         // Group directive. Only a clean *opener* starts anything here; a
         // separator/closer line is consumed inside `parseGroup`'s loop, so one
@@ -352,7 +347,7 @@ const Parser = struct {
             p.idx += 1;
             var buf: std.ArrayList(u8) = .empty;
             while (p.idx < p.lines.len and
-                !std.mem.startsWith(u8, std.mem.trimStart(u8, p.lines[p.idx], " "), "```"))
+                !std.mem.startsWith(u8, trimIndent(p.lines[p.idx]), "```"))
             {
                 try buf.appendSlice(arena, p.lines[p.idx]);
                 try buf.append(arena, '\n');
@@ -419,15 +414,15 @@ const Parser = struct {
             var cur: std.ArrayList(u8) = .empty;
             while (p.idx < p.lines.len) {
                 if (isBlank(p.lines[p.idx])) break;
-                const qt = std.mem.trimStart(u8, p.lines[p.idx], " ");
+                const qt = trimIndent(p.lines[p.idx]);
                 if (std.mem.startsWith(u8, qt, ">")) {
                     var content = qt[1..];
                     if (content.len > 0 and content[0] == ' ') content = content[1..];
-                    content = std.mem.trimEnd(u8, content, " ");
+                    content = std.mem.trimEnd(u8, content, " \t");
                     if (content.len == 0) {
                         // Bare `>`: paragraph break within the quote.
                         if (cur.items.len > 0) {
-                            try paras.append(arena, try parseInlines(arena, cur.items));
+                            try paras.append(arena, try parseFlowRun(arena, cur.items));
                             cur.clearRetainingCapacity();
                         }
                     } else {
@@ -456,7 +451,7 @@ const Parser = struct {
                 try appendFlowLine(arena, &cur, qt);
                 p.idx += 1;
             }
-            if (cur.items.len > 0) try paras.append(arena, try parseInlines(arena, cur.items));
+            if (cur.items.len > 0) try paras.append(arena, try parseFlowRun(arena, cur.items));
             return .{ .kind = .{ .quote = .{ .alert = alert, .paras = try paras.toOwnedSlice(arena) } } };
         }
 
@@ -468,9 +463,9 @@ const Parser = struct {
         // GFM pipe table: a header row followed by a `|---|` separator row.
         if (isTableStart(p.lines, p.idx)) {
             var header_cells: std.ArrayList([]const u8) = .empty;
-            try splitCells(arena, &header_cells, std.mem.trimStart(u8, p.lines[p.idx], " "));
+            try splitCells(arena, &header_cells, trimIndent(p.lines[p.idx]));
             var aligns: std.ArrayList(Align) = .empty;
-            try parseAligns(arena, &aligns, std.mem.trimStart(u8, p.lines[p.idx + 1], " "));
+            try parseAligns(arena, &aligns, trimIndent(p.lines[p.idx + 1]));
             p.idx += 2;
 
             var header: std.ArrayList([]Inline) = .empty;
@@ -479,7 +474,7 @@ const Parser = struct {
             var rows: std.ArrayList([][]Inline) = .empty;
             var row_cells: std.ArrayList([]const u8) = .empty;
             while (p.idx < p.lines.len) {
-                const rt = std.mem.trimStart(u8, p.lines[p.idx], " ");
+                const rt = trimIndent(p.lines[p.idx]);
                 if (isBlank(p.lines[p.idx]) or isBlockStart(rt) or
                     std.mem.indexOfScalar(u8, rt, '|') == null) break;
                 row_cells.clearRetainingCapacity();
@@ -500,16 +495,24 @@ const Parser = struct {
         }
 
         // Paragraph: gather consecutive lines until a blank line or a new block.
+        // Leading whitespace on the paragraph's *first* line indents it one
+        // step (015-paragraph-indent) — the raw line is read before trimming,
+        // and only here, which is what confines the rule to paragraphs.
+        // Continuation lines soft-wrap regardless of their own indentation.
+        const indented = hasParagraphIndent(p.lines[p.idx]);
         var flow: std.ArrayList(u8) = .empty;
-        try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " "));
+        try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " \t"));
         p.idx += 1;
         while (p.idx < p.lines.len and !isBlank(p.lines[p.idx])) {
-            const nt = std.mem.trim(u8, p.lines[p.idx], " ");
+            const nt = std.mem.trim(u8, p.lines[p.idx], " \t");
             if (p.interruptsFlow(nt)) break;
             try appendFlowLine(arena, &flow, nt);
             p.idx += 1;
         }
-        return .{ .kind = .{ .paragraph = try parseInlines(arena, flow.items) } };
+        return .{
+            .kind = .{ .paragraph = try parseInlines(arena, flow.items) },
+            .attrs = .{ .indent = if (indented) 1 else 0 },
+        };
     }
 
     /// Parse one (possibly nested) list starting at `idx`, advancing past the
@@ -526,7 +529,7 @@ const Parser = struct {
     fn parseList(p: *Parser) Allocator.Error!List {
         const arena = p.arena;
         const base = indentWidth(p.lines[p.idx]);
-        const first = parseMarker(std.mem.trimStart(u8, p.lines[p.idx], " \t")) orelse unreachable;
+        const first = parseMarker(trimIndent(p.lines[p.idx])) orelse unreachable;
         const ordered = first.ordered;
         const plain = first.plain;
         var items: std.ArrayList(Item) = .empty;
@@ -542,7 +545,7 @@ const Parser = struct {
                 var j = p.idx;
                 while (j < p.lines.len and isBlank(p.lines[j])) j += 1;
                 if (j == p.lines.len) break;
-                const m = parseMarker(std.mem.trimStart(u8, p.lines[j], " \t")) orelse break;
+                const m = parseMarker(trimIndent(p.lines[j])) orelse break;
                 const nind = indentWidth(p.lines[j]);
                 if (nind < base) break;
                 if (nind < base + 2 and (m.ordered != ordered or m.plain != plain)) break;
@@ -550,7 +553,7 @@ const Parser = struct {
                 continue;
             }
             const ind = indentWidth(line);
-            const t = std.mem.trimStart(u8, line, " \t");
+            const t = trimIndent(line);
             if (parseMarker(t)) |m| {
                 if (ind >= base + 2) {
                     if (items.items.len == 0) break;
@@ -563,7 +566,7 @@ const Parser = struct {
                 if (items.items.len > 0)
                     items.items[items.items.len - 1].tail = try tail.toOwnedSlice(arena);
                 try items.append(arena, .{ .task = m.task, .text = &.{} });
-                try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t[m.content_start..], " "));
+                try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t[m.content_start..], " \t"));
                 p.idx += 1;
                 continue;
             }
@@ -571,7 +574,7 @@ const Parser = struct {
             // item; anything else ends the list (the block loop decides what
             // it is).
             if (items.items.len > 0 and !p.interruptsFlow(t)) {
-                try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " "));
+                try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " \t"));
                 p.idx += 1;
                 continue;
             }
@@ -609,7 +612,7 @@ const Parser = struct {
                 p.idx += 1;
                 continue;
             }
-            const t = std.mem.trimStart(u8, p.lines[p.idx], " ");
+            const t = trimIndent(p.lines[p.idx]);
             if (parseGroupLine(t)) |gl| switch (gl) {
                 .sep => {
                     p.idx += 1;
@@ -660,7 +663,7 @@ const Parser = struct {
         var j = p.idx + 1;
         while (j < p.lines.len and isBlank(p.lines[j])) j += 1;
         if (j >= p.lines.len) return null;
-        const nt = std.mem.trimStart(u8, p.lines[j], " ");
+        const nt = trimIndent(p.lines[j]);
         if (p.isGroupInterrupt(nt) or sheet.parseLine(nt) != null) return null;
 
         var attrs: Attrs = .{};
@@ -826,6 +829,20 @@ fn appendFlowLine(arena: Allocator, buf: *std.ArrayList(u8), line: []const u8) A
     try buf.appendSlice(arena, line);
 }
 
+/// Inline-parse the contents of a *reused* flow buffer (list items, quote
+/// paragraphs — the ones `clearRetainingCapacity` refills for the next run).
+///
+/// Inline nodes carry slices *into* their input rather than copies —
+/// `.code`, `.math`, `.link.url`, `.autolink`, image src/alt — so parsing
+/// straight from the buffer would leave every one of them pointing at memory
+/// the next run overwrites (a list of links rendered as binary garbage).
+/// Duping the joined text into the arena first gives those slices stable
+/// memory for the document's lifetime. `.text` nodes were always safe: they
+/// are built up in their own buffer and handed over with `toOwnedSlice`.
+fn parseFlowRun(arena: Allocator, buf: []const u8) Allocator.Error![]Inline {
+    return parseInlines(arena, try arena.dupe(u8, buf));
+}
+
 /// End a list item's soft-wrap run: inline-parse the gathered text into the
 /// open item's own content, or — when a nested list has already interrupted
 /// the item — into a trailing `.line` segment.
@@ -836,7 +853,7 @@ fn flushFlow(
     tail: *std.ArrayList(Item.Tail),
 ) Allocator.Error!void {
     if (flow.items.len == 0 or items.items.len == 0) return;
-    const inls = try parseInlines(arena, flow.items);
+    const inls = try parseFlowRun(arena, flow.items);
     flow.clearRetainingCapacity();
     if (tail.items.len == 0) {
         items.items[items.items.len - 1].text = inls;
@@ -867,31 +884,24 @@ fn isBlockStart(t: []const u8) bool {
         isPlainItem(t) or
         orderedMarker(t) != null or
         parseSingleCommandLine(t) != null or
-        sheet.parseLine(t) != null or
-        tabIndent(t) != null;
+        sheet.parseLine(t) != null;
 }
 
-/// The tab prefix (`docs/design/011-indent.md`): tabs in a line's leading
-/// whitespace indent the block the rest of the line starts, one step per
-/// tab (spaces in the run stay insignificant, as everywhere). Null when the
-/// line has no leading tab — or when the content after it is a form tabs
-/// don't indent: list markers keep their nesting meaning, and directive
-/// lines (`//`, `/cmd()`, `:`) are column-0 forms that a tab leaves inert
-/// prose. `t` is the left-trimmed line, so a leading run starts at 0.
-fn tabIndent(t: []const u8) ?struct { steps: usize, rest: []const u8 } {
-    if (t.len == 0 or t[0] != '\t') return null;
-    var i: usize = 0;
-    var steps: usize = 0;
-    while (i < t.len and (t[i] == '\t' or t[i] == ' ')) : (i += 1) {
-        if (t[i] == '\t') steps += 1;
-    }
-    const rest = t[i..];
-    if (rest.len == 0) return null;
-    if (parseMarker(rest) != null) return null;
-    if (parseGroupLine(rest) != null) return null;
-    if (parseSingleCommandLine(rest) != null) return null;
-    if (sheet.parseLine(rest) != null) return null;
-    return .{ .steps = steps, .rest = rest };
+/// Strip a line's leading whitespace. Spaces and tabs are the same thing to
+/// every block classifier — indentation is insignificant to *what* a line is
+/// (note 015 gives it meaning in exactly one place: `hasParagraphIndent`).
+fn trimIndent(line: []const u8) []const u8 {
+    return std.mem.trimStart(u8, line, " \t");
+}
+
+/// Does a paragraph starting at this raw (untrimmed) line carry the one-step
+/// whitespace indent (`docs/design/015-paragraph-indent.md`)? Any leading
+/// whitespace — one space, four, or a tab — means one step; the amount and
+/// kind are deliberately not significant. Only paragraphs consult this: every
+/// other block form is classified from the trimmed line and ignores leading
+/// whitespace exactly as before.
+fn hasParagraphIndent(raw_line: []const u8) bool {
+    return raw_line.len > 0 and (raw_line[0] == ' ' or raw_line[0] == '\t');
 }
 
 /// `# ` .. `###### ` -> heading level 1..6, otherwise null.
@@ -1094,8 +1104,9 @@ const Command = union(enum) {
     /// collapse(open) starts open. Layout and *structural* — it shapes the
     /// emitted elements rather than adding style declarations.
     collapse: Collapse,
-    /// indent(n): a first-line typographic tab indent, n steps; a literal
-    /// tab prefix on a content line writes the same data (011-indent).
+    /// indent(n): a first-line typographic tab indent, n steps; a
+    /// whitespace-indented paragraph writes one step of the same data
+    /// (011-indent, 015-paragraph-indent).
     /// Non-layout — nesting scopes, it doesn't stack: an inner indent(n)
     /// overrides the inherited value for its own subtree (plain CSS
     /// text-indent semantics), the same as color's inner-wins cascade.
@@ -1238,9 +1249,9 @@ fn parseSingleCommandLine(t: []const u8) ?Command {
 /// separator row, starts a table.
 fn isTableStart(lines: []const []const u8, idx: usize) bool {
     if (idx + 1 >= lines.len or isBlank(lines[idx])) return false;
-    const t = std.mem.trimStart(u8, lines[idx], " ");
+    const t = trimIndent(lines[idx]);
     if (isBlockStart(t) or std.mem.indexOfScalar(u8, t, '|') == null) return false;
-    return isTableSeparator(std.mem.trimStart(u8, lines[idx + 1], " "));
+    return isTableSeparator(trimIndent(lines[idx + 1]));
 }
 
 /// A GFM table separator row: cells of `-`s with optional `:` alignment
@@ -1371,6 +1382,90 @@ fn parseAngleAutolink(s: []const u8) ?[]const u8 {
     return url;
 }
 
+// ---- delimiter flanking (docs/design/014-flanking.md) ------------------------
+// Emphasis delimiters are context-sensitive: `a * b * c` is asterisks in prose,
+// not emphasis around a space. CommonMark decides this with left/right-flanking
+// delimiter runs, and these three helpers are that definition, applied by every
+// emphasis arm below. `text` is the *joined* text of a flowing element, so its
+// start and end count as whitespace (a span can't open on nothing).
+
+/// ASCII punctuation, per CommonMark's definition (the flanking clauses treat
+/// punctuation as a weaker boundary than whitespace).
+fn isAsciiPunct(c: u8) bool {
+    return switch (c) {
+        '!'...'/', ':'...'@', '['...'`', '{'...'~' => true,
+        else => false,
+    };
+}
+
+fn isSpaceChar(c: u8) bool {
+    return c == ' ' or c == '\t';
+}
+
+/// The character before a run, or null at the start of the text (= whitespace).
+fn charBefore(text: []const u8, start: usize) ?u8 {
+    return if (start == 0) null else text[start - 1];
+}
+
+/// The character after a run, or null at the end of the text (= whitespace).
+fn charAfter(text: []const u8, start: usize, len: usize) ?u8 {
+    const at = start + len;
+    return if (at >= text.len) null else text[at];
+}
+
+/// May the delimiter run at `start` (of `len` chars) *open* a span?
+/// CommonMark: not followed by whitespace, and either not followed by
+/// punctuation, or followed by punctuation and preceded by whitespace or
+/// punctuation.
+fn isLeftFlanking(text: []const u8, start: usize, len: usize) bool {
+    const after = charAfter(text, start, len) orelse return false;
+    if (isSpaceChar(after)) return false;
+    if (!isAsciiPunct(after)) return true;
+    const before = charBefore(text, start) orelse return true;
+    return isSpaceChar(before) or isAsciiPunct(before);
+}
+
+/// May the delimiter run at `start` (of `len` chars) *close* a span?
+/// The mirror of `isLeftFlanking`.
+fn isRightFlanking(text: []const u8, start: usize, len: usize) bool {
+    const before = charBefore(text, start) orelse return false;
+    if (isSpaceChar(before)) return false;
+    if (!isAsciiPunct(before)) return true;
+    const after = charAfter(text, start, len) orelse return true;
+    return isSpaceChar(after) or isAsciiPunct(after);
+}
+
+/// The next occurrence of `marker` at or after `from` that can close a span —
+/// non-qualifying candidates are skipped, not fatal, so `*a * b*` is one
+/// emphasis containing a lone asterisk.
+fn findClosingRun(text: []const u8, from: usize, marker: []const u8) ?usize {
+    var at = from;
+    while (std.mem.indexOfPos(u8, text, at, marker)) |found| {
+        if (isRightFlanking(text, found, marker.len)) return found;
+        at = found + 1;
+    }
+    return null;
+}
+
+/// The closing `$` of an inline-math span opened at `open`, or null if this `$`
+/// doesn't open one (docs/design/014-flanking.md): the opener must be followed
+/// by a non-space character, the closer preceded by one and not followed by a
+/// digit, and the body must be non-empty. Non-qualifying candidates are skipped.
+fn findMathClose(text: []const u8, open: usize) ?usize {
+    const first = charAfter(text, open, 1) orelse return null;
+    if (isSpaceChar(first)) return null;
+    var at = open + 1;
+    while (std.mem.indexOfScalarPos(u8, text, at, '$')) |found| {
+        if (found == open + 1) return null; // empty body: `$$` is not inline math
+        const before = text[found - 1];
+        const after = charAfter(text, found, 1);
+        const digit_follows = if (after) |a| std.ascii.isDigit(a) else false;
+        if (!isSpaceChar(before) and !digit_follows) return found;
+        at = found + 1;
+    }
+    return null;
+}
+
 /// Parse one line's inline markdown into a run of `Inline` nodes. Literal
 /// characters (and unwrapped backslash escapes) accumulate into `.text` runs;
 /// structured forms flush the run and append their own node. Recurses for
@@ -1401,9 +1496,11 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
             }
         }
 
-        // $inline math$ — raw TeX; no markdown applies inside.
+        // $inline math$ — raw TeX; no markdown applies inside. The delimiter
+        // rules (014-flanking) keep prose dollars — `costs $5 and $10`,
+        // `$HOME and $PATH` — out of the math parser.
         if (c == '$') {
-            if (std.mem.indexOfScalarPos(u8, text, i + 1, '$')) |end| {
+            if (findMathClose(text, i)) |end| {
                 try flushText(arena, &out, &pending);
                 try out.append(arena, .{ .math = text[i + 1 .. end] });
                 i = end + 1;
@@ -1472,10 +1569,17 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
             }
         }
 
+        // Emphasis and strikethrough. Every arm gates on flanking
+        // (014-flanking): the opening run must be left-flanking and the
+        // closing run right-flanking, so `a * b * c` and `5 * 4 * 3` stay
+        // literal asterisks the way they do in every other renderer.
+
         // ***bold italic*** — checked before **bold** so the third star isn't
         // left over as a literal character.
-        if (c == '*' and i + 2 < text.len and text[i + 1] == '*' and text[i + 2] == '*') {
-            if (std.mem.indexOfPos(u8, text, i + 3, "***")) |end| {
+        if (c == '*' and i + 2 < text.len and text[i + 1] == '*' and text[i + 2] == '*' and
+            isLeftFlanking(text, i, 3))
+        {
+            if (findClosingRun(text, i + 3, "***")) |end| {
                 try flushText(arena, &out, &pending);
                 try out.append(arena, .{ .strong_em = try parseInlines(arena, text[i + 3 .. end]) });
                 i = end + 3;
@@ -1484,8 +1588,8 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
         }
 
         // **bold**
-        if (c == '*' and i + 1 < text.len and text[i + 1] == '*') {
-            if (std.mem.indexOfPos(u8, text, i + 2, "**")) |end| {
+        if (c == '*' and i + 1 < text.len and text[i + 1] == '*' and isLeftFlanking(text, i, 2)) {
+            if (findClosingRun(text, i + 2, "**")) |end| {
                 try flushText(arena, &out, &pending);
                 try out.append(arena, .{ .strong = try parseInlines(arena, text[i + 2 .. end]) });
                 i = end + 2;
@@ -1494,8 +1598,8 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
         }
 
         // *italic*
-        if (c == '*') {
-            if (std.mem.indexOfScalarPos(u8, text, i + 1, '*')) |end| {
+        if (c == '*' and isLeftFlanking(text, i, 1)) {
+            if (findClosingRun(text, i + 1, "*")) |end| {
                 if (end > i + 1) {
                     try flushText(arena, &out, &pending);
                     try out.append(arena, .{ .em = try parseInlines(arena, text[i + 1 .. end]) });
@@ -1506,8 +1610,8 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
         }
 
         // ~~strikethrough~~
-        if (c == '~' and i + 1 < text.len and text[i + 1] == '~') {
-            if (std.mem.indexOfPos(u8, text, i + 2, "~~")) |end| {
+        if (c == '~' and i + 1 < text.len and text[i + 1] == '~' and isLeftFlanking(text, i, 2)) {
+            if (findClosingRun(text, i + 2, "~~")) |end| {
                 if (end > i + 2) {
                     try flushText(arena, &out, &pending);
                     try out.append(arena, .{ .strike = try parseInlines(arena, text[i + 2 .. end]) });
@@ -1690,6 +1794,25 @@ test "raw list: interrupts an open paragraph; near-misses stay prose" {
     try testing.expectEqual(@as(usize, 2), d2.blocks.len);
     try testing.expect(d2.blocks[0].kind == .paragraph);
     try testing.expect(d2.blocks[1].kind == .paragraph);
+}
+
+test "flow runs: slicing inlines survive the buffer being reused" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // `.code`/`.link.url` slice their input, and list items share one flow
+    // buffer — so an earlier item's slices must not point into memory a later
+    // item overwrites (they rendered as binary garbage before `parseFlowRun`).
+    const list = (try parse(arena, "- [a](one.md) `code`\n- [b](two.md) `more`\n- [c](three.md) `x`", .empty)).blocks[0].kind.list;
+    try testing.expectEqualStrings("one.md", list.items[0].text[0].link.url);
+    try testing.expectEqualStrings("code", list.items[0].text[2].code);
+    try testing.expectEqualStrings("two.md", list.items[1].text[0].link.url);
+    try testing.expectEqualStrings("more", list.items[1].text[2].code);
+    // Quote paragraphs share a buffer the same way.
+    const quote = (try parse(arena, "> [a](one.md) `code`\n>\n> [b](two.md) `more`", .empty)).blocks[0].kind.quote;
+    try testing.expectEqualStrings("one.md", quote.paras[0][0].link.url);
+    try testing.expectEqualStrings("code", quote.paras[0][2].code);
+    try testing.expectEqualStrings("two.md", quote.paras[1][0].link.url);
 }
 
 test "table rows are padded to the header width at parse time" {
@@ -2546,44 +2669,160 @@ test "inline precedence: image beats link at `![`, color span needs its exact fo
     try testing.expect(p2[2] == .color_span);
 }
 
-test "indent: a tab prefix indents the block it starts" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const d1 = try parse(arena_state.allocator(), "\tindented paragraph", .empty);
-    try testing.expect(d1.blocks[0].kind == .paragraph);
-    try testing.expectEqual(@as(usize, 1), d1.blocks[0].attrs.indent);
-    // Two tabs, two steps; the remainder parses as its own block form.
-    const d2 = try parse(arena_state.allocator(), "\t\t## deep heading", .empty);
-    try testing.expectEqual(@as(usize, 2), d2.blocks[0].attrs.indent);
-    try testing.expectEqual(@as(usize, 2), d2.blocks[0].kind.heading.level);
-    // Spaces in the leading run stay insignificant; only tabs count.
-    const d3 = try parse(arena_state.allocator(), "\t \tmixed run", .empty);
-    try testing.expectEqual(@as(usize, 2), d3.blocks[0].attrs.indent);
+// ---- flanking (docs/design/014-flanking.md) ----
+
+/// A paragraph that parsed to exactly one literal `.text` run — i.e. every
+/// delimiter in it stayed prose.
+fn expectAllLiteral(arena: Allocator, src: []const u8) !void {
+    const doc = try parse(arena, src, .empty);
+    const p = doc.blocks[0].kind.paragraph;
+    try testing.expectEqual(@as(usize, 1), p.len);
+    try testing.expect(p[0] == .text);
+    try testing.expectEqualStrings(src, p[0].text);
 }
 
-test "indent: a tab-led line breaks a preceding paragraph" {
+test "flanking: space-flanked emphasis delimiters stay literal asterisks" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(), "flow\n\tindented", .empty);
-    try testing.expectEqual(@as(usize, 2), d.blocks.len);
-    try testing.expectEqual(@as(usize, 0), d.blocks[0].attrs.indent);
-    try testing.expectEqual(@as(usize, 1), d.blocks[1].attrs.indent);
+    const arena = arena_state.allocator();
+    try expectAllLiteral(arena, "a * b * c");
+    try expectAllLiteral(arena, "5 * 4 * 3");
+    try expectAllLiteral(arena, "~~ not strike ~~");
 }
 
-test "indent: tabs before list markers and directives stay inert" {
+test "flanking: emphasis still parses where the delimiters hug their content" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    // A standalone tab-led list line is prose, exactly as before 011.
-    const d1 = try parse(arena_state.allocator(), "\t- item", .empty);
-    try testing.expect(d1.blocks[0].kind == .paragraph);
+    const arena = arena_state.allocator();
+    const d1 = try parse(arena, "*emphasis*", .empty);
+    try testing.expect(d1.blocks[0].kind.paragraph[0] == .em);
+    const d2 = try parse(arena, "**bold**", .empty);
+    try testing.expect(d2.blocks[0].kind.paragraph[0] == .strong);
+    const d3 = try parse(arena, "***both***", .empty);
+    try testing.expect(d3.blocks[0].kind.paragraph[0] == .strong_em);
+    const d4 = try parse(arena, "~~struck~~", .empty);
+    try testing.expect(d4.blocks[0].kind.paragraph[0] == .strike);
+    // The punctuation clause: a quote or paren right after the opener is fine
+    // because whitespace precedes the run.
+    const d5 = try parse(arena, "**\"quoted\"**", .empty);
+    try testing.expect(d5.blocks[0].kind.paragraph[0] == .strong);
+    // Intraword emphasis is legal for `*` (only `_` is restricted, and strike
+    // has no `_` emphasis at all).
+    const d6 = try parse(arena, "intra*word*em", .empty);
+    try testing.expect(d6.blocks[0].kind.paragraph[1] == .em);
+}
+
+test "flanking: a non-closing candidate is skipped, not fatal" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // The middle `*` can't close (space before it), so the scan continues to
+    // the final one: one emphasis containing a literal asterisk.
+    const doc = try parse(arena_state.allocator(), "*a * b*", .empty);
+    const p = doc.blocks[0].kind.paragraph;
+    try testing.expectEqual(@as(usize, 1), p.len);
+    try testing.expect(p[0] == .em);
+    try testing.expectEqualStrings("a * b", p[0].em[0].text);
+}
+
+test "flanking: prose dollars are not inline math" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // A digit after the closing candidate rules it out (the money case).
+    try expectAllLiteral(arena, "The book costs $5 and the pen costs $10.");
+    try expectAllLiteral(arena, "then $HOME and $PATH are set");
+    // Space after the opener, and space before the closer.
+    try expectAllLiteral(arena, "$ x $");
+    try expectAllLiteral(arena, "a $x $ b");
+}
+
+test "flanking: real inline math still parses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const d1 = try parse(arena, "real math $x^2$ inline", .empty);
+    try testing.expectEqualStrings("x^2", d1.blocks[0].kind.paragraph[1].math);
+    const d2 = try parse(arena, "$\\frac{a}{b}$", .empty);
+    try testing.expectEqualStrings("\\frac{a}{b}", d2.blocks[0].kind.paragraph[0].math);
+    // `$$` is not an empty inline-math span (display math is a block form).
+    try expectAllLiteral(arena, "a $$ b");
+}
+
+// ---- paragraph indentation (docs/design/015-paragraph-indent.md) ----
+
+test "indent: any leading whitespace indents a paragraph one step" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // The amount and kind are deliberately not significant — all one step.
+    for ([_][]const u8{ " one space", "  two spaces", "    four spaces", "\ttab", "\t\ttwo tabs" }) |src| {
+        const doc = try parse(arena, src, .empty);
+        try testing.expect(doc.blocks[0].kind == .paragraph);
+        try testing.expectEqual(@as(usize, 1), doc.blocks[0].attrs.indent);
+    }
+    // A flush paragraph carries no indent…
+    const flush = try parse(arena, "flush", .empty);
+    try testing.expectEqual(@as(usize, 0), flush.blocks[0].attrs.indent);
+    // …and the leading whitespace never reaches the rendered text.
+    const doc = try parse(arena, "\tindented paragraph", .empty);
+    try testing.expectEqualStrings("indented paragraph", doc.blocks[0].kind.paragraph[0].text);
+}
+
+test "indent: only paragraphs respond to leading whitespace" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Every other block form ignores it and parses exactly as it would flush.
+    const cases = [_][]const u8{
+        "  ## heading",
+        "\t> quote",
+        "  - item",
+        "\t. raw item",
+        "  ```\ncode\n```",
+        "\t$$x$$",
+        "  ---",
+    };
+    for (cases) |src| {
+        const doc = try parse(arena, src, .empty);
+        try testing.expect(doc.blocks[0].kind != .paragraph);
+        try testing.expectEqual(@as(usize, 0), doc.blocks[0].attrs.indent);
+    }
+    // Directives too: an indented opener is live, and carries no indent of
+    // its own (a tab reads exactly like the spaces that always worked here).
+    const g = try parse(arena, "\t// g grid(2)\n\nx\n\n// end g", .empty);
+    try testing.expect(g.blocks[0].kind == .group);
+    try testing.expectEqual(@as(usize, 0), g.blocks[0].attrs.indent);
+}
+
+test "indent: an indented continuation line soft-wraps instead of indenting" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Only a paragraph's *first* line is read, so wrapped prose can never
+    // accidentally indent — the indented line joins the open paragraph.
+    const d1 = try parse(arena, "flow\n\tindented", .empty);
+    try testing.expectEqual(@as(usize, 1), d1.blocks.len);
     try testing.expectEqual(@as(usize, 0), d1.blocks[0].attrs.indent);
-    // …and it still soft-wraps into an open paragraph, never breaking it.
-    const d2 = try parse(arena_state.allocator(), "flow\n\t- item", .empty);
-    try testing.expectEqual(@as(usize, 1), d2.blocks.len);
-    // A tabbed directive line is inert prose — directives are column-0 forms.
-    const d3 = try parse(arena_state.allocator(), "\t// g grid(2)", .empty);
-    try testing.expect(d3.blocks[0].kind == .paragraph);
-    try testing.expectEqual(@as(usize, 0), d3.blocks[0].attrs.indent);
+    try testing.expectEqualStrings("flow indented", d1.blocks[0].kind.paragraph[0].text);
+    // With a blank line between, the second paragraph is its own block and
+    // does indent.
+    const d2 = try parse(arena, "flow\n\n\tindented", .empty);
+    try testing.expectEqual(@as(usize, 2), d2.blocks.len);
+    try testing.expectEqual(@as(usize, 0), d2.blocks[0].attrs.indent);
+    try testing.expectEqual(@as(usize, 1), d2.blocks[1].attrs.indent);
+}
+
+test "indent: an indented line inside a list continues the item" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // The old tab-prefix form claimed to interrupt a list item but was
+    // swallowed by it (note 015's Problem section); now there is no
+    // whitespace-led block form at all, and continuation is the whole story.
+    const doc = try parse(arena_state.allocator(), "- item\n\tcontinued", .empty);
+    try testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    const list = doc.blocks[0].kind.list;
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("item continued", list.items[0].text[0].text);
 }
 
 test "indent command: bare indent() is one step, indent(0) deactivates" {
