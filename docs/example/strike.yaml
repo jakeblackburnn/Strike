@@ -11,6 +11,7 @@ order:                  # nav order; unlisted entries follow alphabetically
   - markdown.md
   - syntax.sx
   - layout.md
+  - citations.md
   - degradation.md
   - guide
 
@@ -18,6 +19,7 @@ labels:                 # nav labels; otherwise the first heading, then the file
   markdown.md: The markdown subset
   syntax.sx: One flavor (.sx)
   layout.md: Layout & commands
+  citations.md: Citations
   degradation.md: Degradation
   guide: Guide           # folders take labels too
 

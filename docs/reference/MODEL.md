@@ -62,6 +62,21 @@ iff it parses cleanly, otherwise prose), a `/cmd()` line to
 `parseSingleCommandLine` (desugars to a nameless one-section group around the
 next content element).
 
+After the block loop, `parse` runs one **whole-tree pass** —
+`resolveCitations` (note 016), the first and so far only one: forms whose
+meaning needs the whole document (a citation mark and its entry can sit at
+opposite ends) resolve here, still inside `parse` (pure, arena-owned), so
+every backend walks an already-resolved tree. The pass adopts the document's
+one citations group (stripping the command from later siblings with a
+warning — the layout-level rule covers nesting, this covers siblings), finds
+its entry list (the first top-level numbered list in the group; none
+degrades the command with a warning), lifts `[key]` prefixes off entries
+(the language's one context-scoped form — implemented as tree rewriting
+here, never as context threaded into line parsing), then numbers every mark
+site in document order and resolves each ref to an entry position, recording
+backlinks on the entries. Unresolved refs (unknown key, out of range, no
+group) zero out with a warning and render inert.
+
 Emitters walk `Doc.blocks` recursively (groups contain blocks). The HTML
 backend is `render_html.emit(gpa, doc, opts)`; `render_html.render` is the
 parse+print-warnings+emit convenience every caller uses. Nothing in the tree
@@ -99,12 +114,24 @@ Attrs                            ← every command writes exactly one field
 ├── centered:   bool             ← center()     (layout)
 ├── text_color: ?TextColor       ← color(role)  (non-layout)
 ├── collapse:   ?Collapse        ← collapse()   (layout, structural)
+├── citations:  bool             ← citations()  (layout, structural)
 └── indent:     usize            ← indent(n), or one step from a whitespace-
                                    indented paragraph  (non-layout)
 
 Inline: text · code · math · image · link · autolink ·
-        strong · em · strong_em · strike · color_span(color, children)
+        strong · em · strong_em · strike · color_span(color, children) ·
+        cite_span(CiteSpan: refs, site, preview, children)
 ```
+
+Citation resolution lands as data in three places (all written by the
+`resolveCitations` pass, all zero/empty until it runs): `CiteSpan.site` (the
+mark's 1-based document-order index — its anchor identity) with each
+`CiteRef.num` resolved to an entry position (0 = unresolved, renders inert)
+and `CiteSpan.preview` (the cited entries as plain text, for hover
+affordances); and on the entry list's items, `Item.cite_entry` (the item's
+1-based entry number) and `Item.cite_sites` (the sites citing it — its
+backlink targets). Keys are transient: lifted from entry text and consumed by
+resolution, they never appear in the tree.
 
 The load-bearing decision: **`Attrs` lives on every `Block`**, not on `Group`.
 Groups are today the only *targeting mechanism* — the only syntax that gets a
@@ -141,7 +168,7 @@ are *types* and which are *roles* — the distinction resolves every fuzzy edge.
 | styled container             | *a role*: a group whose attrs carry only non-layout commands (e.g. `color`) |
 | plain container              | *a role*: a group with empty attrs                |
 | section                      | one `[]Block` in `Group.sections`                 |
-| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, indent) |
+| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, citations, indent) |
 | directive (group / single-command / alias) | `GroupLine` / `parseSingleCommandLine` / `sheet` namespace — transient parse classifications; directives never appear in the tree |
 | color role                   | `TextColor` (accent, muted, fg)                   |
 
@@ -167,6 +194,7 @@ here only as the first backend's interpretation.
 | `color(role)`| set contained text to a theme role's color                 | no      | `color:var(--role)` |
 | `collapse()` / `collapse(open)` | fold the group behind its leader (first block when it has ≥ 2; an empty bar otherwise), closed/open initially | yes | `<details>`/`<summary>` + a body wrapper — element shape, not style |
 | `indent(n)` | inset the element from the left by `n` steps | no | realization depends on the element type — see below |
+| `citations()` | the group's numbered list is the document's reference list; marks bind to its entries (one group per document, enforced by the parse-end pass) | yes | a `<section class="sx-citations">` wrapper; entry `<li>`s get `id` anchors + backlinks, marks become links + a `<sup>` — element shape, not style |
 
 Backend obligations, in spec terms:
 
@@ -199,14 +227,19 @@ Backend obligations, in spec terms:
   `docs/reference/design/013-command-realization.md` is the matrix and the place they
   get decided. A second backend has no CSS inheritance to fall back on and
   must realize every pair explicitly.
-- **Structural commands** (`isStructural`; today only `collapse`) are
+- **Structural commands** (`isStructural`; `collapse` and `citations`) are
   realized as *element shape*, not style declarations — `Attrs.anyStyle`
   skips them, so the shared style helper never emits an empty attribute for
-  them. The HTML backend folds the group into a disclosure element whose
-  summary is the leader and puts the group's styling attrs on the body
+  them. The HTML backend folds a collapse group into a disclosure element
+  whose summary is the leader and puts the group's styling attrs on the body
   wrapper (a grid style on the disclosure element would capture the summary
   as a grid item). A non-interactive backend (PDF) renders collapsible
   groups expanded — folding is a screen affordance, not document meaning.
+  A citations group emits as a bibliography section; its resolution data
+  (anchors, backlinks, mark sites) is already on the tree, so a backend only
+  chooses shapes — the HTML backend makes the span a link with the entry
+  numbers in a `<sup>` after it, and gives entries their anchors and
+  backlinks in the entry `<li>`s wherever the list sits.
 
 ## Warnings
 
@@ -235,6 +268,10 @@ end-to-end test in `src/render_html.zig`.
   the style helper for a styling command, the element shape for a
   structural one. The depth machinery, `//`-opener support, `/cmd()`
   support, and `Attrs.any` come free.
+- **A form needing whole-document knowledge**: resolve it in a parse-end
+  pass over the finished tree (`resolveCitations` is the precedent) — still
+  inside `parse`, still pure, results landing as data on nodes. Backends
+  never resolve; they only choose shapes.
 - **Element-type-specific commands** (future): the attribute slot
   (`Block.attrs`) and uniform emission already exist; what remains is the
   targeting syntax — a selector grammar needs its design note, then a parser

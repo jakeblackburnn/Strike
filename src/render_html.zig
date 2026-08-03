@@ -226,6 +226,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?[]const u8, inheri
             try w.writeAll("/>\n");
         },
         .group => |g| {
+            if (block.attrs.citations) return emitCitations(w, g, block.attrs, link_base, indent);
             if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base, indent);
             // Styles are inline (not shell CSS) so fragments and static
             // exports are self-contained; the classes are hooks for future
@@ -276,6 +277,23 @@ fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: 
     try w.writeAll("</div>\n</details>\n");
 }
 
+/// The document's citations group (016-citations): a `<section>` the reader
+/// styles as a bibliography. The walk is the plain group walk — the entry
+/// list's anchors and backlinks arrive as data on its items
+/// (`Item.cite_entry`/`cite_sites`, written by the parse-end pass), which
+/// `emitList` reads wherever the list sits.
+fn emitCitations(w: *Writer, g: strikedown.Group, attrs: strikedown.Attrs, link_base: ?[]const u8, indent: usize) Writer.Error!void {
+    try w.writeAll("<section class=\"sx-group sx-citations\"");
+    try writeStyleAttr(w, attrs, .first_line);
+    try w.writeAll(">\n");
+    for (g.sections) |section| {
+        try w.writeAll("<div class=\"sx-group-sec\">\n");
+        for (section) |b| try emitBlock(w, b, link_base, indent);
+        try w.writeAll("</div>\n");
+    }
+    try w.writeAll("</section>\n");
+}
+
 /// The alert's rendered title text — the type name, capitalized.
 fn alertLabel(a: strikedown.Alert) []const u8 {
     return switch (a) {
@@ -304,7 +322,13 @@ fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_bas
     }
     try w.writeAll(">\n");
     for (list.items) |item| {
-        try w.writeAll("<li>");
+        // A citation entry (016-citations) carries its anchor and backlink
+        // sites as data from the parse-end pass.
+        if (item.cite_entry != 0) {
+            try w.print("<li id=\"cite-{d}\">", .{item.cite_entry});
+        } else {
+            try w.writeAll("<li>");
+        }
         if (item.task) |checked| {
             try w.writeAll(if (checked)
                 "<input type=\"checkbox\" disabled checked> "
@@ -322,6 +346,9 @@ fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_bas
                 try emitList(w, sub, .{}, link_base);
             },
         };
+        for (item.cite_sites) |site| {
+            try w.print(" <a class=\"sx-cite-back\" href=\"#cite-ref-{d}\">\u{21a9}</a>", .{site});
+        }
         try w.writeAll("</li>\n");
     }
     try w.writeAll(if (list.ordered) "</ol>\n" else "</ul>\n");
@@ -393,6 +420,38 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const 
             try w.print("<span class=\"sx-color\" style=\"color:var(--{t})\">", .{span.color});
             try emitInlines(w, span.children, link_base);
             try w.writeAll("</span>");
+        },
+        .cite_span => |span| {
+            // The whole span links to its first resolved entry — the claim is
+            // the click/hover target (016-citations) — with the mark's numbers
+            // set superscript after it. A mark with nothing resolved renders
+            // inert: a plain span, raw ref text in the sup.
+            const first: ?u32 = for (span.refs) |ref| {
+                if (ref.num != 0) break ref.num;
+            } else null;
+            if (first) |num| {
+                try w.print("<a class=\"sx-cite\" id=\"cite-ref-{d}\" href=\"#cite-{d}\"", .{ span.site, num });
+                if (span.preview.len > 0) {
+                    try w.writeAll(" title=\"");
+                    try escapeAttrInto(w, span.preview);
+                    try w.writeByte('"');
+                }
+                try w.writeByte('>');
+            } else {
+                try w.writeAll("<span class=\"sx-cite\">");
+            }
+            try emitInlines(w, span.children, link_base);
+            try w.writeAll(if (first != null) "</a>" else "</span>");
+            try w.writeAll("<sup class=\"sx-cite-mark\">");
+            for (span.refs, 0..) |ref, ri| {
+                if (ri > 0) try w.writeByte(',');
+                if (ref.num != 0) {
+                    try w.print("<a href=\"#cite-{d}\">{d}</a>", .{ ref.num, ref.num });
+                } else {
+                    try escapeInto(w, ref.raw);
+                }
+            }
+            try w.writeAll("</sup>");
         },
         .strong => |c| {
             try w.writeAll("<strong>");
@@ -1061,6 +1120,70 @@ test "collapse: other command styles land on the body, never the details" {
 
 test "collapse: bad args degrade the line to prose" {
     try expectRender("<p>/collapse(true)</p>\n", "/collapse(true)");
+}
+
+test "citations: the canonical example — mark links, entry anchors, backlink" {
+    // 016-citations: the span is the click/hover target, the sup carries the
+    // number, the entry anchors and links back, the list sits in a
+    // bibliography section.
+    try expectRender(
+        "<p><a class=\"sx-cite\" id=\"cite-ref-1\" href=\"#cite-1\" " ++
+            "title=\"1. D. Knuth, The TeXbook, Addison-Wesley, 1984.\">" ++
+            "Line-breaking is best solved as a dynamic program</a>" ++
+            "<sup class=\"sx-cite-mark\"><a href=\"#cite-1\">1</a></sup>" ++
+            " — a result that predates the system it was written for.</p>\n" ++
+            "<section class=\"sx-group sx-citations\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol>\n" ++
+            "<li id=\"cite-1\">D. Knuth, <em>The TeXbook</em>, Addison-Wesley, 1984. " ++
+            "<a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a></li>\n" ++
+            "</ol>\n" ++
+            "</div>\n" ++
+            "</section>\n",
+        "[Line-breaking is best solved as a dynamic program].cite(1) — a result that predates the system it was written for.\n" ++
+            "\n// citations()\n\n1. D. Knuth, *The TeXbook*, Addison-Wesley, 1984.\n\n//",
+    );
+}
+
+test "citations: multi-source marks and key binding" {
+    try expectRender(
+        "<p><a class=\"sx-cite\" id=\"cite-ref-1\" href=\"#cite-1\" " ++
+            "title=\"1. a.\n2. b.\">both</a>" ++
+            "<sup class=\"sx-cite-mark\"><a href=\"#cite-1\">1</a>,<a href=\"#cite-2\">2</a></sup></p>\n" ++
+            "<section class=\"sx-group sx-citations\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol>\n" ++
+            "<li id=\"cite-1\">a. <a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a></li>\n" ++
+            "<li id=\"cite-2\">b. <a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a></li>\n" ++
+            "</ol>\n" ++
+            "</div>\n" ++
+            "</section>\n",
+        "[both].cite(1, k)\n\n// citations()\n\n1. a.\n2. [k] b.\n\n//",
+    );
+}
+
+test "citations: unresolved marks render inert; malformed marks stay prose" {
+    // no citations group: a plain span, the raw ref in the sup, no links
+    try expectRender(
+        "<p><span class=\"sx-cite\">x</span><sup class=\"sx-cite-mark\">3</sup></p>\n",
+        "[x].cite(3)",
+    );
+    // malformed args deactivate the whole mark — literal prose, the
+    // degradation an older strike shows for every citation
+    try expectRender("<p>[x].cite()</p>\n", "[x].cite()");
+    try expectRender("<p>[].cite(1)</p>\n", "[].cite(1)");
+}
+
+test "citations: a second group degrades to a plain group" {
+    try expectRender(
+        "<section class=\"sx-group sx-citations\">\n" ++
+            "<div class=\"sx-group-sec\">\n<ol>\n<li id=\"cite-1\">first</li>\n</ol>\n</div>\n" ++
+            "</section>\n" ++
+            "<div class=\"sx-group\">\n" ++
+            "<div class=\"sx-group-sec\">\n<ol>\n<li>second</li>\n</ol>\n</div>\n" ++
+            "</div>\n",
+        "// citations()\n\n1. first\n\n//\n\n// citations()\n\n1. second\n\n//",
+    );
 }
 
 test "single command wraps the next content element" {

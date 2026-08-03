@@ -288,6 +288,24 @@ const head_post_a =
     \\  .sx-collapse[open] > summary::before { transform: rotate(90deg); }
     \\  .sx-collapse > summary > * { display: inline; }
     \\  .sx-collapse > summary.sx-collapse-bar { display: block; min-height: 1.6em; }
+    \\  /* Citations (016-citations): the cited claim is the affordance. At
+    \\     rest a .sx-cite span is invisible — body text, none of the link
+    \\     dress — and hover reveals it, subtly emphasizing the claim; only
+    \\     the sup mark is visibly a link. `:target` tints the landing end of
+    \\     a mark ↔ entry jump so the reader keeps their place both ways. The
+    \\     entry list sets slightly smaller and tighter than body prose, with
+    \\     the numbers in the muted margin — the bibliography look. The tints
+    \\     are neutral grays so they read on every seasonal theme. */
+    \\  a.sx-cite { color: inherit; text-decoration: none; border-radius: 3px; transition: background .15s ease; }
+    \\  a.sx-cite:hover { background: rgba(125,125,125,.14); }
+    \\  .sx-cite-mark { margin-left: .1em; }
+    \\  .sx-cite-mark a { text-decoration: none; }
+    \\  a.sx-cite:target, .sx-citations li:target { background: rgba(125,125,125,.14); border-radius: 3px; }
+    \\  .sx-citations ol { font-size: .95em; line-height: 1.45; }
+    \\  .sx-citations li { margin: .35rem 0; }
+    \\  .sx-citations li::marker { color: var(--muted); }
+    \\  a.sx-cite-back { color: var(--muted); text-decoration: none; }
+    \\  a.sx-cite-back:hover { color: var(--accent); }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     \\  .sidebar {
     \\    position: fixed; top: 0; left: 0; width: 14rem; height: 100vh;

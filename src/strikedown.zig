@@ -37,7 +37,8 @@
 //!
 //! Inline grammar, in precedence order: backslash escape, `` `code` ``,
 //! `$math$`, `![alt](src)`, `[text](url)`, `[text].color(role)` color spans
-//! (see `docs/reference/design/006-color.md`), `<http…>` and bare-URL autolinks,
+//! (see `docs/reference/design/006-color.md`), `[text].cite(refs)` citation marks
+//! (see `docs/reference/design/016-citations.md`), `<http…>` and bare-URL autolinks,
 //! `***`/`**`/`*` emphasis, `~~strikethrough~~`. Emphasis delimiters and
 //! inline-math `$` obey flanking/adjacency rules so prose asterisks and
 //! dollars stay literal (`docs/reference/design/014-flanking.md`). Code/math bodies
@@ -105,6 +106,9 @@ pub const Attrs = struct {
     centered: bool = false, // from center(): center-align contained text (layout)
     text_color: ?TextColor = null, // from color(role): theme text color (non-layout)
     collapse: ?Collapse = null, // from collapse(): fold behind the leader (layout, structural)
+    citations: bool = false, // from citations(): the group holds the document's
+    // reference list (layout, structural); one per document — the parse-end
+    // pass (`resolveCitations`) strips extras with a warning
     indent: usize = 0, // from indent(n), or one step from a whitespace-indented
     // paragraph (note 015): first-line indent steps,
     // rendered as CSS text-indent — affects a block's own first line only, and on a
@@ -204,6 +208,12 @@ pub const Item = struct {
     text: []Inline,
     /// Continuation segments in source order: soft-wrapped lines and nested lists.
     tail: []Tail = &.{},
+    /// Set by the citations pass on the entry list's items (016-citations):
+    /// this item's 1-based entry number — its anchor identity. 0 = not an entry.
+    cite_entry: u32 = 0,
+    /// Mark sites (`CiteSpan.site`) citing this entry, in document order —
+    /// the entry's backlink targets.
+    cite_sites: []const u32 = &.{},
 
     pub const Tail = union(enum) {
         line: []Inline,
@@ -238,6 +248,33 @@ pub const Inline = union(enum) {
     strike: []Inline,
     /// `[text].color(role)` — a colored span (`docs/reference/design/006-color.md`).
     color_span: struct { color: TextColor, children: []Inline },
+    /// `[text].cite(refs)` — a citation mark binding the span to entries in
+    /// the document's `citations()` group (`docs/reference/design/016-citations.md`).
+    cite_span: CiteSpan,
+};
+
+/// A citation mark's payload. The inline parser writes `refs` (a digit ref
+/// carries its number immediately; a key ref waits); `site`, final ref
+/// resolution, and `preview` are written by the parse-end citations pass
+/// (`resolveCitations`), so every backend walks an already-resolved tree.
+pub const CiteSpan = struct {
+    refs: []CiteRef,
+    /// 1-based document-order index of this mark — the anchor identity entry
+    /// backlinks point at. 0 until the resolution pass runs.
+    site: u32 = 0,
+    /// Plain-text rendering of the resolved entries ("1. …\n4. …") for
+    /// renderers that want a hover affordance; empty when nothing resolved.
+    preview: []const u8 = "",
+    children: []Inline,
+};
+
+/// One reference inside a citation mark: `raw` exactly as written; `num` the
+/// 1-based entry position it resolves to, or 0 while unresolved (a key ref
+/// before the pass — or permanently: unknown key, out of range, no citations
+/// group — and the mark renders an unresolved ref inert, as its raw text).
+pub const CiteRef = struct {
+    raw: []const u8,
+    num: u32 = 0,
 };
 
 pub fn alignAt(aligns: []const Align, i: usize) Align {
@@ -273,8 +310,12 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
         }
         if (try p.next()) |block| try blocks.append(arena, block);
     }
+    const block_slice = try blocks.toOwnedSlice(arena);
+    // The citations pass (016-citations) — the one whole-tree step after the
+    // block loop: entries and marks can only meet once both exist.
+    try resolveCitations(&p, block_slice);
     return .{
-        .blocks = try blocks.toOwnedSlice(arena),
+        .blocks = block_slice,
         .warnings = try p.warnings.toOwnedSlice(arena),
     };
 }
@@ -1117,6 +1158,13 @@ const Command = union(enum) {
     /// collapse(open) starts open. Layout and *structural* — it shapes the
     /// emitted elements rather than adding style declarations.
     collapse: Collapse,
+    /// citations(): declare the group's numbered list as the document's
+    /// reference list (016-citations) — entries become anchor targets and
+    /// `[text].cite(refs)` marks resolve to them. Layout and *structural*,
+    /// like `collapse`: it shapes the emitted elements. One per document —
+    /// the layout-level rule covers nesting, `resolveCitations` covers
+    /// siblings.
+    citations,
     /// indent(n): a first-line typographic tab indent, n steps; a
     /// whitespace-indented paragraph writes one step of the same data
     /// (011-indent, 015-paragraph-indent).
@@ -1165,6 +1213,10 @@ fn parseCommand(tok: []const u8) ?Command {
         if (std.mem.eql(u8, args, "open")) return .{ .collapse = .open };
         return null;
     }
+    if (std.mem.eql(u8, word, "citations")) {
+        if (args.len != 0) return null; // citations() takes no arguments
+        return .citations;
+    }
     if (std.mem.eql(u8, word, "indent")) {
         if (args.len == 0) return .{ .indent = 1 }; // bare indent(): one step
         const n = std.fmt.parseInt(usize, args, 10) catch return null;
@@ -1181,6 +1233,7 @@ fn applyCommand(attrs: *Attrs, cmd: Command) void {
         .center => attrs.centered = true,
         .color => |role| attrs.text_color = role,
         .collapse => |c| attrs.collapse = c,
+        .citations => attrs.citations = true,
         .indent => |n| attrs.indent = n,
     }
 }
@@ -1193,7 +1246,7 @@ const CommandTag = std.meta.Tag(Command);
 /// error here until classified.
 fn isLayout(tag: CommandTag) bool {
     return switch (tag) {
-        .grid, .skinny, .wide, .center, .collapse => true,
+        .grid, .skinny, .wide, .center, .collapse, .citations => true,
         .color, .indent => false,
     };
 }
@@ -1204,7 +1257,7 @@ fn isLayout(tag: CommandTag) bool {
 /// Exhaustive, like `isLayout`.
 fn isStructural(tag: CommandTag) bool {
     return switch (tag) {
-        .collapse => true,
+        .collapse, .citations => true,
         .grid, .skinny, .wide, .center, .color, .indent => false,
     };
 }
@@ -1220,6 +1273,7 @@ fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
         .center => attrs.centered,
         .color => attrs.text_color != null,
         .collapse => attrs.collapse != null,
+        .citations => attrs.citations,
         .indent => attrs.indent != 0,
     };
 }
@@ -1237,6 +1291,7 @@ fn clearCommand(attrs: *Attrs, tag: CommandTag) void {
         .center => attrs.centered = false,
         .color => attrs.text_color = null,
         .collapse => attrs.collapse = null,
+        .citations => attrs.citations = false,
         .indent => attrs.indent = 0,
     }
 }
@@ -1254,6 +1309,247 @@ fn groupLabel(name: []const u8) []const u8 {
 fn parseSingleCommandLine(t: []const u8) ?Command {
     if (t.len < 2 or t[0] != '/' or t[1] == '/') return null;
     return parseCommand(std.mem.trimEnd(u8, t[1..], " "));
+}
+
+// ---- citations resolution ----------------------------------------------------
+
+/// The parse-end citations pass (`docs/reference/design/016-citations.md`): adopt the
+/// document's one citations() group (later ones degrade to plain groups with
+/// a warning — the layout-level rule covers nesting, this covers siblings),
+/// find its entry list (the first top-level numbered list in the group), lift
+/// `[key]` entry prefixes, then resolve every citation mark's refs to entry
+/// positions — writing mark sites, entry numbers, and backlinks as data on
+/// the tree. Runs inside `parse` (pure, arena-owned), so every backend walks
+/// the same resolved tree.
+fn resolveCitations(p: *Parser, blocks: []Block) Allocator.Error!void {
+    var r: CiteResolver = .{ .p = p };
+    try r.scanGroups(blocks);
+    try r.scanBlocks(blocks);
+    try r.finish();
+}
+
+const CiteResolver = struct {
+    p: *Parser,
+    /// The adopted group's entry items (the numbered list), or empty.
+    entries: []Item = &.{},
+    have_group: bool = false,
+    /// Keys lifted from entries, in entry order (linear scan — entry lists
+    /// are small).
+    keys: std.ArrayList(struct { key: []const u8, num: u32 }) = .empty,
+    /// Per-entry backlink site lists (index = entry number - 1).
+    back: []std.ArrayList(u32) = &.{},
+    site_count: u32 = 0,
+    /// Marks seen with no citations group anywhere — warned once at the end.
+    orphan_marks: usize = 0,
+
+    fn scanGroups(r: *CiteResolver, blocks: []Block) Allocator.Error!void {
+        for (blocks) |*b| {
+            if (b.kind != .group) continue;
+            if (b.attrs.citations) {
+                if (r.have_group) {
+                    clearCommand(&b.attrs, .citations);
+                    try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
+                        r.p.arena,
+                        "group '{s}': citations ignored (the document already has a citations group)",
+                        .{groupLabel(b.kind.group.name)},
+                    ));
+                } else {
+                    try r.adoptGroup(b);
+                }
+            }
+            for (b.kind.group.sections) |section| try r.scanGroups(section);
+        }
+    }
+
+    /// Take `b` as the document's citations group: locate the entry list and
+    /// register its entries. No numbered list means the command degrades (the
+    /// group renders plain) with a warning.
+    fn adoptGroup(r: *CiteResolver, b: *Block) Allocator.Error!void {
+        const arena = r.p.arena;
+        const g = b.kind.group;
+        var list: ?List = null;
+        outer: for (g.sections) |section| for (section) |inner| {
+            if (inner.kind == .list and inner.kind.list.ordered) {
+                list = inner.kind.list;
+                break :outer;
+            }
+        };
+        const l = list orelse {
+            clearCommand(&b.attrs, .citations);
+            try r.p.warnings.append(arena, try std.fmt.allocPrint(
+                arena,
+                "group '{s}': citations ignored (no numbered list in the group)",
+                .{groupLabel(g.name)},
+            ));
+            return;
+        };
+        r.have_group = true;
+        r.entries = l.items;
+        if (l.start != 1) {
+            try r.p.warnings.append(arena, try std.fmt.allocPrint(
+                arena,
+                "citations: the entry list starts at {d}; entries still bind as 1..{d}",
+                .{ l.start, l.items.len },
+            ));
+        }
+        r.back = try arena.alloc(std.ArrayList(u32), l.items.len);
+        for (r.back) |*sites| sites.* = .empty;
+        for (l.items, 1..) |*item, num| {
+            item.cite_entry = @intCast(num);
+            try r.liftKey(item, @intCast(num));
+        }
+    }
+
+    /// Lift a leading `[key] ` off an entry's text, registering key → entry
+    /// number. Only a clean key shape followed by a space (or nothing) lifts
+    /// — an all-digit or otherwise non-key bracket stays literal prose, and a
+    /// leading link/task box already owns the `[` and never reaches here.
+    fn liftKey(r: *CiteResolver, item: *Item, num: u32) Allocator.Error!void {
+        if (item.text.len == 0 or item.text[0] != .text) return;
+        const s = item.text[0].text;
+        if (s.len < 2 or s[0] != '[') return;
+        const close = std.mem.indexOfScalar(u8, s, ']') orelse return;
+        const ref = parseCiteRef(s[1..close]) orelse return;
+        if (ref.num != 0) return; // all digits — not a key
+        if (close + 1 < s.len and s[close + 1] != ' ') return;
+        item.text[0] = .{ .text = std.mem.trimStart(u8, s[close + 1 ..], " ") };
+        for (r.keys.items) |k| {
+            if (std.mem.eql(u8, k.key, ref.raw)) {
+                try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
+                    r.p.arena,
+                    "citations: duplicate key [{s}] (the first entry wins)",
+                    .{ref.raw},
+                ));
+                return;
+            }
+        }
+        try r.keys.append(r.p.arena, .{ .key = ref.raw, .num = num });
+    }
+
+    fn scanBlocks(r: *CiteResolver, blocks: []Block) Allocator.Error!void {
+        for (blocks) |*b| switch (b.kind) {
+            .heading => |h| try r.scanInlines(h.inlines),
+            .paragraph => |inls| try r.scanInlines(inls),
+            .quote => |q| for (q.paras) |inls| try r.scanInlines(inls),
+            .list => |l| try r.scanList(l),
+            .table => |t| {
+                for (t.header) |cell| try r.scanInlines(cell);
+                for (t.rows) |row| for (row) |cell| try r.scanInlines(cell);
+            },
+            .group => |g| for (g.sections) |section| try r.scanBlocks(section),
+            .code, .math, .rule => {},
+        };
+    }
+
+    fn scanList(r: *CiteResolver, l: List) Allocator.Error!void {
+        for (l.items) |item| {
+            try r.scanInlines(item.text);
+            for (item.tail) |tail| switch (tail) {
+                .line => |inls| try r.scanInlines(inls),
+                .list => |sub| try r.scanList(sub),
+            };
+        }
+    }
+
+    fn scanInlines(r: *CiteResolver, inls: []Inline) Allocator.Error!void {
+        for (inls) |*inl| switch (inl.*) {
+            .cite_span => |*span| {
+                try r.resolveMark(span);
+                try r.scanInlines(span.children);
+            },
+            .link => |l| try r.scanInlines(l.children),
+            .color_span => |cs| try r.scanInlines(cs.children),
+            .strong, .em, .strong_em, .strike => |c| try r.scanInlines(c),
+            .text, .code, .math, .image, .autolink => {},
+        };
+    }
+
+    /// Number the mark's site, resolve each ref to an entry, record
+    /// backlinks, and build the plain-text preview. Failed refs zero out and
+    /// warn — the mark still renders, its dead refs inert.
+    fn resolveMark(r: *CiteResolver, span: *CiteSpan) Allocator.Error!void {
+        const arena = r.p.arena;
+        r.site_count += 1;
+        span.site = r.site_count;
+        if (!r.have_group) {
+            for (span.refs) |*ref| ref.num = 0;
+            r.orphan_marks += 1;
+            return;
+        }
+        var preview: std.ArrayList(u8) = .empty;
+        for (span.refs) |*ref| {
+            if (ref.num == 0) {
+                ref.num = r.lookupKey(ref.raw) orelse {
+                    try r.p.warnings.append(arena, try std.fmt.allocPrint(
+                        arena,
+                        "cite({s}): unknown key",
+                        .{ref.raw},
+                    ));
+                    continue;
+                };
+            } else if (ref.num > r.entries.len) {
+                try r.p.warnings.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "cite({s}): only {d} entries",
+                    .{ ref.raw, r.entries.len },
+                ));
+                ref.num = 0;
+                continue;
+            }
+            try r.back[ref.num - 1].append(arena, span.site);
+            if (preview.items.len > 0) try preview.append(arena, '\n');
+            try preview.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}. ", .{ref.num}));
+            try previewEntry(arena, &preview, r.entries[ref.num - 1]);
+        }
+        span.preview = try preview.toOwnedSlice(arena);
+    }
+
+    fn lookupKey(r: *CiteResolver, key: []const u8) ?u32 {
+        for (r.keys.items) |k| {
+            if (std.mem.eql(u8, k.key, key)) return k.num;
+        }
+        return null;
+    }
+
+    /// Hand each entry its backlink sites, and warn once about marks in a
+    /// document with no citations group.
+    fn finish(r: *CiteResolver) Allocator.Error!void {
+        const arena = r.p.arena;
+        for (r.entries, r.back) |*item, *sites| {
+            item.cite_sites = try sites.toOwnedSlice(arena);
+        }
+        if (r.orphan_marks > 0) {
+            try r.p.warnings.append(arena, try std.fmt.allocPrint(
+                arena,
+                "{d} citation mark(s) but no citations group",
+                .{r.orphan_marks},
+            ));
+        }
+    }
+};
+
+/// An entry's text as plain text (marker line plus soft-wrapped continuation
+/// lines; nested lists skipped) — the mark's hover preview.
+fn previewEntry(arena: Allocator, out: *std.ArrayList(u8), item: Item) Allocator.Error!void {
+    try previewInlines(arena, out, item.text);
+    for (item.tail) |tail| switch (tail) {
+        .line => |inls| {
+            try out.append(arena, ' ');
+            try previewInlines(arena, out, inls);
+        },
+        .list => {},
+    };
+}
+
+fn previewInlines(arena: Allocator, out: *std.ArrayList(u8), inls: []const Inline) Allocator.Error!void {
+    for (inls) |inl| switch (inl) {
+        .text, .code, .math, .autolink => |s| try out.appendSlice(arena, s),
+        .image => |img| try out.appendSlice(arena, img.alt),
+        .link => |l| try previewInlines(arena, out, l.children),
+        .color_span => |cs| try previewInlines(arena, out, cs.children),
+        .cite_span => |span| try previewInlines(arena, out, span.children),
+        .strong, .em, .strong_em, .strike => |c| try previewInlines(arena, out, c),
+    };
 }
 
 // ---- table helpers -----------------------------------------------------------
@@ -1410,6 +1706,64 @@ fn parseColorSpan(s: []const u8) ?ColorSpan {
         .color = role,
         .consumed = close_paren + 1,
     };
+}
+
+const CiteSpanParse = struct { text: []const u8, refs: []CiteRef, consumed: usize };
+
+/// Parse `[text].cite(refs)` starting at the leading `[` — the citation mark
+/// (`docs/reference/design/016-citations.md`), sharing the color span's postfix
+/// mechanics: the same first-`]` scan (a link always wins its `[`; spans
+/// don't nest — the earliest `].cite(` closes the span), and any malformed
+/// part fails the whole parse so the text stays literal prose. `refs` is one
+/// or more comma-separated refs, spaces allowed around commas. Empty span
+/// text (`[].cite(…)`) is rejected — reserved for a possible future
+/// point-citation form.
+fn parseCiteSpan(arena: Allocator, s: []const u8) Allocator.Error!?CiteSpanParse {
+    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
+    if (close_bracket == 1) return null;
+    const suffix = s[close_bracket + 1 ..];
+    if (!std.mem.startsWith(u8, suffix, ".cite(")) return null;
+    const args_start = close_bracket + 1 + ".cite(".len;
+    const close_paren = std.mem.indexOfScalarPos(u8, s, args_start, ')') orelse return null;
+    var refs: std.ArrayList(CiteRef) = .empty;
+    var it = std.mem.splitScalar(u8, s[args_start..close_paren], ',');
+    while (it.next()) |part| {
+        const ref = parseCiteRef(std.mem.trim(u8, part, " ")) orelse return null;
+        try refs.append(arena, ref);
+    }
+    return .{
+        .text = s[1..close_bracket],
+        .refs = try refs.toOwnedSlice(arena),
+        .consumed = close_paren + 1,
+    };
+}
+
+/// One `.cite` ref token: all digits is a positional entry number (1-based,
+/// resolved on the spot); a key is letters/digits/`-`/`_` with at least one
+/// letter. The two shapes are disjoint by grammar — the `skinny`/`wide`
+/// trick — so a key can never be mistaken for a position. Anything else
+/// fails, deactivating the whole mark.
+fn parseCiteRef(tok: []const u8) ?CiteRef {
+    if (tok.len == 0) return null;
+    var has_letter = false;
+    var all_digits = true;
+    for (tok) |c| {
+        if (std.ascii.isAlphabetic(c)) {
+            has_letter = true;
+            all_digits = false;
+        } else if (c == '-' or c == '_') {
+            all_digits = false;
+        } else if (!std.ascii.isDigit(c)) {
+            return null;
+        }
+    }
+    if (all_digits) {
+        const n = std.fmt.parseInt(u32, tok, 10) catch return null;
+        if (n == 0) return null;
+        return .{ .raw = tok, .num = n };
+    }
+    if (!has_letter) return null; // `-`/`_` runs alone are not keys
+    return .{ .raw = tok };
 }
 
 /// GFM punctuation a backslash escapes, plus `$` (math) and `|` (tables).
@@ -1602,6 +1956,17 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
                 try flushText(arena, &out, &pending);
                 try out.append(arena, .{ .color_span = .{
                     .color = span.color,
+                    .children = try parseInlines(arena, span.text),
+                } });
+                i += span.consumed;
+                continue;
+            }
+            // [text].cite(refs) — the citation mark (016-citations), likewise
+            // behind the link form.
+            if (try parseCiteSpan(arena, text[i..])) |span| {
+                try flushText(arena, &out, &pending);
+                try out.append(arena, .{ .cite_span = .{
+                    .refs = span.refs,
                     .children = try parseInlines(arena, span.text),
                 } });
                 i += span.consumed;
@@ -2704,6 +3069,187 @@ test "color span: restricted forms stay literal prose" {
     try testing.expectEqual(TextColor.muted, p5[0].color_span.color);
     try testing.expectEqualStrings("a [b", p5[0].color_span.children[0].text);
     try testing.expectEqualStrings(" c].color(accent)", p5[1].text);
+}
+
+test "cite span: [text].cite(refs) parses — positional, key, and comma lists" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "a [**big** claim].cite(2) b", .empty);
+    const inls = d1.blocks[0].kind.paragraph;
+    try testing.expectEqual(@as(usize, 3), inls.len);
+    const span = inls[1].cite_span;
+    try testing.expectEqual(@as(usize, 1), span.refs.len);
+    try testing.expectEqualStrings("2", span.refs[0].raw);
+    try testing.expect(span.children[0] == .strong);
+    // (these docs have no citations group, so every ref's `num` is zeroed by
+    // the resolution pass — binding is covered by the resolution tests)
+    const d2 = try parse(arena_state.allocator(), "[x].cite(knuth1984)", .empty);
+    const s2 = d2.blocks[0].kind.paragraph[0].cite_span;
+    try testing.expectEqualStrings("knuth1984", s2.refs[0].raw);
+    // comma list, spaces allowed, digit and key refs mixed
+    const d3 = try parse(arena_state.allocator(), "[x].cite(1, lamport-86,3)", .empty);
+    const s3 = d3.blocks[0].kind.paragraph[0].cite_span;
+    try testing.expectEqual(@as(usize, 3), s3.refs.len);
+    try testing.expectEqualStrings("1", s3.refs[0].raw);
+    try testing.expectEqualStrings("lamport-86", s3.refs[1].raw);
+    try testing.expectEqualStrings("3", s3.refs[2].raw);
+}
+
+test "cite span: malformed forms stay literal prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // a link wins its `[`
+    const d1 = try parse(arena_state.allocator(), "[label](url).cite(1)", .empty);
+    const p1 = d1.blocks[0].kind.paragraph;
+    try testing.expect(p1[0] == .link);
+    try testing.expectEqualStrings(".cite(1)", p1[1].text);
+    // empty text (reserved point form), empty/zero/dangling/spaced/bad refs,
+    // unterminated args: all literal
+    for ([_][]const u8{
+        "[].cite(1)",
+        "[x].cite()",
+        "[x].cite(0)",
+        "[x].cite(1,)",
+        "[x].cite(a b)",
+        "[x].cite(a.b)",
+        "[x].cite(-)",
+        "[x].cite(1",
+    }) |src| {
+        const doc = try parse(arena_state.allocator(), src, .empty);
+        try testing.expect(doc.blocks[0].kind.paragraph[0] == .text);
+    }
+    // no nesting: the earliest `].cite(` closes the span
+    const d2 = try parse(arena_state.allocator(), "[a [b].cite(1) c].cite(2)", .empty);
+    const p2 = d2.blocks[0].kind.paragraph;
+    try testing.expectEqualStrings("a [b", p2[0].cite_span.children[0].text);
+    try testing.expectEqualStrings(" c].cite(2)", p2[1].text);
+}
+
+test "citations command: group and single-command forms; args deactivate the line" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(), "// refs citations()\n\n1. e\n\n// end refs", .empty);
+    try testing.expect(d1.blocks[0].attrs.citations);
+    const d2 = try parse(arena_state.allocator(), "/citations()\n\n1. e", .empty);
+    try testing.expect(d2.blocks[0].attrs.citations);
+    try testing.expect(d2.blocks[0].kind.group.sections[0][0].kind == .list);
+    // citations takes no arguments — the whole line degrades to prose
+    const d3 = try parse(arena_state.allocator(), "// citations(2)\n\n1. e", .empty);
+    try testing.expect(d3.blocks[0].kind == .paragraph);
+}
+
+test "citations: marks resolve to entries with sites, backlinks, and previews" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\[Line-breaking is a dynamic program].cite(1) — predates the system.
+        \\
+        \\[Both agree].cite(1, 2)
+        \\
+        \\// citations()
+        \\
+        \\1. D. Knuth, *The TeXbook*, Addison-Wesley, 1984.
+        \\2. L. Lamport, *LaTeX*, 1986.
+        \\
+        \\//
+    , .empty);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+    const m1 = doc.blocks[0].kind.paragraph[0].cite_span;
+    try testing.expectEqual(@as(u32, 1), m1.site);
+    try testing.expectEqual(@as(u32, 1), m1.refs[0].num);
+    try testing.expectEqualStrings("1. D. Knuth, The TeXbook, Addison-Wesley, 1984.", m1.preview);
+    const m2 = doc.blocks[1].kind.paragraph[0].cite_span;
+    try testing.expectEqual(@as(u32, 2), m2.site);
+    try testing.expectEqualStrings(
+        "1. D. Knuth, The TeXbook, Addison-Wesley, 1984.\n2. L. Lamport, LaTeX, 1986.",
+        m2.preview,
+    );
+    const items = doc.blocks[2].kind.group.sections[0][0].kind.list.items;
+    try testing.expectEqual(@as(u32, 1), items[0].cite_entry);
+    try testing.expectEqualSlices(u32, &.{ 1, 2 }, items[0].cite_sites);
+    try testing.expectEqual(@as(u32, 2), items[1].cite_entry);
+    try testing.expectEqualSlices(u32, &.{2}, items[1].cite_sites);
+}
+
+test "citations: [key] entry prefixes lift and bind key refs" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\[claim].cite(knuth1984)
+        \\
+        \\// citations()
+        \\
+        \\1. [knuth1984] D. Knuth, *The TeXbook*, 1984.
+        \\2. [1984] all digits is not a key.
+        \\
+        \\//
+    , .empty);
+    try testing.expectEqual(@as(usize, 0), doc.warnings.len);
+    const mark = doc.blocks[0].kind.paragraph[0].cite_span;
+    try testing.expectEqual(@as(u32, 1), mark.refs[0].num);
+    const items = doc.blocks[1].kind.group.sections[0][0].kind.list.items;
+    // the key prefix is lifted from the entry text; a non-key bracket stays
+    try testing.expectEqualStrings("D. Knuth, ", items[0].text[0].text);
+    try testing.expectEqualStrings("[1984] all digits is not a key.", items[1].text[0].text);
+    try testing.expectEqualSlices(u32, &.{1}, items[0].cite_sites);
+}
+
+test "citations: unresolved refs warn and zero out; the mark still parses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // out of range and unknown key, one warning each
+    const d1 = try parse(arena_state.allocator(),
+        \\[a].cite(9) [b].cite(nope)
+        \\
+        \\// citations()
+        \\
+        \\1. only entry
+        \\
+        \\//
+    , .empty);
+    try testing.expectEqual(@as(usize, 2), d1.warnings.len);
+    const p1 = d1.blocks[0].kind.paragraph;
+    try testing.expectEqual(@as(u32, 0), p1[0].cite_span.refs[0].num);
+    try testing.expectEqual(@as(u32, 0), p1[2].cite_span.refs[0].num);
+    // marks with no citations group anywhere: zeroed, one warning
+    const d2 = try parse(arena_state.allocator(), "[a].cite(1) and [b].cite(2)", .empty);
+    try testing.expectEqual(@as(usize, 1), d2.warnings.len);
+    try testing.expectEqual(@as(u32, 0), d2.blocks[0].kind.paragraph[0].cite_span.refs[0].num);
+}
+
+test "citations: one group per document; extras and listless groups degrade" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(),
+        \\// citations()
+        \\
+        \\1. first
+        \\
+        \\//
+        \\
+        \\// citations()
+        \\
+        \\1. second
+        \\
+        \\//
+    , .empty);
+    try testing.expectEqual(@as(usize, 1), d1.warnings.len);
+    try testing.expect(d1.blocks[0].attrs.citations);
+    try testing.expect(!d1.blocks[1].attrs.citations); // degraded to a plain group
+    // no numbered list: the command degrades, the group renders plain
+    const d2 = try parse(arena_state.allocator(), "// citations()\n\njust prose\n\n//", .empty);
+    try testing.expectEqual(@as(usize, 1), d2.warnings.len);
+    try testing.expect(!d2.blocks[0].attrs.citations);
+    // duplicate keys: first wins, warning
+    const d3 = try parse(arena_state.allocator(),
+        \\// citations()
+        \\
+        \\1. [k] a.
+        \\2. [k] b.
+        \\
+        \\//
+    , .empty);
+    try testing.expectEqual(@as(usize, 1), d3.warnings.len);
 }
 
 test "attrs: content elements parse with empty attrs; only group blocks carry them" {

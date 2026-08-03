@@ -136,11 +136,12 @@ creating a layout element and never counts under the rule.
 | `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/reference/design/006-color.md`) |
 | `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/reference/design/007-collapse.md`) |
 | `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
+| `citations()` | the group's numbered list is the document's reference list: entries become anchor targets and `[text].cite(refs)` marks bind to them. One per document. No arguments. See "Citations". (`docs/reference/design/016-citations.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
-`center(5)`, `color(red)`, `collapse(true)`, `indent(x)`, `glow(5)` all leave
-their line as prose.
+`center(5)`, `color(red)`, `collapse(true)`, `indent(x)`, `citations(2)`,
+`glow(5)` all leave their line as prose.
 
 `skinny` and `wide` are one width control with two names: both set the
 element's width as a percentage of the body column, and their ranges meet at
@@ -227,6 +228,56 @@ Color is deliberately restricted where interactions would be ambiguous:
 - Elements that own a theme color — links, blockquotes, code — keep it
   inside colored groups and spans; `color` reaches only plain flowing text.
 
+### Citations
+
+A document cites in two halves (`docs/reference/design/016-citations.md`): inline
+**marks** attach sources to the text making the claim, and one `citations()`
+group declares where the sources live.
+
+The **mark** is `[text].cite(refs)` — the same inline postfix grammar as the
+color span, inheriting its mechanics: the bracketed text is inline-parsed,
+the postfix must follow the `]` immediately, the link form wins the `[`,
+spans don't nest, and any malformed part leaves the whole thing literal
+prose. A citation is deliberately a **span, not a point**: it attaches the
+source to the run of text making the claim, and that run is the reader's
+affordance (renderers make the whole span the jump/preview target, with the
+entry numbers set as a mark after it). Empty brackets (`[].cite(…)`) do not
+parse — a bare point-citation form is reserved for a possible future note.
+
+`refs` is one or more comma-separated references. Each is either a **number**
+(all digits — the 1-based position of an entry) or a **key** (letters,
+digits, `-`, `_`, at least one letter). The two shapes are disjoint by
+grammar, so a key can never be mistaken for a position. `[both].cite(1, k)`
+cites two sources with one mark.
+
+The **bibliography** is a group carrying `citations()` — a structural
+command, like `collapse`: it shapes what renderers emit rather than styling
+it. The group must contain a **numbered list**; its items are the entries,
+and the author's list order *is* the numbering. Entries are ordinary content
+— full inline markup, written and ordered by the author; `citations()` does
+not define a data format, it declares what an already-written list is. An
+entry may open with a leading `[key]` (the same key shape), which binds that
+key to the entry and is lifted from the rendered text; an all-digit or
+otherwise non-key bracket stays literal prose. Key lifting happens only
+inside the declared citations group — nowhere else does a leading bracket
+mean anything new.
+
+One citations group per document: later ones keep their content but drop the
+command with a warning (and citations-in-citations strips under the
+layout-level rule). Marks anywhere in the document — before or after the
+group — bind to it. A number out of range, an unknown key, or a mark with no
+citations group at all warns and renders that reference inert.
+
+Renderers set the group as a bibliography: entries become anchor targets,
+marks link to them, entries link back to every citing mark. What never
+varies: the numbers the reader sees are the entry positions the author
+wrote.
+
+Degradation is the feature's strongest property: a renderer that knows
+neither form shows `[the claim].cite(1)` as readable prose and the reference
+list as a correctly ordered numbered list — nothing is lost but the linking
+and the bibliography setting.
+
 ### The layout-level rule
 
 The rule is **per command** (`docs/reference/design/004-per-command-layout.md`): a
@@ -291,7 +342,8 @@ recording the result here.
 - **Horizontal rules** `---` / `***` / `___`.
 - **Inlines**, in precedence order: backslash escape, `` `code` ``,
   `$math$`, `![image](src)`, `[link](url)`, `[text].color(role)` color
-  spans (superset — see "Color roles"), `<autolink>` and bare `http(s)://`
+  spans (superset — see "Color roles"), `[text].cite(refs)` citation marks
+  (superset — see "Citations"), `<autolink>` and bare `http(s)://`
   URLs, `***bold-italic***` / `**bold**` / `*italic*`, `~~strikethrough~~`.
   Inline syntax reads the *joined* text of a flowing element, not one source
   line: a span may open on one soft-wrapped line and close on a later one
@@ -376,6 +428,23 @@ A collapsed FAQ entry — the question stays visible, the answer folds:
 A typography-first superset of markdown.
 
 // end faq
+```
+
+A cited claim and its bibliography — the span binds to entry 1 by position
+and the key `lamport86` names entry 2; the `[lamport86]` prefix is lifted
+from the rendered entry:
+
+```
+[Line-breaking is best solved as a dynamic program].cite(1) — a result
+that predates the system it was written for, as [Lamport later
+noted].cite(lamport86).
+
+// citations()
+
+1. D. Knuth, *The TeXbook*, Addison-Wesley, 1984.
+2. [lamport86] L. Lamport, *LaTeX: A Document Preparation System*, 1986.
+
+//
 ```
 
 A raw list — three markerless lines that stay a list:
