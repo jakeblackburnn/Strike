@@ -28,6 +28,7 @@ const std = @import("std");
 const strikedown = @import("strikedown.zig");
 const sheet = @import("sheet.zig");
 const html = @import("html.zig");
+const routes = @import("routes.zig");
 const escapeInto = html.escapeInto;
 const escapeAttrInto = html.escapeAttrInto;
 const Allocator = std.mem.Allocator;
@@ -51,24 +52,67 @@ pub const Options = struct {
     /// with no project around it — rewriting `other.md` to `/other` there
     /// invents a link to a page that does not exist.
     link_base: ?[]const u8 = null,
+    /// The site mount point (yaml `base:`), "" when unmounted. `link_base`
+    /// carries it as a prefix; `../` pops in doc-relative links clamp here
+    /// instead of at the site root, so no link resolves outside the mount.
+    link_floor: []const u8 = "",
+};
+
+/// `Options.link_base` + `link_floor`, bundled for the emitter walk.
+const LinkCtx = struct { dir: []const u8, floor: []const u8 };
+
+/// A rendered fragment plus the parse-time diagnostics that came with it.
+/// The renderer never prints — the caller decides where warnings go (and
+/// what file name to blame them on, which only it knows).
+pub const Rendered = struct {
+    html: []u8,
+    warnings: []const []const u8,
+
+    /// The common caller idiom: print each warning to stderr blamed on
+    /// `src_path`, free them, and keep just the HTML.
+    pub fn takeHtml(r: Rendered, gpa: Allocator, src_path: []const u8) []u8 {
+        for (r.warnings) |m| std.debug.print("strike: warning: {s}: {s}\n", .{ src_path, m });
+        r.freeWarnings(gpa);
+        return r.html;
+    }
+
+    pub fn freeWarnings(r: Rendered, gpa: Allocator) void {
+        for (r.warnings) |m| gpa.free(m);
+        gpa.free(r.warnings);
+    }
 };
 
 /// Render strikedown/markdown source to an HTML fragment (no surrounding
 /// `<html>`/`<body>`). The parse tree lives in an internal arena freed before
-/// returning; the caller owns the returned slice and frees it with `gpa`.
-pub fn render(gpa: Allocator, src: []const u8, opts: Options) ![]u8 {
+/// returning; the caller owns `Rendered.html` and its warnings (both from
+/// `gpa` — `takeHtml`/`freeWarnings` above).
+pub fn render(gpa: Allocator, src: []const u8, opts: Options) !Rendered {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const doc = try strikedown.parse(arena_state.allocator(), src, opts.sheet);
-    for (doc.warnings) |warning| std.debug.print("strike: warning: {s}\n", .{warning});
-    return emit(gpa, doc, opts);
+    const out = try emit(gpa, doc, opts);
+    errdefer gpa.free(out);
+    const warnings = try gpa.alloc([]const u8, doc.warnings.len);
+    errdefer gpa.free(warnings);
+    var duped: usize = 0;
+    errdefer for (warnings[0..duped]) |m| gpa.free(m);
+    for (doc.warnings, 0..) |m, i| {
+        warnings[i] = try gpa.dupe(u8, m);
+        duped = i + 1;
+    }
+    return .{ .html = out, .warnings = warnings };
 }
 
 /// Emit an already-parsed `Doc` as an HTML fragment. Caller owns the result.
-pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) ![]u8 {
+pub fn emit(gpa: Allocator, doc: strikedown.Doc, opts: Options) Allocator.Error![]u8 {
     var out: Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    for (doc.blocks) |block| try emitBlock(&out.writer, block, opts.link_base, 0);
+    const ctx: ?LinkCtx = if (opts.link_base) |dir| .{ .dir = dir, .floor = opts.link_floor } else null;
+    for (doc.blocks) |block| {
+        // An Allocating writer's one failure mode *is* allocation failure —
+        // surface it as such instead of leaking the writer-interface error.
+        emitBlock(&out.writer, block, ctx, 0) catch return error.OutOfMemory;
+    }
     return out.toOwnedSlice();
 }
 
@@ -95,11 +139,11 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
     try w.writeAll(" style=\"");
     var sep = false;
     if (attrs.columns) |n| {
+        try styleSep(w, &sep);
         try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:" ++ grid_gap, .{n});
-        sep = true;
     }
     if (attrs.width_pct) |pct| {
-        if (sep) try w.writeByte(';');
+        try styleSep(w, &sep);
         // skinny (≤ 100%) centers with auto margins; wide (> 100%) overflows
         // its container, where `auto` computes to 0 and would push the box
         // off to one side — the explicit negative calc bleeds it evenly.
@@ -108,20 +152,17 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
         } else {
             try w.print("width:{d}%;margin-inline:calc((100% - {d}%) / 2)", .{ pct, pct });
         }
-        sep = true;
     }
     if (attrs.centered) {
-        if (sep) try w.writeByte(';');
+        try styleSep(w, &sep);
         try w.writeAll("text-align:center");
-        sep = true;
     }
     if (attrs.text_color) |role| {
-        if (sep) try w.writeByte(';');
+        try styleSep(w, &sep);
         try w.print("color:var(--{t})", .{role});
-        sep = true;
     }
     if (attrs.indent != 0) {
-        if (sep) try w.writeByte(';');
+        try styleSep(w, &sep);
         switch (mode) {
             .first_line => try w.print("text-indent:{d}rem", .{attrs.indent * 2}),
             // The reset stops an ancestor group's inherited `text-indent`
@@ -132,6 +173,12 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
     try w.writeByte('"');
 }
 
+/// Joins style declarations: a `;` before every one but the first.
+fn styleSep(w: *Writer, sep: *bool) Writer.Error!void {
+    if (sep.*) try w.writeByte(';');
+    sep.* = true;
+}
+
 /// Emit one block. `inherited_indent` is the indent steps an enclosing group
 /// carries: the HTML backend renders a group's indent once on its wrapper and
 /// lets CSS inheritance reach every descendant's first line, but a box-mode
@@ -139,7 +186,7 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
 /// carried down rather than left entirely to the cascade. Inner wins — a
 /// block's own `attrs.indent` overrides what it inherited, matching the
 /// language's scoping rule.
-fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?[]const u8, inherited_indent: usize) Writer.Error!void {
+fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?LinkCtx, inherited_indent: usize) Writer.Error!void {
     const indent = if (block.attrs.indent != 0) block.attrs.indent else inherited_indent;
     switch (block.kind) {
         .heading => |h| {
@@ -234,11 +281,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?[]const u8, inheri
             try w.writeAll("<div class=\"sx-group\"");
             try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeAll(">\n");
-            for (g.sections) |section| {
-                try w.writeAll("<div class=\"sx-group-sec\">\n");
-                for (section) |b| try emitBlock(w, b, link_base, indent);
-                try w.writeAll("</div>\n");
-            }
+            try emitSections(w, g.sections, link_base, indent, false);
             try w.writeAll("</div>\n");
         },
     }
@@ -251,16 +294,27 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?[]const u8, inheri
 /// there would make the summary a grid item); `collapse` reaches the
 /// emitter only as element shape. A group with one block or none gets the
 /// empty-bar summary and folds everything.
-fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: ?[]const u8, indent: usize) Writer.Error!void {
+fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: strikedown.Attrs, link_base: ?LinkCtx, indent: usize) Writer.Error!void {
+    // `<summary>`'s content model is phrasing content, so only a paragraph
+    // or heading leader can supply it (as its inlines, unwrapped); a group
+    // led by a list/table/anything block-shaped keeps the whole body folded
+    // behind the empty bar instead of emitting invalid HTML.
     var total: usize = 0;
     for (g.sections) |section| total += section.len;
-    const has_leader = total >= 2 and g.sections[0].len > 0;
+    const leader: ?strikedown.Block = if (total >= 2 and g.sections[0].len > 0) switch (g.sections[0][0].kind) {
+        .paragraph, .heading => g.sections[0][0],
+        else => null,
+    } else null;
     try w.writeAll("<details class=\"sx-group sx-collapse\"");
     if (c == .open) try w.writeAll(" open");
     try w.writeAll(">\n");
-    if (has_leader) {
+    if (leader) |b| {
         try w.writeAll("<summary>");
-        try emitBlock(w, g.sections[0][0], link_base, indent);
+        switch (b.kind) {
+            .paragraph => |inls| try emitInlines(w, inls, link_base),
+            .heading => |h| try emitInlines(w, h.inlines, link_base),
+            else => unreachable,
+        }
         try w.writeAll("</summary>\n");
     } else {
         try w.writeAll("<summary class=\"sx-collapse-bar\"></summary>\n");
@@ -268,13 +322,20 @@ fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: 
     try w.writeAll("<div class=\"sx-collapse-body\"");
     try writeStyleAttr(w, attrs, .first_line);
     try w.writeAll(">\n");
-    for (g.sections, 0..) |section, si| {
+    try emitSections(w, g.sections, link_base, indent, leader != null);
+    try w.writeAll("</div>\n</details>\n");
+}
+
+/// Walk a group's sections into `sx-group-sec` wrappers — the one section
+/// walk every group-shaped element shares. `skip_leader` drops the first
+/// block of the first section (a collapse already emitted it as its summary).
+fn emitSections(w: *Writer, sections: []const []strikedown.Block, link_base: ?LinkCtx, indent: usize, skip_leader: bool) Writer.Error!void {
+    for (sections, 0..) |section, si| {
         try w.writeAll("<div class=\"sx-group-sec\">\n");
-        const body = if (has_leader and si == 0) section[1..] else section;
+        const body = if (skip_leader and si == 0) section[1..] else section;
         for (body) |b| try emitBlock(w, b, link_base, indent);
         try w.writeAll("</div>\n");
     }
-    try w.writeAll("</div>\n</details>\n");
 }
 
 /// The document's citations group (016-citations): a `<section>` the reader
@@ -282,15 +343,11 @@ fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: 
 /// list's anchors and backlinks arrive as data on its items
 /// (`Item.cite_entry`/`cite_sites`, written by the parse-end pass), which
 /// `emitList` reads wherever the list sits.
-fn emitCitations(w: *Writer, g: strikedown.Group, attrs: strikedown.Attrs, link_base: ?[]const u8, indent: usize) Writer.Error!void {
+fn emitCitations(w: *Writer, g: strikedown.Group, attrs: strikedown.Attrs, link_base: ?LinkCtx, indent: usize) Writer.Error!void {
     try w.writeAll("<section class=\"sx-group sx-citations\"");
     try writeStyleAttr(w, attrs, .first_line);
     try w.writeAll(">\n");
-    for (g.sections) |section| {
-        try w.writeAll("<div class=\"sx-group-sec\">\n");
-        for (section) |b| try emitBlock(w, b, link_base, indent);
-        try w.writeAll("</div>\n");
-    }
+    try emitSections(w, g.sections, link_base, indent, false);
     try w.writeAll("</section>\n");
 }
 
@@ -311,7 +368,7 @@ fn alertLabel(a: strikedown.Alert) []const u8 {
 /// `attrs` styles the outer `<ul>`/`<ol>` only; nested lists (`Item.Tail`)
 /// aren't `Block`s and can't carry attrs — the recursion passes `.{}`, which
 /// also keeps a sublist from re-applying an indent its parent already shifted.
-fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_base: ?[]const u8) Writer.Error!void {
+fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_base: ?LinkCtx) Writer.Error!void {
     try w.writeAll(if (list.ordered) "<ol" else "<ul");
     // Raw lists render markerless; the class is the hook, reader CSS
     // removes bullets and marker indentation (008-raw-lists).
@@ -336,26 +393,37 @@ fn emitList(w: *Writer, list: strikedown.List, attrs: strikedown.Attrs, link_bas
                 "<input type=\"checkbox\" disabled> ");
         }
         try emitInlines(w, item.text, link_base);
+        // Backlinks hug the entry's own text — before any nested sublist,
+        // or a `↩` would drop onto its own line after the `</ul>`.
+        var backlinks_pending = item.cite_sites.len > 0;
         for (item.tail) |tail| switch (tail) {
             .line => |inls| {
                 try w.writeByte(' ');
                 try emitInlines(w, inls, link_base);
             },
             .list => |sub| {
+                if (backlinks_pending) {
+                    try writeBacklinks(w, item.cite_sites);
+                    backlinks_pending = false;
+                }
                 try w.writeByte('\n');
                 try emitList(w, sub, .{}, link_base);
             },
         };
-        for (item.cite_sites) |site| {
-            try w.print(" <a class=\"sx-cite-back\" href=\"#cite-ref-{d}\">\u{21a9}</a>", .{site});
-        }
+        if (backlinks_pending) try writeBacklinks(w, item.cite_sites);
         try w.writeAll("</li>\n");
     }
     try w.writeAll(if (list.ordered) "</ol>\n" else "</ul>\n");
 }
 
+fn writeBacklinks(w: *Writer, sites: []const u32) Writer.Error!void {
+    for (sites) |site| {
+        try w.print(" <a class=\"sx-cite-back\" href=\"#cite-ref-{d}\">\u{21a9}</a>", .{site});
+    }
+}
+
 /// One `<th>`/`<td>` with its alignment style and inline content.
-fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const strikedown.Inline, link_base: ?[]const u8) Writer.Error!void {
+fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const strikedown.Inline, link_base: ?LinkCtx) Writer.Error!void {
     try w.writeByte('<');
     try w.writeAll(tag);
     switch (al) {
@@ -371,7 +439,7 @@ fn writeCell(w: *Writer, tag: []const u8, al: strikedown.Align, inls: []const st
     try w.writeByte('>');
 }
 
-fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const u8) Writer.Error!void {
+fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?LinkCtx) Writer.Error!void {
     for (inls) |inl| switch (inl) {
         .text => |s| try escapeInto(w, s),
         .code => |s| {
@@ -385,6 +453,9 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const 
             try w.writeAll("\\)");
         },
         .image => |img| {
+            // A disallowed scheme drops the element; the alt text stays as
+            // prose (same inert degradation as an unsafe link).
+            if (!safeHref(img.src)) return escapeInto(w, img.alt);
             try w.writeAll("<img src=\"");
             try escapeAttrInto(w, img.src);
             try w.writeAll("\" alt=\"");
@@ -392,13 +463,17 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const 
             try w.writeAll("\">");
         },
         .link => |l| {
+            // A disallowed scheme (javascript:, data:, …) keeps the text
+            // and drops the link — exported pages must never carry live
+            // script in an href.
+            if (!safeHref(l.url)) return emitInlines(w, l.children, link_base);
             try w.writeAll("<a href=\"");
             // Only a renderer that knows the site rewrites doc-relative
             // targets; with no `link_base` there is no route to rewrite to,
             // so the target stays exactly as the author wrote it.
-            if (link_base) |base| {
+            if (link_base) |ctx| {
                 if (docLinkPath(l.url)) |path| {
-                    try writeDocHref(w, base, path, l.url[path.len..]);
+                    try writeDocHref(w, ctx, path, l.url[path.len..]);
                 } else {
                     try escapeAttrInto(w, l.url);
                 }
@@ -425,10 +500,14 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const 
             // The whole span links to its first resolved entry — the claim is
             // the click/hover target (016-citations) — with the mark's numbers
             // set superscript after it. A mark with nothing resolved renders
-            // inert: a plain span, raw ref text in the sup.
-            const first: ?u32 = for (span.refs) |ref| {
+            // inert: a plain span, raw ref text in the sup. A claim that
+            // *contains* a link also takes the span form — an `<a>` inside an
+            // `<a>` is invalid HTML and browsers split it — leaving the sup
+            // numbers as the click targets.
+            const resolved: ?u32 = for (span.refs) |ref| {
                 if (ref.num != 0) break ref.num;
             } else null;
+            const first: ?u32 = if (containsLink(span.children)) null else resolved;
             if (first) |num| {
                 try w.print("<a class=\"sx-cite\" id=\"cite-ref-{d}\" href=\"#cite-{d}\"", .{ span.site, num });
                 if (span.preview.len > 0) {
@@ -480,6 +559,36 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?[]const 
 // The renderer's end-to-end specification, unchanged across the parse/emit
 // split (it used to live in markdown.zig's single-pass renderer).
 
+/// May `url` land in an `href`/`src` attribute? Relative paths, fragments,
+/// site-absolute paths, and http/https/mailto pass; every other scheme —
+/// `javascript:`, `data:`, `vbscript:`, anything unknown — fails, as does any
+/// URL carrying control characters (browsers strip them *inside* scheme
+/// names, so `java\tscript:` would otherwise sneak through). Rejected
+/// targets render unlinked; the usual inert degradation.
+fn safeHref(url: []const u8) bool {
+    for (url) |c| if (c < 0x20 or c == 0x7f) return false;
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return true;
+    // A colon after a path/query/fragment delimiter is not a scheme colon.
+    if (std.mem.indexOfAny(u8, url[0..colon], "/?#") != null) return true;
+    const scheme = url[0..colon];
+    return std.ascii.eqlIgnoreCase(scheme, "http") or
+        std.ascii.eqlIgnoreCase(scheme, "https") or
+        std.ascii.eqlIgnoreCase(scheme, "mailto");
+}
+
+/// True when any inline (recursively) is a link or autolink — what decides
+/// that a citation mark can't take its `<a>` form.
+fn containsLink(inls: []const strikedown.Inline) bool {
+    for (inls) |inl| switch (inl) {
+        .link, .autolink => return true,
+        .strong, .em, .strong_em, .strike => |c| if (containsLink(c)) return true,
+        .color_span => |cs| if (containsLink(cs.children)) return true,
+        .cite_span => |s| if (containsLink(s.children)) return true,
+        .text, .code, .math, .image => {},
+    };
+    return false;
+}
+
 /// The path part of a doc-relative link target (`design/spec.md#anchor` ->
 /// `design/spec.md`), or null when the target isn't one. Only relative paths
 /// ending in `.md`/`.sx` activate the rewrite — absolute URLs, `mailto:`,
@@ -494,57 +603,50 @@ fn docLinkPath(url: []const u8) ?[]const u8 {
     return path;
 }
 
-/// Emit the route a doc-relative link resolves to: leading `./`s drop, each
-/// leading `../` pops a segment off `base` (clamped at the site root), the
-/// `.md`/`.sx` extension drops, and a trailing `main` segment collapses to
-/// its folder's own route (main.* docs are served there). `suffix` is the
-/// target's `#fragment`/`?query` tail, appended untouched.
-fn writeDocHref(w: *Writer, base: []const u8, path: []const u8, suffix: []const u8) Writer.Error!void {
-    var b = base;
-    var p = path;
-    while (true) {
-        if (std.mem.startsWith(u8, p, "./")) {
-            p = p[2..];
-        } else if (std.mem.startsWith(u8, p, "../")) {
-            p = p[3..];
-            b = if (std.mem.lastIndexOfScalar(u8, b, '/')) |i| b[0..i] else "";
-        } else break;
-    }
-    var stem = stripDocExt(p);
-    if (std.mem.eql(u8, stem, "main")) {
-        stem = "";
-    } else if (std.mem.endsWith(u8, stem, "/main")) {
-        stem = stem[0 .. stem.len - "/main".len];
-    }
-    if (stem.len == 0) {
-        if (b.len == 0) try w.writeByte('/') else try escapeAttrInto(w, b);
+/// Emit the route a doc-relative link resolves to (`routes.resolveDocTarget`
+/// owns the path rules — pops clamped at the mount floor, extension strip,
+/// main collapse). `suffix` is the target's `#fragment`/`?query` tail,
+/// appended untouched.
+fn writeDocHref(w: *Writer, ctx: LinkCtx, path: []const u8, suffix: []const u8) Writer.Error!void {
+    const t = routes.resolveDocTarget(ctx.dir, path, ctx.floor);
+    if (t.stem.len == 0) {
+        if (t.base.len == 0) try w.writeByte('/') else try escapeAttrInto(w, t.base);
     } else {
-        try escapeAttrInto(w, b);
+        try escapeAttrInto(w, t.base);
         try w.writeByte('/');
-        try escapeAttrInto(w, stem);
+        try escapeAttrInto(w, t.stem);
     }
     try escapeAttrInto(w, suffix);
 }
 
-/// Strip a trailing `.sx` and/or `.md` (the `.sx.md` double extension too) —
-/// mirrors route building in `project.zig`'s `stripExtension`.
-fn stripDocExt(path: []const u8) []const u8 {
-    var s = path;
-    if (std.mem.endsWith(u8, s, ".md")) s = s[0 .. s.len - ".md".len];
-    if (std.mem.endsWith(u8, s, ".sx")) s = s[0 .. s.len - ".sx".len];
-    return s;
-}
-
 fn expectRender(expected: []const u8, md: []const u8) !void {
-    const got = try render(std.testing.allocator, md, .{});
-    defer std.testing.allocator.free(got);
-    try std.testing.expectEqualStrings(expected, got);
+    try expectRenderAt(null, expected, md);
 }
 
+/// Renders and compares, and asserts the source parsed *clean* — a test whose
+/// input intentionally warns uses `expectRenderWarn` instead.
 fn expectRenderAt(link_base: ?[]const u8, expected: []const u8, md: []const u8) !void {
-    const got = try render(std.testing.allocator, md, .{ .link_base = link_base });
-    defer std.testing.allocator.free(got);
-    try std.testing.expectEqualStrings(expected, got);
+    const r = try render(std.testing.allocator, md, .{ .link_base = link_base });
+    defer std.testing.allocator.free(r.html);
+    defer r.freeWarnings(std.testing.allocator);
+    try std.testing.expectEqualStrings(expected, r.html);
+    for (r.warnings) |m| std.debug.print("unexpected warning: {s}\n", .{m});
+    try std.testing.expectEqual(@as(usize, 0), r.warnings.len);
+}
+
+/// Renders and compares, and asserts that one of the parse warnings contains
+/// `warn_substring` — the degradation-path counterpart of `expectRender`.
+fn expectRenderWarn(expected: []const u8, md: []const u8, warn_substring: []const u8) !void {
+    const r = try render(std.testing.allocator, md, .{});
+    defer std.testing.allocator.free(r.html);
+    defer r.freeWarnings(std.testing.allocator);
+    try std.testing.expectEqualStrings(expected, r.html);
+    for (r.warnings) |m| {
+        if (std.mem.indexOf(u8, m, warn_substring) != null) return;
+    }
+    std.debug.print("no warning containing \"{s}\"; got {d}:\n", .{ warn_substring, r.warnings.len });
+    for (r.warnings) |m| std.debug.print("  {s}\n", .{m});
+    return error.TestExpectedWarning;
 }
 
 test "headings" {
@@ -1087,7 +1189,7 @@ test "center renders a text-centering wrapper" {
 test "collapse: the first element becomes the summary leader" {
     try expectRender(
         "<details class=\"sx-group sx-collapse\">\n" ++
-            "<summary><p><strong>What is strikedown?</strong></p>\n</summary>\n" ++
+            "<summary><strong>What is strikedown?</strong></summary>\n" ++
             "<div class=\"sx-collapse-body\">\n" ++
             "<div class=\"sx-group-sec\">\n<p>A typography-first superset of markdown.</p>\n</div>\n" ++
             "</div>\n</details>\n",
@@ -1109,7 +1211,7 @@ test "collapse: open variant; a lone element gets the empty bar" {
 test "collapse: other command styles land on the body, never the details" {
     try expectRender(
         "<details class=\"sx-group sx-collapse\">\n" ++
-            "<summary><p>lead</p>\n</summary>\n" ++
+            "<summary>lead</summary>\n" ++
             "<div class=\"sx-collapse-body\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
             "<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
             "<div class=\"sx-group-sec\">\n<p>b</p>\n</div>\n" ++
@@ -1164,9 +1266,10 @@ test "citations: multi-source marks and key binding" {
 
 test "citations: unresolved marks render inert; malformed marks stay prose" {
     // no citations group: a plain span, the raw ref in the sup, no links
-    try expectRender(
+    try expectRenderWarn(
         "<p><span class=\"sx-cite\">x</span><sup class=\"sx-cite-mark\">3</sup></p>\n",
         "[x].cite(3)",
+        "no citations group",
     );
     // malformed args deactivate the whole mark — literal prose, the
     // degradation an older strike shows for every citation
@@ -1175,7 +1278,7 @@ test "citations: unresolved marks render inert; malformed marks stay prose" {
 }
 
 test "citations: a second group degrades to a plain group" {
-    try expectRender(
+    try expectRenderWarn(
         "<section class=\"sx-group sx-citations\">\n" ++
             "<div class=\"sx-group-sec\">\n<ol>\n<li id=\"cite-1\">first</li>\n</ol>\n</div>\n" ++
             "</section>\n" ++
@@ -1183,6 +1286,7 @@ test "citations: a second group degrades to a plain group" {
             "<div class=\"sx-group-sec\">\n<ol>\n<li>second</li>\n</ol>\n</div>\n" ++
             "</div>\n",
         "// citations()\n\n1. first\n\n//\n\n// citations()\n\n1. second\n\n//",
+        "citations ignored",
     );
 }
 
@@ -1209,12 +1313,13 @@ test "chained single commands nest and apply to the next content element" {
     );
     // a repeated layout command in the chain still hits the layout-level
     // rule: the inner one is stripped and warned, same as two nested groups
-    try expectRender(
+    try expectRenderWarn(
         "<div class=\"sx-group\" style=\"width:50%;margin-inline:auto\">\n" ++
             "<div class=\"sx-group-sec\">\n" ++
             "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n</div>\n" ++
             "</div>\n</div>\n",
         "/skinny(50%)\n/skinny(60%)\na",
+        "skinny ignored",
     );
     // a chain that never reaches a content element reverts to prose
     try expectRender(
@@ -1224,7 +1329,7 @@ test "chained single commands nest and apply to the next content element" {
 }
 
 test "a command nested under itself renders the structure without the layout" {
-    try expectRender(
+    try expectRenderWarn(
         "<div class=\"sx-group\" style=\"display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem\">\n" ++
             "<div class=\"sx-group-sec\">\n" ++
             "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>a</p>\n</div>\n" ++
@@ -1232,6 +1337,7 @@ test "a command nested under itself renders the structure without the layout" {
             "</div>\n" ++
             "<div class=\"sx-group-sec\">\n<p>c</p>\n</div>\n</div>\n",
         "// outer grid(2)\n\n// inner grid(2)\na\n// --\nb\n// end\n\n// --\n\nc\n\n// end outer",
+        "grid ignored",
     );
 }
 
@@ -1431,4 +1537,124 @@ test "indent nesting overrides rather than accumulates" {
             "</div>\n</div>\n",
         "// outer indent(2)\n\n// inner indent()\n\npara\n\n// end inner\n\n// end outer",
     );
+}
+
+// ---- v0.1.0 fixes ------------------------------------------------------------
+
+test "href scheme allowlist: script schemes render unlinked" {
+    // javascript:/data:/vbscript: (any casing) drop the <a>, keep the text
+    try expectRender("<p>x</p>\n", "[x](javascript:alert(1))");
+    try expectRender("<p>x</p>\n", "[x](JaVaScRiPt:alert(1))");
+    try expectRender("<p>x</p>\n", "[x](data:text/html;base64,PGI+)");
+    try expectRender("<p>x</p>\n", "[x](vbscript:msgbox)");
+    // control characters can't smuggle a scheme past the check
+    try expectRender("<p>x</p>\n", "[x](java\tscript:alert(1))");
+    // the allowlist and non-scheme shapes still link
+    try expectRender("<p><a href=\"https://z.dev\">x</a></p>\n", "[x](https://z.dev)");
+    try expectRender("<p><a href=\"mailto:a@b.c\">x</a></p>\n", "[x](mailto:a@b.c)");
+    try expectRender("<p><a href=\"/abs/path\">x</a></p>\n", "[x](/abs/path)");
+    try expectRender("<p><a href=\"#frag\">x</a></p>\n", "[x](#frag)");
+    // a colon past a slash is not a scheme
+    try expectRender("<p><a href=\"a/b:c\">x</a></p>\n", "[x](a/b:c)");
+}
+
+test "img scheme allowlist: an unsafe src degrades to the alt text" {
+    try expectRender("<p>diagram</p>\n", "![diagram](javascript:alert(1))");
+    try expectRender(
+        "<p><img src=\"pix/ok.png\" alt=\"diagram\"></p>\n",
+        "![diagram](pix/ok.png)",
+    );
+}
+
+test "cite mark containing a link takes the span form (no nested <a>)" {
+    try expectRender(
+        "<section class=\"sx-group sx-citations\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol>\n<li id=\"cite-1\">Entry. <a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a></li>\n</ol>\n" ++
+            "</div>\n</section>\n" ++
+            "<p><span class=\"sx-cite\">see <a href=\"https://z.dev\">https://z.dev</a></span>" ++
+            "<sup class=\"sx-cite-mark\"><a href=\"#cite-1\">1</a></sup></p>\n",
+        "// refs citations()\n\n1. Entry.\n\n//\n\n[see https://z.dev].cite(1)",
+    );
+}
+
+test "doc links clamp at the mount floor, not the site root" {
+    const opts: Options = .{ .link_base = "/mnt/docs/p/sub", .link_floor = "/mnt/docs" };
+    const r = try render(std.testing.allocator, "[up](../one.md) [out](../../../../x.md)", opts);
+    defer std.testing.allocator.free(r.html);
+    defer r.freeWarnings(std.testing.allocator);
+    try std.testing.expectEqualStrings(
+        "<p><a href=\"/mnt/docs/p/one\">up</a> <a href=\"/mnt/docs/x\">out</a></p>\n",
+        r.html,
+    );
+}
+
+test "collapse: a block-shaped leader keeps the empty bar (summary is phrasing content)" {
+    try expectRender(
+        "<details class=\"sx-group sx-collapse\">\n" ++
+            "<summary class=\"sx-collapse-bar\"></summary>\n" ++
+            "<div class=\"sx-collapse-body\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n" ++
+            "<p>after</p>\n</div>\n" ++
+            "</div>\n</details>\n",
+        "// c collapse()\n\n- a\n- b\n\nafter\n\n// end c",
+    );
+}
+
+test "citations: the backlink lands before an entry's nested sublist" {
+    try expectRender(
+        "<section class=\"sx-group sx-citations\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol>\n<li id=\"cite-1\">Entry. <a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a>\n" ++
+            "<ul>\n<li>note</li>\n</ul>\n</li>\n</ol>\n" ++
+            "</div>\n</section>\n" ++
+            "<p><a class=\"sx-cite\" id=\"cite-ref-1\" href=\"#cite-1\" title=\"1. Entry.\">x</a>" ++
+            "<sup class=\"sx-cite-mark\"><a href=\"#cite-1\">1</a></sup></p>\n",
+        "// refs citations()\n\n1. Entry.\n  - note\n\n//\n\n[x].cite(1)",
+    );
+}
+
+test "citations: numbering follows the entry list's start end-to-end" {
+    try expectRender(
+        "<section class=\"sx-group sx-citations\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol start=\"3\">\n<li id=\"cite-3\">Third. <a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a></li>\n</ol>\n" ++
+            "</div>\n</section>\n" ++
+            "<p><a class=\"sx-cite\" id=\"cite-ref-1\" href=\"#cite-3\" title=\"3. Third.\">x</a>" ++
+            "<sup class=\"sx-cite-mark\"><a href=\"#cite-3\">3</a></sup></p>\n",
+        "// refs citations()\n\n3. Third.\n\n//\n\n[x].cite(3)",
+    );
+}
+
+test "emit() renders a pre-parsed Doc (the two-stage seam)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const doc = try strikedown.parse(arena_state.allocator(), "# T\n\nbody", .empty);
+    const out = try emit(std.testing.allocator, doc, .{});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("<h1 id=\"t\">T</h1>\n<p>body</p>\n", out);
+}
+
+test "citations() composes with a styling command on the same opener" {
+    try expectRender(
+        "<section class=\"sx-group sx-citations\" style=\"width:80%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<ol>\n<li id=\"cite-1\">Entry. <a class=\"sx-cite-back\" href=\"#cite-ref-1\">\u{21a9}</a></li>\n</ol>\n" ++
+            "</div>\n</section>\n" ++
+            "<p><a class=\"sx-cite\" id=\"cite-ref-1\" href=\"#cite-1\" title=\"1. Entry.\">x</a>" ++
+            "<sup class=\"sx-cite-mark\"><a href=\"#cite-1\">1</a></sup></p>\n",
+        "// refs citations() skinny(80%)\n\n1. Entry.\n\n//\n\n[x].cite(1)",
+    );
+}
+
+test "render survives allocation failure at every point" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn f(alloc: Allocator) !void {
+            const r = try render(alloc,
+                "# T\n\n- a\n  - b\n\n| h |\n|---|\n| \\| |\n\n[x].cite(1) *em* `c`\n\n// refs citations()\n\n1. [k] E.\n\n//", .{});
+            r.freeWarnings(alloc);
+            alloc.free(r.html);
+        }
+    }.f, .{});
 }

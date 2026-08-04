@@ -37,9 +37,13 @@ pub const Page = struct {
 };
 
 /// Render every page in `site`: `/` (the picker, or the root project's home if
-/// one exists), each other project's home, and each document. Caller owns the
-/// returned slice and each `Page.html`.
-pub fn renderAll(gpa: Allocator, site: project.Site) ![]Page {
+/// one exists), each other project's home, and each document.
+///
+/// `arena` follows `project.load`'s contract: a process- or
+/// generation-lifetime allocator freed *whole*, never piecemeal — `Page.route`
+/// is sometimes allocated and sometimes a borrowed slice of the site, so the
+/// pages can't be freed individually.
+pub fn renderAll(arena: Allocator, site: project.Site) ![]Page {
     var pages: std.ArrayList(Page) = .empty;
 
     var root: ?project.Project = null;
@@ -51,9 +55,9 @@ pub fn renderAll(gpa: Allocator, site: project.Site) ![]Page {
     }
 
     if (root) |r| {
-        try pages.append(gpa, .{ .route = homeHref(site.base), .src = "(root)", .kind = .home, .html = try renderProjectHome(gpa, r) });
+        try pages.append(arena, .{ .route = homeHref(site.base), .src = "(root)", .kind = .home, .html = try renderProjectHome(arena, r) });
     } else {
-        try pages.append(gpa, .{ .route = homeHref(site.base), .src = "(picker)", .kind = .picker, .html = try renderPickerPage(gpa, site) });
+        try pages.append(arena, .{ .route = homeHref(site.base), .src = "(picker)", .kind = .picker, .html = try renderPickerPage(arena, site) });
     }
 
     for (site.projects) |p| {
@@ -61,23 +65,23 @@ pub fn renderAll(gpa: Allocator, site: project.Site) ![]Page {
             // Its home was already rendered above, at "/"; only its docs
             // (already routed at "/<relpath>", no slug prefix) remain.
             for (p.docs) |d| {
-                try pages.append(gpa, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(gpa, p, d) });
+                try pages.append(arena, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(arena, p, d) });
             }
-            try appendFolderPages(gpa, &pages, p, p.tree);
+            try appendFolderPages(arena, &pages, p, p.tree);
             continue;
         }
-        try pages.append(gpa, .{
-            .route = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ site.base, p.slug }),
+        try pages.append(arena, .{
+            .route = try projectHref(arena, p),
             .src = p.slug,
             .kind = .home,
-            .html = try renderProjectHome(gpa, p),
+            .html = try renderProjectHome(arena, p),
         });
         for (p.docs) |d| {
-            try pages.append(gpa, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(gpa, p, d) });
+            try pages.append(arena, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(arena, p, d) });
         }
-        try appendFolderPages(gpa, &pages, p, p.tree);
+        try appendFolderPages(arena, &pages, p, p.tree);
     }
-    return pages.toOwnedSlice(gpa);
+    return pages.toOwnedSlice(arena);
 }
 
 /// Append a page for every folder carrying a `main.*` doc, served at the
@@ -138,6 +142,8 @@ pub fn outPath(gpa: Allocator, page: Page, base: []const u8) ![]u8 {
     const rel = route[1..];
     return switch (page.kind) {
         .home => std.fmt.allocPrint(gpa, "{s}/index.html", .{rel}),
+        // .picker can't actually reach here: a picker's route is always the
+        // front page, which the early return above already mapped.
         .doc, .picker => std.fmt.allocPrint(gpa, "{s}.html", .{rel}),
     };
 }
@@ -182,13 +188,7 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
         try w.writeAll("</p>\n");
     }
     try w.writeAll("<ul>\n");
-    for (p.docs) |d| {
-        try w.writeAll("<li><a href=\"");
-        try escapeAttrInto(w, d.route);
-        try w.writeAll("\">");
-        try escapeInto(w, d.label);
-        try w.writeAll("</a></li>\n");
-    }
+    for (p.docs) |d| try writeLinkItem(w, d.route, d.label);
     try w.writeAll("</ul>\n");
 
     const nav = try renderNav(gpa, p.slug, p.tree, "");
@@ -214,7 +214,11 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
 pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 {
     const nav = try renderNav(gpa, p.slug, p.tree, d.route);
     defer gpa.free(nav);
-    const body = try render_html.render(gpa, d.md, .{ .sheet = p.sheet, .link_base = d.route_dir });
+    const body = (try render_html.render(gpa, d.md, .{
+        .sheet = p.sheet,
+        .link_base = d.route_dir,
+        .link_floor = p.base,
+    })).takeHtml(gpa, d.rel_path);
     defer gpa.free(body);
     const brand_href = try projectHref(gpa, p);
     defer gpa.free(brand_href);
@@ -341,12 +345,29 @@ fn writeProjectHref(w: *Writer, base: []const u8, slug: []const u8) Writer.Error
     try escapeAttrInto(w, slug);
 }
 
+/// One escaped `<li><a href="…">label</a></li>` body-list entry — the shared
+/// shape of every generated link list (project home index, picker default).
+fn writeLinkItem(w: *Writer, href: []const u8, label: []const u8) Writer.Error!void {
+    try w.writeAll("<li><a href=\"");
+    try escapeAttrInto(w, href);
+    try w.writeAll("\">");
+    try escapeInto(w, label);
+    try w.writeAll("</a></li>\n");
+}
+
 /// Render the body fragment for the `/` project picker. A content-root
 /// `main.*` dictates the whole page when present; otherwise a minimal
 /// default: the site-title heading and a plain link list of the projects.
 /// Caller owns the result.
 pub fn renderPicker(allocator: Allocator, site: project.Site) ![]u8 {
-    if (site.main) |m| return render_html.render(allocator, m.md, .{ .sheet = site.sheet, .link_base = m.route_dir });
+    if (site.main) |m| {
+        const r = try render_html.render(allocator, m.md, .{
+            .sheet = site.sheet,
+            .link_base = m.route_dir,
+            .link_floor = site.base,
+        });
+        return r.takeHtml(allocator, m.rel_path);
+    }
 
     var out: Writer.Allocating = .init(allocator);
     errdefer out.deinit();
@@ -355,13 +376,9 @@ pub fn renderPicker(allocator: Allocator, site: project.Site) ![]u8 {
     try escapeInto(w, site.title);
     try w.writeAll("</h1>\n<ul>\n");
     for (site.projects) |p| {
-        try w.writeAll("<li><a href=\"");
-        try escapeAttrInto(w, site.base);
-        try w.writeByte('/');
-        try escapeAttrInto(w, p.slug);
-        try w.writeAll("\">");
-        try escapeInto(w, p.title);
-        try w.writeAll("</a></li>\n");
+        const href = try projectHref(allocator, p);
+        defer allocator.free(href);
+        try writeLinkItem(w, href, p.title);
     }
     try w.writeAll("</ul>\n");
     return out.toOwnedSlice();

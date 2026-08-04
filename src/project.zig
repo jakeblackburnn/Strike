@@ -33,6 +33,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml = @import("yaml.zig");
 const sheet = @import("sheet.zig");
+const routes = @import("routes.zig");
 
 pub const Doc = struct {
     rel_path: []const u8, // project-relative, e.g. "topo/algebra.md"
@@ -121,9 +122,14 @@ const ProjCtx = struct {
     docs: std.ArrayList(*Doc),
 };
 
+/// Read caps: a single document, and a `strike.yaml`/`.sxh` config file.
+/// Fail-soft paths skip anything larger; hard paths error.
+pub const max_doc_bytes = 16 << 20;
+pub const max_config_bytes = 1 << 20;
+
 /// Scan `content` (an opened, iterable content dir) into a `Site`. All
-/// returned memory is owned by `gpa`; callers pass a process- or build-lifetime
-/// allocator and never free piecemeal.
+/// returned memory is owned by `gpa`; callers pass a process- or
+/// generation-lifetime allocator (`--watch` rebuilds) and never free piecemeal.
 pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     const site_cfg = readConfig(io, gpa, content, "strike.yaml");
     const base = try normalizeBase(gpa, site_cfg.getScalar("base") orelse "");
@@ -136,11 +142,12 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     var root_main_name: ?[]const u8 = null;
     var it = content.iterate();
     while (try it.next(io)) |entry| {
+        // Dotfiles never count, files included — a stray `._foo.md`
+        // (AppleDouble sidecar) must not flip the site into root-project
+        // mode when `scan` below would skip it anyway.
+        if (entry.name.len == 0 or entry.name[0] == '.') continue;
         switch (entry.kind) {
-            .directory => {
-                if (entry.name.len == 0 or entry.name[0] == '.') continue;
-                try slugs.append(gpa, try gpa.dupe(u8, entry.name));
-            },
+            .directory => try slugs.append(gpa, try gpa.dupe(u8, entry.name)),
             .file => {
                 if (!std.mem.endsWith(u8, entry.name, ".md") and !std.mem.endsWith(u8, entry.name, ".sx"))
                     continue;
@@ -151,7 +158,10 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
                         root_main_name = try gpa.dupe(u8, entry.name);
                 } else has_root_docs = true;
             },
-            else => {},
+            // Symlinks and unknown kinds are skipped by design (no
+            // containment story yet) — but say so; a silently missing
+            // project is a support question.
+            else => std.debug.print("strike: warning: skipping {s} ({t} entries are not scanned)\n", .{ entry.name, entry.kind }),
         }
     }
     var projects: std.ArrayList(Project) = .empty;
@@ -309,7 +319,7 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
                 // skipped (the server may still serve it as a static asset).
                 const is_sx = std.mem.endsWith(u8, name, ".sx");
                 if (!is_sx and !std.mem.endsWith(u8, name, ".md")) continue;
-                const md = dir.readFileAlloc(ctx.io, name, gpa, .limited(16 << 20)) catch continue;
+                const md = dir.readFileAlloc(ctx.io, name, gpa, .limited(max_doc_bytes)) catch continue;
                 const is_main = std.mem.eql(u8, stripExtension(name), "main");
                 // main.* is served at its containing directory's route.
                 const route = if (is_main)
@@ -345,10 +355,24 @@ fn scan(ctx: *ProjCtx, dir: std.Io.Dir, rel_prefix: []const u8, route_prefix: []
                     }
                     continue;
                 }
+                // `a.md` + `a.sx` map to the same route (`stripExtension`);
+                // `.sx` wins — the main.sx precedent — by overwriting the
+                // already-registered `Doc` in place (nav and docs share the
+                // pointer), and the loser drops with a warning.
+                const collided = for (ctx.docs.items) |existing| {
+                    if (std.mem.eql(u8, existing.route, route)) {
+                        std.debug.print("strike: warning: {s} and {s} share route {s} ({s} wins)\n", .{
+                            existing.rel_path, rel, route, if (is_sx) rel else existing.rel_path,
+                        });
+                        if (is_sx) existing.* = doc.*;
+                        break true;
+                    }
+                } else false;
+                if (collided) continue;
                 try ctx.docs.append(gpa, doc);
                 try nodes.append(gpa, .{ .doc = doc });
             },
-            else => {},
+            else => std.debug.print("strike: warning: skipping {s} ({t} entries are not scanned)\n", .{ rel, entry.kind }),
         }
     }
 
@@ -380,7 +404,7 @@ pub fn loadFile(io: std.Io, gpa: Allocator, dir: std.Io.Dir, path: []const u8) !
 /// picked up outside a project scan (the picker-mode content root's main.*,
 /// and `loadFile`'s single file).
 fn readMainDoc(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8, route: []const u8) !*Doc {
-    const md = try dir.readFileAlloc(io, name, gpa, .limited(16 << 20));
+    const md = try dir.readFileAlloc(io, name, gpa, .limited(max_doc_bytes));
     const heading = firstHeading(md);
     const label = heading orelse try prettify(gpa, stripExtension(std.fs.path.basename(name)));
     const doc = try gpa.create(Doc);
@@ -398,7 +422,7 @@ fn readMainDoc(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8, ro
 
 /// Read+parse a YAML config from `dir`; an empty map on any failure (fail-soft).
 pub fn readConfig(io: std.Io, gpa: Allocator, dir: std.Io.Dir, name: []const u8) yaml.Value {
-    const src = dir.readFileAlloc(io, name, gpa, .limited(1 << 20)) catch return .{ .map = &.{} };
+    const src = dir.readFileAlloc(io, name, gpa, .limited(max_config_bytes)) catch return .{ .map = &.{} };
     return yaml.parse(gpa, src) catch .{ .map = &.{} };
 }
 
@@ -476,13 +500,8 @@ fn lessNode(order: ?[]const yaml.Value, a: NavNode, b: NavNode) bool {
 
 // ---- pure string helpers ----------------------------------------------------
 
-/// Strip a trailing `.sx` and/or `.md` (handles the `.sx.md` double extension).
-pub fn stripExtension(name: []const u8) []const u8 {
-    var s = name;
-    if (std.mem.endsWith(u8, s, ".md")) s = s[0 .. s.len - ".md".len];
-    if (std.mem.endsWith(u8, s, ".sx")) s = s[0 .. s.len - ".sx".len];
-    return s;
-}
+/// Strip a trailing `.sx` and/or `.md` — route shape lives in `routes.zig`.
+pub const stripExtension = routes.stripExtension;
 
 /// Normalize a site `base:` value into "" (no base) or `/segment[/…]` — one
 /// leading slash, no trailing slash — so "docs", "/docs", and "docs/" all
@@ -566,13 +585,6 @@ fn slugIndex(projects: ?[]const yaml.Value, slug: []const u8) ?usize {
 
 const testing = std.testing;
 
-test "stripExtension handles .md, .sx, and .sx.md" {
-    try testing.expectEqualStrings("a", stripExtension("a.md"));
-    try testing.expectEqualStrings("a", stripExtension("a.sx"));
-    try testing.expectEqualStrings("a", stripExtension("a.sx.md"));
-    try testing.expectEqualStrings("topo/algebra", stripExtension("topo/algebra.md"));
-}
-
 test "prettify strips numeric prefix and title-cases" {
     const a = try prettify(testing.allocator, "01_probability_statistics.md");
     defer testing.allocator.free(a);
@@ -621,7 +633,7 @@ test "orderIndex and slug ordering" {
     try testing.expectEqualStrings("pchem", slugs[1]);
 }
 
-// `load`/`scan` allocate with a process-/build-lifetime, never-free-piecemeal
+// `load`/`scan` allocate with a process-/generation-lifetime, never-free-piecemeal
 // contract (see `load`'s doc comment); an arena over `testing.allocator`
 // matches that contract instead of tripping its leak detector.
 
@@ -978,4 +990,41 @@ test "a directory with no doc files and no subfolders yields an empty Site" {
     const site = try load(testing.io, arena.allocator(), tmp.dir);
 
     try testing.expectEqual(@as(usize, 0), site.projects.len);
+}
+
+// ---- v0.1.0 fixes ------------------------------------------------------------
+
+test "a root dotfile doc does not flip the site into root-project mode" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "proj");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "proj/doc.md", .data = "# Doc\nbody" });
+    // an AppleDouble-style sidecar the scanner would skip anyway
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "._stray.md", .data = "junk" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    // still picker mode: one real project, no implicit root
+    try testing.expectEqual(@as(usize, 1), site.projects.len);
+    try testing.expectEqualStrings("proj", site.projects[0].slug);
+}
+
+test "a.md and a.sx collide on one route; .sx wins with one nav entry" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "p");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "p/a.md", .data = "# From md\nbody" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "p/a.sx", .data = "# From sx\nbody" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    const p = site.projects[0];
+    try testing.expectEqual(@as(usize, 1), p.docs.len);
+    try testing.expectEqualStrings("/p/a", p.docs[0].route);
+    try testing.expectEqualStrings("From sx", p.docs[0].title);
+    try testing.expectEqual(@as(usize, 1), p.tree.len);
 }

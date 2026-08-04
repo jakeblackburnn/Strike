@@ -64,9 +64,11 @@ pub fn isAliasName(s: []const u8) bool {
 /// `arena` (they slice the file buffer read into it). I/O errors propagate —
 /// the caller decides how to degrade.
 pub fn load(io: std.Io, arena: Allocator, dir: std.Io.Dir, path: []const u8) !Sheet {
-    const src = try dir.readFileAlloc(io, path, arena, .limited(1 << 20));
+    const src = try dir.readFileAlloc(io, path, arena, .limited(max_header_bytes));
     return fromSource(arena, src);
 }
+
+const max_header_bytes = 1 << 20;
 
 /// Collect a sheet from directive source text (the pure core of `load`).
 pub fn fromSource(arena: Allocator, src: []const u8) Allocator.Error!Sheet {

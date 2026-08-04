@@ -82,7 +82,7 @@ const Parser = struct {
         var pairs: std.ArrayList(Value.Pair) = .empty;
         while (p.peek()) |line| {
             if (line.indent != indent or isItem(line.content)) break;
-            const colon = std.mem.indexOfScalar(u8, line.content, ':') orelse break;
+            const colon = keyColon(line.content) orelse break;
             const key = try p.dupeScalar(std.mem.trim(u8, line.content[0..colon], " \t"));
             const rest = std.mem.trim(u8, line.content[colon + 1 ..], " \t");
             p.i += 1;
@@ -114,19 +114,48 @@ const Parser = struct {
                     }
                 }
                 try items.append(p.gpa, .{ .scalar = "" });
-            } else if (std.mem.indexOfScalar(u8, rest, ':') != null) {
-                // `- key: value`: a map item. Re-anchor this line at the key's
-                // column (where `rest` begins in the original line) so parseMap
-                // absorbs it and any deeper-aligned sibling keys.
+            } else if (keyColon(rest) != null) {
+                // `- key: value`: a map item. Re-anchor this line at the
+                // key's true column, then absorb continuation keys wherever
+                // the author aligned them (`parseItemMap`) — fail-soft means
+                // no plausible alignment silently drops the list's tail.
                 const key_col = indent + 1 + leftSpace(line.content[1..]);
                 p.lines[p.i] = .{ .indent = key_col, .content = rest };
-                try items.append(p.gpa, try p.parseMap(key_col));
+                try items.append(p.gpa, try p.parseItemMap(indent));
             } else {
                 p.i += 1;
                 try items.append(p.gpa, .{ .scalar = try p.dupeScalar(rest) });
             }
         }
         return .{ .list = try items.toOwnedSlice(p.gpa) };
+    }
+
+    /// A list item's map (`- key: value` plus continuation keys): keys sit at
+    /// *any* column deeper than the dash — authors space the dash and align
+    /// continuations by eye (`-   slug: x` with `name:` under either the
+    /// dash-plus-two or the key itself), and every plausible alignment should
+    /// parse rather than silently terminating the list. Nested blocks under
+    /// an empty-valued key still recurse on that key's own column.
+    fn parseItemMap(p: *Parser, list_indent: usize) Allocator.Error!Value {
+        var pairs: std.ArrayList(Value.Pair) = .empty;
+        while (p.peek()) |line| {
+            if (line.indent <= list_indent or isItem(line.content)) break;
+            const colon = keyColon(line.content) orelse break;
+            const key = try p.dupeScalar(std.mem.trim(u8, line.content[0..colon], " \t"));
+            const rest = std.mem.trim(u8, line.content[colon + 1 ..], " \t");
+            const key_indent = line.indent;
+            p.i += 1;
+            var value: Value = undefined;
+            if (rest.len > 0) {
+                value = .{ .scalar = try p.dupeScalar(rest) };
+            } else if (p.peek()) |next| {
+                if (next.indent > key_indent) {
+                    value = try p.parseBlock(next.indent);
+                } else value = .{ .scalar = "" };
+            } else value = .{ .scalar = "" };
+            try pairs.append(p.gpa, .{ .key = key, .value = value });
+        }
+        return .{ .map = try pairs.toOwnedSlice(p.gpa) };
     }
 
     /// Strip one pair of matching surrounding quotes, then dupe into the arena.
@@ -173,7 +202,9 @@ fn isItem(content: []const u8) bool {
 
 /// Remove a trailing/whole-line `#` comment, respecting quoted spans. A `#`
 /// only starts a comment at line start or after whitespace (so `#fff` colors and
-/// `http://…#frag` survive when unquoted-adjacent).
+/// `http://…#frag` survive when unquoted-adjacent). A quote only *opens* at a
+/// word boundary — the apostrophe in `Jack's notes  # x` is prose, not a
+/// quote that would swallow the comment marker.
 fn stripComment(line: []const u8) []const u8 {
     var quote: u8 = 0;
     var i: usize = 0;
@@ -181,13 +212,29 @@ fn stripComment(line: []const u8) []const u8 {
         const c = line[i];
         if (quote != 0) {
             if (c == quote) quote = 0;
-        } else if (c == '"' or c == '\'') {
+        } else if ((c == '"' or c == '\'') and
+            (i == 0 or line[i - 1] == ' ' or line[i - 1] == '\t'))
+        {
             quote = c;
         } else if (c == '#' and (i == 0 or line[i - 1] == ' ' or line[i - 1] == '\t')) {
             return line[0..i];
         }
     }
     return line;
+}
+
+/// The index of the key/value `:` — the first colon *outside* a quoted span,
+/// so `"a:b": v` keys as `a:b` and `- "a: b"` is a scalar item, not a map.
+fn keyColon(content: []const u8) ?usize {
+    var quote: u8 = 0;
+    for (content, 0..) |c, i| {
+        if (quote != 0) {
+            if (c == quote) quote = 0;
+        } else if (c == '"' or c == '\'') {
+            quote = c;
+        } else if (c == ':') return i;
+    }
+    return null;
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -320,4 +367,39 @@ fn free(gpa: Allocator, v: Value) void {
             gpa.free(pairs);
         },
     }
+}
+
+test "an apostrophe in an unquoted value doesn't swallow the comment" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const v = try parse(arena.allocator(), "title: Jack's notes  # the site title");
+    try testing.expectEqualStrings("Jack's notes", v.getScalar("title").?);
+}
+
+test "quoted keys and values keep their colons" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const v = try parse(arena.allocator(), "\"a:b\": v\nplain: w");
+    try testing.expectEqualStrings("v", v.getScalar("a:b").?);
+    try testing.expectEqualStrings("w", v.getScalar("plain").?);
+    // a quoted list item with a colon is a scalar, not a map
+    const l = try parse(arena.allocator(), "items:\n  - \"a: b\"\n  - c");
+    const items = l.get("items").?.list;
+    try testing.expectEqualStrings("a: b", items[0].scalar);
+    try testing.expectEqualStrings("c", items[1].scalar);
+}
+
+test "over-spaced sequence dashes keep conventional continuation keys" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const v = try parse(arena.allocator(),
+        \\projects:
+        \\  -   slug: a
+        \\      name: x
+        \\  - slug: b
+    );
+    const items = v.get("projects").?.list;
+    try testing.expectEqual(@as(usize, 2), items.len);
+    try testing.expectEqualStrings("a", items[0].getScalar("slug").?);
+    try testing.expectEqualStrings("b", items[1].getScalar("slug").?);
 }

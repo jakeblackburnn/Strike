@@ -314,11 +314,28 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
     // The citations pass (016-citations) — the one whole-tree step after the
     // block loop: entries and marks can only meet once both exist.
     try resolveCitations(&p, block_slice);
+    // The nesting-cap warning lands here, not where the cap was hit: a
+    // reverted `/cmd()` chain shrinks the warning list, and this one must
+    // survive that (and appear once however many times the cap was hit).
+    if (p.depth_warned) {
+        try p.warnings.append(arena, try std.fmt.allocPrint(
+            arena,
+            "nesting deeper than {d} levels; deeper structure flattens to prose",
+            .{max_nest_depth},
+        ));
+    }
     return .{
         .blocks = block_slice,
         .warnings = try p.warnings.toOwnedSlice(arena),
     };
 }
+
+/// The nesting cap for the recursive block parsers (groups, single-command
+/// chains, list levels — one stack frame each, and the citations pass and
+/// emitters mirror the tree's depth). Structure past the cap degrades to
+/// prose/flat with a warning; without a cap a generated document (tens of
+/// thousands of `// a` lines) overflows the stack instead of parsing.
+const max_nest_depth = 64;
 
 const Parser = struct {
     arena: Allocator,
@@ -327,6 +344,9 @@ const Parser = struct {
     /// whitespace indent (note 015).
     lines: [][]const u8,
     idx: usize = 0,
+    /// Current recursion depth of the block parsers, against `max_nest_depth`.
+    depth: usize = 0,
+    depth_warned: bool = false,
     /// Heading anchor slugs used so far in this document (for deduping).
     used_slugs: std.ArrayList([]const u8) = .empty,
     /// How many groups are open. Separator/closer group lines are only live
@@ -358,16 +378,20 @@ const Parser = struct {
     }
 
     /// The block classification chain: `t` is the current line, left-trimmed
-    /// (and prefix-stripped, when a color prefix applied).
+    /// (and prefix-stripped, when a color prefix applied). The *order* is the
+    /// grammar's precedence — group before single-command, rule before list —
+    /// and every arm advances `p.idx` past what it consumed.
     fn parseBlock(p: *Parser, t: []const u8) Allocator.Error!Block {
-        const arena = p.arena;
-
         // Group directive. Only a clean *opener* starts anything here; a
         // separator/closer line is consumed inside `parseGroup`'s loop, so one
         // reaching this chain is outside any group (or mismatched) and falls
-        // through to prose — the degradation rule.
+        // through to prose — the degradation rule. Past the nesting cap an
+        // opener degrades the same way.
         if (parseGroupLine(t)) |gl| {
-            if (gl == .open) return try p.parseGroup(gl.open);
+            if (gl == .open) {
+                if (p.depth < max_nest_depth) return try p.parseGroup(gl.open);
+                p.warnDepth();
+            }
         }
 
         // Single-command directive: `/cmd(args)` applies one command to the
@@ -379,50 +403,8 @@ const Parser = struct {
             if (try p.parseSingleCommand(cmd)) |block| return block;
         }
 
-        // Fenced code block: contents are kept verbatim, no inline parsing.
-        if (std.mem.startsWith(u8, t, "```")) {
-            // Info string: the first token names the language (```python);
-            // anything after it is ignored.
-            const info = std.mem.trim(u8, t[3..], " ");
-            const lang = info[0 .. std.mem.indexOfScalar(u8, info, ' ') orelse info.len];
-            p.idx += 1;
-            var buf: std.ArrayList(u8) = .empty;
-            while (p.idx < p.lines.len and
-                !std.mem.startsWith(u8, trimIndent(p.lines[p.idx]), "```"))
-            {
-                try buf.appendSlice(arena, p.lines[p.idx]);
-                try buf.append(arena, '\n');
-                p.idx += 1;
-            }
-            if (p.idx < p.lines.len) p.idx += 1; // consume the closing fence
-            return .{ .kind = .{ .code = .{ .lang = lang, .text = try buf.toOwnedSlice(arena) } } };
-        }
-
-        // Display math: `$$…$$`. The TeX is kept raw; emitters wrap it.
-        if (std.mem.startsWith(u8, t, "$$")) {
-            const rest = std.mem.trimEnd(u8, t, " ");
-            // Single-line `$$ … $$`.
-            if (rest.len >= 4 and std.mem.endsWith(u8, rest, "$$")) {
-                p.idx += 1;
-                return .{ .kind = .{ .math = rest[2 .. rest.len - 2] } };
-            }
-            // Multi-line: gather until a line ending in `$$`.
-            var buf: std.ArrayList(u8) = .empty;
-            try buf.appendSlice(arena, std.mem.trimStart(u8, rest, "$"));
-            p.idx += 1;
-            while (p.idx < p.lines.len) {
-                const ml = std.mem.trimEnd(u8, p.lines[p.idx], " ");
-                try buf.append(arena, '\n');
-                if (std.mem.endsWith(u8, ml, "$$")) {
-                    try buf.appendSlice(arena, ml[0 .. ml.len - 2]);
-                    p.idx += 1;
-                    break;
-                }
-                try buf.appendSlice(arena, ml);
-                p.idx += 1;
-            }
-            return .{ .kind = .{ .math = try buf.toOwnedSlice(arena) } };
-        }
+        if (std.mem.startsWith(u8, t, "```")) return p.parseCodeFence(t);
+        if (std.mem.startsWith(u8, t, "$$")) return p.parseMathBlock(t);
 
         // ATX heading. The anchor id comes from the raw heading text (markdown
         // punctuation collapses into `-` naturally), deduped per document.
@@ -433,7 +415,7 @@ const Parser = struct {
             return .{ .kind = .{ .heading = .{
                 .level = level,
                 .id = slug,
-                .inlines = try parseInlines(arena, text),
+                .inlines = try parseInlines(p.arena, text),
             } } };
         }
 
@@ -443,103 +425,168 @@ const Parser = struct {
             return .{ .kind = .rule };
         }
 
-        // Blockquote. Consecutive `>` lines soft-merge into one flowing
-        // paragraph (the same joining rule as plain paragraphs); a bare `>`
-        // line breaks paragraphs within the quote; a plain line lazily
-        // continues the open quote paragraph (GFM lazy continuation). A
-        // blank line — or any new block form — ends the quote.
-        if (std.mem.startsWith(u8, t, ">")) {
-            var alert: ?Alert = null;
-            var seen_content = false;
-            var paras: std.ArrayList([]Inline) = .empty;
-            var cur: std.ArrayList(u8) = .empty;
-            while (p.idx < p.lines.len) {
-                if (isBlank(p.lines[p.idx])) break;
-                const qt = trimIndent(p.lines[p.idx]);
-                if (std.mem.startsWith(u8, qt, ">")) {
-                    var content = qt[1..];
-                    if (content.len > 0 and content[0] == ' ') content = content[1..];
-                    content = std.mem.trimEnd(u8, content, " \t");
-                    if (content.len == 0) {
-                        // Bare `>`: paragraph break within the quote.
-                        if (cur.items.len > 0) {
-                            try paras.append(arena, try parseFlowRun(arena, cur.items));
-                            cur.clearRetainingCapacity();
-                        }
-                    } else {
-                        // The quote's very first content may be an alert
-                        // marker; trailing same-line text starts paragraph 1.
-                        if (!seen_content) {
-                            seen_content = true;
-                            if (parseAlertMarker(content)) |m| {
-                                alert = m.alert;
-                                content = m.rest;
-                                if (content.len == 0) {
-                                    p.idx += 1;
-                                    continue;
-                                }
-                            }
-                        }
-                        try appendFlowLine(arena, &cur, content);
-                    }
-                    p.idx += 1;
-                    continue;
-                }
-                // Lazy continuation needs an open paragraph and a line that
-                // starts no block.
-                if (cur.items.len == 0) break;
-                if (p.interruptsFlow(qt)) break;
-                try appendFlowLine(arena, &cur, qt);
-                p.idx += 1;
-            }
-            if (cur.items.len > 0) try paras.append(arena, try parseFlowRun(arena, cur.items));
-            return .{ .kind = .{ .quote = .{ .alert = alert, .paras = try paras.toOwnedSlice(arena) } } };
-        }
+        if (std.mem.startsWith(u8, t, ">")) return p.parseQuote();
 
         // List (unordered or ordered, possibly nested by indentation).
         if (parseMarker(t) != null) {
             return .{ .kind = .{ .list = try p.parseList() } };
         }
 
-        // GFM pipe table: a header row followed by a `|---|` separator row.
-        if (isTableStart(p.lines, p.idx)) {
-            var header_cells: std.ArrayList([]const u8) = .empty;
-            try splitCells(arena, &header_cells, trimIndent(p.lines[p.idx]));
-            var aligns: std.ArrayList(Align) = .empty;
-            try parseAligns(arena, &aligns, trimIndent(p.lines[p.idx + 1]));
-            p.idx += 2;
+        if (isTableStart(p.lines, p.idx)) return p.parseTable();
 
-            var header: std.ArrayList([]Inline) = .empty;
-            for (header_cells.items) |cell| try header.append(arena, try parseInlines(arena, cell));
+        return p.parseParagraph(t);
+    }
 
-            var rows: std.ArrayList([][]Inline) = .empty;
-            var row_cells: std.ArrayList([]const u8) = .empty;
-            while (p.idx < p.lines.len) {
-                const rt = trimIndent(p.lines[p.idx]);
-                if (isBlank(p.lines[p.idx]) or isBlockStart(rt) or
-                    std.mem.indexOfScalar(u8, rt, '|') == null) break;
-                row_cells.clearRetainingCapacity();
-                try splitCells(arena, &row_cells, rt);
-                // GFM: pad/truncate every body row to the header's column count.
-                const row = try arena.alloc([]Inline, header.items.len);
-                for (row, 0..) |*cell, ci| {
-                    cell.* = try parseInlines(arena, if (ci < row_cells.items.len) row_cells.items[ci] else "");
-                }
-                try rows.append(arena, row);
-                p.idx += 1;
-            }
-            return .{ .kind = .{ .table = .{
-                .aligns = try aligns.toOwnedSlice(arena),
-                .header = try header.toOwnedSlice(arena),
-                .rows = try rows.toOwnedSlice(arena),
-            } } };
+    /// Fenced code block: contents are kept verbatim, no inline parsing.
+    fn parseCodeFence(p: *Parser, t: []const u8) Allocator.Error!Block {
+        const arena = p.arena;
+        // Info string: the first token names the language (```python);
+        // anything after it is ignored.
+        const info = std.mem.trim(u8, t[3..], " \t");
+        const lang = info[0 .. std.mem.indexOfAny(u8, info, " \t") orelse info.len];
+        p.idx += 1;
+        var buf: std.ArrayList(u8) = .empty;
+        while (p.idx < p.lines.len and
+            !std.mem.startsWith(u8, trimIndent(p.lines[p.idx]), "```"))
+        {
+            try buf.appendSlice(arena, p.lines[p.idx]);
+            try buf.append(arena, '\n');
+            p.idx += 1;
         }
+        if (p.idx < p.lines.len) p.idx += 1; // consume the closing fence
+        return .{ .kind = .{ .code = .{ .lang = lang, .text = try buf.toOwnedSlice(arena) } } };
+    }
 
-        // Paragraph: gather consecutive lines until a blank line or a new block.
-        // Leading whitespace on the paragraph's *first* line indents it one
-        // step (015-paragraph-indent) — the raw line is read before trimming,
-        // and only here, which is what confines the rule to paragraphs.
-        // Continuation lines soft-wrap regardless of their own indentation.
+    /// Display math: `$$…$$`. The TeX is kept raw; emitters wrap it.
+    fn parseMathBlock(p: *Parser, t: []const u8) Allocator.Error!Block {
+        const arena = p.arena;
+        const rest = std.mem.trimEnd(u8, t, " ");
+        // Single-line `$$ … $$`.
+        if (rest.len >= 4 and std.mem.endsWith(u8, rest, "$$")) {
+            p.idx += 1;
+            return .{ .kind = .{ .math = rest[2 .. rest.len - 2] } };
+        }
+        // A third `$` is not an opener (`$$$x` is prose, matching the
+        // single-line arm's exactly-two slicing).
+        if (rest.len > 2 and rest[2] == '$') return p.parseParagraph(t);
+        // Multi-line: gather until a line ending in `$$`. A blank line or
+        // EOF first means the opener was a stray `$$` — revert the whole
+        // thing to a paragraph rather than swallowing the document.
+        var buf: std.ArrayList(u8) = .empty;
+        try appendMathPiece(arena, &buf, rest[2..]);
+        var j = p.idx + 1;
+        const end: usize = while (j < p.lines.len) {
+            if (isBlank(p.lines[j])) return p.parseParagraph(t);
+            const ml = std.mem.trimEnd(u8, p.lines[j], " ");
+            if (std.mem.endsWith(u8, ml, "$$")) {
+                try appendMathPiece(arena, &buf, ml[0 .. ml.len - 2]);
+                break j + 1;
+            }
+            try appendMathPiece(arena, &buf, ml);
+            j += 1;
+        } else return p.parseParagraph(t);
+        p.idx = end;
+        return .{ .kind = .{ .math = try buf.toOwnedSlice(arena) } };
+    }
+
+    /// Blockquote. Consecutive `>` lines soft-merge into one flowing
+    /// paragraph (the same joining rule as plain paragraphs); a bare `>`
+    /// line breaks paragraphs within the quote; a plain line lazily
+    /// continues the open quote paragraph (GFM lazy continuation). A
+    /// blank line — or any new block form — ends the quote.
+    fn parseQuote(p: *Parser) Allocator.Error!Block {
+        const arena = p.arena;
+        var alert: ?Alert = null;
+        var seen_content = false;
+        var paras: std.ArrayList([]Inline) = .empty;
+        var cur: std.ArrayList(u8) = .empty;
+        while (p.idx < p.lines.len) {
+            if (isBlank(p.lines[p.idx])) break;
+            const qt = trimIndent(p.lines[p.idx]);
+            if (std.mem.startsWith(u8, qt, ">")) {
+                var content = qt[1..];
+                if (content.len > 0 and content[0] == ' ') content = content[1..];
+                content = std.mem.trimEnd(u8, content, " \t");
+                if (content.len == 0) {
+                    // Bare `>`: paragraph break within the quote.
+                    if (cur.items.len > 0) {
+                        try paras.append(arena, try parseFlowRun(arena, cur.items));
+                        cur.clearRetainingCapacity();
+                    }
+                } else {
+                    // The quote's very first content may be an alert
+                    // marker; trailing same-line text starts paragraph 1.
+                    if (!seen_content) {
+                        seen_content = true;
+                        if (parseAlertMarker(content)) |m| {
+                            alert = m.alert;
+                            content = m.rest;
+                            if (content.len == 0) {
+                                p.idx += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    try appendFlowLine(arena, &cur, content);
+                }
+                p.idx += 1;
+                continue;
+            }
+            // Lazy continuation needs an open paragraph and a line that
+            // starts no block.
+            if (cur.items.len == 0) break;
+            if (p.interruptsFlow(qt)) break;
+            try appendFlowLine(arena, &cur, qt);
+            p.idx += 1;
+        }
+        if (cur.items.len > 0) try paras.append(arena, try parseFlowRun(arena, cur.items));
+        return .{ .kind = .{ .quote = .{ .alert = alert, .paras = try paras.toOwnedSlice(arena) } } };
+    }
+
+    /// GFM pipe table: the header row and `|---|` separator row the caller's
+    /// `isTableStart` lookahead already verified, then body rows until a
+    /// blank/pipeless line or a new block.
+    fn parseTable(p: *Parser) Allocator.Error!Block {
+        const arena = p.arena;
+        var header_cells: std.ArrayList([]const u8) = .empty;
+        try splitCells(arena, &header_cells, trimIndent(p.lines[p.idx]));
+        var aligns: std.ArrayList(Align) = .empty;
+        try parseAligns(arena, &aligns, trimIndent(p.lines[p.idx + 1]));
+        p.idx += 2;
+
+        var header: std.ArrayList([]Inline) = .empty;
+        for (header_cells.items) |cell| try header.append(arena, try parseInlines(arena, cell));
+
+        var rows: std.ArrayList([][]Inline) = .empty;
+        var row_cells: std.ArrayList([]const u8) = .empty;
+        while (p.idx < p.lines.len) {
+            const rt = trimIndent(p.lines[p.idx]);
+            if (isBlank(p.lines[p.idx]) or isBlockStart(rt) or
+                std.mem.indexOfScalar(u8, rt, '|') == null) break;
+            row_cells.clearRetainingCapacity();
+            try splitCells(arena, &row_cells, rt);
+            // GFM: pad/truncate every body row to the header's column count.
+            const row = try arena.alloc([]Inline, header.items.len);
+            for (row, 0..) |*cell, ci| {
+                cell.* = try parseInlines(arena, if (ci < row_cells.items.len) row_cells.items[ci] else "");
+            }
+            try rows.append(arena, row);
+            p.idx += 1;
+        }
+        return .{ .kind = .{ .table = .{
+            .aligns = try aligns.toOwnedSlice(arena),
+            .header = try header.toOwnedSlice(arena),
+            .rows = try rows.toOwnedSlice(arena),
+        } } };
+    }
+
+    /// Paragraph: gather consecutive lines until a blank line or a new block.
+    /// Leading whitespace on the paragraph's *first* line indents it one
+    /// step (015-paragraph-indent) — the raw line is read before trimming,
+    /// and only here, which is what confines the rule to paragraphs.
+    /// Continuation lines soft-wrap regardless of their own indentation.
+    fn parseParagraph(p: *Parser, t: []const u8) Allocator.Error!Block {
+        const arena = p.arena;
         const indented = hasParagraphIndent(p.lines[p.idx]);
         var flow: std.ArrayList(u8) = .empty;
         try appendFlowLine(arena, &flow, std.mem.trimEnd(u8, t, " \t"));
@@ -569,6 +616,8 @@ const Parser = struct {
     /// tight either way (`<p>`-wrapped loose rendering is out of scope).
     fn parseList(p: *Parser) Allocator.Error!List {
         const arena = p.arena;
+        p.depth += 1;
+        defer p.depth -= 1;
         const base = indentWidth(p.lines[p.idx]);
         const first = parseMarker(trimIndent(p.lines[p.idx])) orelse unreachable;
         const ordered = first.ordered;
@@ -598,9 +647,14 @@ const Parser = struct {
             if (parseMarker(t)) |m| {
                 if (ind >= base + 2) {
                     if (items.items.len == 0) break;
-                    try flushFlow(arena, &flow, &items, &tail);
-                    try tail.append(arena, .{ .list = try p.parseList() });
-                    continue;
+                    if (p.depth < max_nest_depth) {
+                        try flushFlow(arena, &flow, &items, &tail);
+                        try tail.append(arena, .{ .list = try p.parseList() });
+                        continue;
+                    }
+                    // Past the cap: no deeper child — the item joins this
+                    // level instead (flattened), via the sibling path below.
+                    p.warnDepth();
                 }
                 if (ind < base or m.ordered != ordered or m.plain != plain) break;
                 try flushFlow(arena, &flow, &items, &tail);
@@ -638,6 +692,8 @@ const Parser = struct {
         p.idx += 1;
         p.group_depth += 1;
         defer p.group_depth -= 1;
+        p.depth += 1;
+        defer p.depth -= 1;
         // The layout-level rule, per command: a layout command an open
         // ancestor already carries is stripped with a warning; the rest of
         // the opener still applies, and the group still forms (structure
@@ -668,6 +724,15 @@ const Parser = struct {
                 .end => |name| if (name == null or std.mem.eql(u8, name.?, open.name)) {
                     p.idx += 1;
                     break;
+                } else {
+                    // A closer naming a different group stays prose inside
+                    // this one (the degradation rule) — but silently, it
+                    // reads like data loss; say what happened.
+                    try p.warnings.append(arena, try std.fmt.allocPrint(
+                        arena,
+                        "group '{s}': mismatched closer '// end {s}' treated as prose",
+                        .{ groupLabel(open.name), name.? },
+                    ));
                 },
                 .open => {}, // a nested group; `next()` below recurses into it
             };
@@ -700,7 +765,14 @@ const Parser = struct {
     /// all: a repeated layout command in the chain still strips and warns).
     fn parseSingleCommand(p: *Parser, cmd: Command) Allocator.Error!?Block {
         const arena = p.arena;
+        if (p.depth >= max_nest_depth) {
+            p.warnDepth();
+            return null; // the line stays prose, like any unbound command
+        }
+        p.depth += 1;
+        defer p.depth -= 1;
         const saved_idx = p.idx;
+        const saved_warnings = p.warnings.items.len;
         var j = p.idx + 1;
         while (j < p.lines.len and isBlank(p.lines[j])) j += 1;
         if (j >= p.lines.len) return null;
@@ -729,6 +801,9 @@ const Parser = struct {
         const inner = if (parseSingleCommandLine(nt)) |next_cmd|
             (try p.parseSingleCommand(next_cmd)) orelse {
                 p.idx = saved_idx;
+                // The whole chain reverts to prose — drop any warnings
+                // appended above on the assumption that it would bind.
+                p.warnings.shrinkRetainingCapacity(saved_warnings);
                 return null;
             }
         else
@@ -757,6 +832,13 @@ const Parser = struct {
                 try p.warnStrippedLayout(name, @tagName(tag));
             }
         }
+    }
+
+    /// Note that the nesting cap was hit; `parse` appends the one warning at
+    /// the end (appending here would warn per hit, and a reverted `/cmd()`
+    /// chain's warning-list shrink could silently swallow it).
+    fn warnDepth(p: *Parser) void {
+        p.depth_warned = true;
     }
 
     fn warnStrippedLayout(p: *Parser, name: ?[]const u8, cmd: []const u8) Allocator.Error!void {
@@ -906,7 +988,14 @@ fn flushFlow(
     items: *std.ArrayList(Item),
     tail: *std.ArrayList(Item.Tail),
 ) Allocator.Error!void {
-    if (flow.items.len == 0 or items.items.len == 0) return;
+    if (items.items.len == 0) {
+        // No open item to flush into (unreachable today — flow only fills
+        // after an item opens). Drop the run: leaving it buffered would
+        // splice it into the *next* item's text.
+        flow.clearRetainingCapacity();
+        return;
+    }
+    if (flow.items.len == 0) return;
     const inls = try parseFlowRun(arena, flow.items);
     flow.clearRetainingCapacity();
     if (tail.items.len == 0) {
@@ -914,6 +1003,15 @@ fn flushFlow(
     } else {
         try tail.append(arena, .{ .line = inls });
     }
+}
+
+/// Join a display-math content piece onto `buf` with one `\n` between
+/// non-empty pieces — empty opener/closer remainders contribute nothing, so
+/// `$$\nx\n$$` yields `x`, not `\nx\n`.
+fn appendMathPiece(arena: Allocator, buf: *std.ArrayList(u8), piece: []const u8) Allocator.Error!void {
+    if (piece.len == 0) return;
+    if (buf.items.len > 0) try buf.append(arena, '\n');
+    try buf.appendSlice(arena, piece);
 }
 
 fn isBlank(line: []const u8) bool {
@@ -1106,7 +1204,7 @@ fn parseGroupLine(t: []const u8) ?GroupLine {
     if (std.mem.eql(u8, rest, "--")) return .sep;
 
     var it = std.mem.tokenizeScalar(u8, rest, ' ');
-    const first = it.next() orelse return .bare;
+    const first = it.next().?; // rest is non-empty, so at least one token
     if (std.mem.eql(u8, first, "end")) {
         const name = it.next() orelse return .{ .end = null };
         if (it.next() != null) return null;
@@ -1174,6 +1272,20 @@ const Command = union(enum) {
     indent: usize,
 };
 
+/// The width the bare forms mean, and the range bounds that keep the two
+/// commands' shared field tellable-apart (`skinny_max_pct` is the divide:
+/// skinny ≤ 100 < wide — the disjoint-range invariant `hasCommand` reads).
+const skinny_default_pct = 75;
+const wide_default_pct = 125;
+const skinny_max_pct = 100;
+const wide_max_pct = 200;
+
+/// Argument caps for the unbounded-looking commands (provisional defaults,
+/// like skinny's 75). Anything past them is no real layout, and the caps keep
+/// emitter arithmetic (`indent * 2`) far from overflow.
+const max_grid_cols = 12;
+const max_indent_steps = 8;
+
 /// Parse one `word(args)` token, null if it isn't a recognized command with
 /// valid args (which deactivates the whole line — strict, so typos are seen).
 fn parseCommand(tok: []const u8) ?Command {
@@ -1183,21 +1295,21 @@ fn parseCommand(tok: []const u8) ?Command {
     const args = tok[paren + 1 .. tok.len - 1];
     if (std.mem.eql(u8, word, "grid")) {
         const n = std.fmt.parseInt(usize, args, 10) catch return null;
-        if (n == 0) return null;
+        if (n == 0 or n > max_grid_cols) return null;
         return .{ .grid = n };
     }
     if (std.mem.eql(u8, word, "skinny")) {
-        if (args.len == 0) return .{ .skinny = 75 }; // bare skinny(): the default width
+        if (args.len == 0) return .{ .skinny = skinny_default_pct }; // bare skinny(): the default width
         if (args[args.len - 1] != '%') return null;
         const n = std.fmt.parseInt(usize, args[0 .. args.len - 1], 10) catch return null;
-        if (n == 0 or n > 100) return null;
+        if (n == 0 or n > skinny_max_pct) return null;
         return .{ .skinny = n };
     }
     if (std.mem.eql(u8, word, "wide")) {
-        if (args.len == 0) return .{ .wide = 125 }; // bare wide(): the default width
+        if (args.len == 0) return .{ .wide = wide_default_pct }; // bare wide(): the default width
         if (args[args.len - 1] != '%') return null;
         const n = std.fmt.parseInt(usize, args[0 .. args.len - 1], 10) catch return null;
-        if (n <= 100 or n > 200) return null; // 100% and below is skinny's range
+        if (n <= skinny_max_pct or n > wide_max_pct) return null; // 100% and below is skinny's range
         return .{ .wide = n };
     }
     if (std.mem.eql(u8, word, "center")) {
@@ -1220,7 +1332,7 @@ fn parseCommand(tok: []const u8) ?Command {
     if (std.mem.eql(u8, word, "indent")) {
         if (args.len == 0) return .{ .indent = 1 }; // bare indent(): one step
         const n = std.fmt.parseInt(usize, args, 10) catch return null;
-        if (n == 0) return null;
+        if (n == 0 or n > max_indent_steps) return null;
         return .{ .indent = n };
     }
     return null;
@@ -1268,8 +1380,8 @@ fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
         .grid => attrs.columns != null,
         // The disjoint-range invariant (see `Command.wide`): one field, and
         // which side of 100 the value sits on names the command that wrote it.
-        .skinny => attrs.width_pct != null and attrs.width_pct.? <= 100,
-        .wide => attrs.width_pct != null and attrs.width_pct.? > 100,
+        .skinny => attrs.width_pct != null and attrs.width_pct.? <= skinny_max_pct,
+        .wide => attrs.width_pct != null and attrs.width_pct.? > skinny_max_pct,
         .center => attrs.centered,
         .color => attrs.text_color != null,
         .collapse => attrs.collapse != null,
@@ -1332,6 +1444,9 @@ const CiteResolver = struct {
     p: *Parser,
     /// The adopted group's entry items (the numbered list), or empty.
     entries: []Item = &.{},
+    /// The first entry's number — the entry list's `start`, so marks,
+    /// anchors, and previews all agree with the numbers the reader sees.
+    first: u32 = 1,
     have_group: bool = false,
     /// Keys lifted from entries, in entry order (linear scan — entry lists
     /// are small).
@@ -1385,18 +1500,23 @@ const CiteResolver = struct {
         };
         r.have_group = true;
         r.entries = l.items;
-        if (l.start != 1) {
+        r.first = @intCast(l.start);
+        // `collapse()` on the same opener would swallow the bibliography the
+        // marks link into — the citations element wins, the collapse drops.
+        if (b.attrs.collapse != null) {
+            clearCommand(&b.attrs, .collapse);
             try r.p.warnings.append(arena, try std.fmt.allocPrint(
                 arena,
-                "citations: the entry list starts at {d}; entries still bind as 1..{d}",
-                .{ l.start, l.items.len },
+                "group '{s}': collapse ignored on the citations group",
+                .{groupLabel(g.name)},
             ));
         }
         r.back = try arena.alloc(std.ArrayList(u32), l.items.len);
         for (r.back) |*sites| sites.* = .empty;
-        for (l.items, 1..) |*item, num| {
-            item.cite_entry = @intCast(num);
-            try r.liftKey(item, @intCast(num));
+        for (l.items, 0..) |*item, i| {
+            const num: u32 = @intCast(l.start + i);
+            item.cite_entry = num;
+            try r.liftKey(item, num);
         }
     }
 
@@ -1412,7 +1532,14 @@ const CiteResolver = struct {
         const ref = parseCiteRef(s[1..close]) orelse return;
         if (ref.num != 0) return; // all digits — not a key
         if (close + 1 < s.len and s[close + 1] != ' ') return;
-        item.text[0] = .{ .text = std.mem.trimStart(u8, s[close + 1 ..], " ") };
+        const rest = std.mem.trimStart(u8, s[close + 1 ..], " ");
+        if (rest.len == 0) {
+            // Nothing left of the node — drop it rather than keeping an
+            // empty `.text` in the item.
+            item.text = item.text[1..];
+        } else {
+            item.text[0] = .{ .text = rest };
+        }
         for (r.keys.items) |k| {
             if (std.mem.eql(u8, k.key, ref.raw)) {
                 try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
@@ -1477,31 +1604,42 @@ const CiteResolver = struct {
             return;
         }
         var preview: std.ArrayList(u8) = .empty;
-        for (span.refs) |*ref| {
+        for (span.refs, 0..) |*ref, ri| {
             if (ref.num == 0) {
+                // A key ref, or a number no u32 holds (`parseCiteRef` left
+                // it unresolved) — both miss the same way.
                 ref.num = r.lookupKey(ref.raw) orelse {
-                    try r.p.warnings.append(arena, try std.fmt.allocPrint(
-                        arena,
-                        "cite({s}): unknown key",
-                        .{ref.raw},
-                    ));
+                    try r.warnNoEntry(ref.raw);
                     continue;
                 };
-            } else if (ref.num > r.entries.len) {
-                try r.p.warnings.append(arena, try std.fmt.allocPrint(
-                    arena,
-                    "cite({s}): only {d} entries",
-                    .{ ref.raw, r.entries.len },
-                ));
+            } else if (ref.num < r.first or ref.num - r.first >= r.entries.len) {
+                try r.warnNoEntry(ref.raw);
                 ref.num = 0;
                 continue;
             }
-            try r.back[ref.num - 1].append(arena, span.site);
+            // A mark citing the same entry twice keeps one backlink and one
+            // preview line; the sup still shows what the author wrote.
+            const dup = for (span.refs[0..ri]) |prev| {
+                if (prev.num == ref.num) break true;
+            } else false;
+            if (dup) continue;
+            try r.back[ref.num - r.first].append(arena, span.site);
             if (preview.items.len > 0) try preview.append(arena, '\n');
             try preview.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}. ", .{ref.num}));
-            try previewEntry(arena, &preview, r.entries[ref.num - 1]);
+            try previewEntry(arena, &preview, r.entries[ref.num - r.first]);
         }
         span.preview = try preview.toOwnedSlice(arena);
+    }
+
+    /// The one degradation message for every unresolvable ref — unknown key,
+    /// out-of-range number, overflowed number — so same-looking mistakes
+    /// degrade the same way.
+    fn warnNoEntry(r: *CiteResolver, raw: []const u8) Allocator.Error!void {
+        try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
+            r.p.arena,
+            "cite({s}): no matching entry",
+            .{raw},
+        ));
     }
 
     fn lookupKey(r: *CiteResolver, key: []const u8) ?u32 {
@@ -1659,14 +1797,16 @@ fn appendCell(gpa: Allocator, cells: *std.ArrayList([]const u8), raw: []const u8
 }
 
 /// Read per-column alignment from the separator row (`:--`, `:-:`, `--:`).
-fn parseAligns(gpa: Allocator, aligns: *std.ArrayList(Align), sep: []const u8) !void {
-    var cells: std.ArrayList([]const u8) = .empty;
-    defer cells.deinit(gpa);
-    try splitCells(gpa, &cells, sep);
-    for (cells.items) |cell| {
+/// The row already passed `isTableStart`'s separator check, and separators
+/// can hold no escaped pipes — the simple boundary strip + split is the
+/// whole job (body rows need `splitCells`' escape handling; this row can't).
+fn parseAligns(arena: Allocator, aligns: *std.ArrayList(Align), sep: []const u8) Allocator.Error!void {
+    var it = std.mem.splitScalar(u8, stripBoundaryPipes(std.mem.trim(u8, sep, " ")), '|');
+    while (it.next()) |raw| {
+        const cell = std.mem.trim(u8, raw, " ");
         const left = cell.len > 0 and cell[0] == ':';
         const right = cell.len > 0 and cell[cell.len - 1] == ':';
-        try aligns.append(gpa, if (left and right) .center else if (right) .right else if (left) .left else .none);
+        try aligns.append(arena, if (left and right) .center else if (right) .right else if (left) .left else .none);
     }
 }
 
@@ -1686,55 +1826,60 @@ fn parseLink(s: []const u8) ?Link {
     };
 }
 
+const PostfixSpan = struct { text: []const u8, args: []const u8, consumed: usize };
+
+/// The shared mechanics of a `[text].word(args)` postfix span (`.color`,
+/// `.cite`): the same first-`]` scan as `parseLink` — which is the
+/// restriction story: a link's `[label](url)` wins the `[` first, so a
+/// postfix span never attaches to a link, and spans don't nest (the earliest
+/// `].word(` closes the span; the rest stays literal). The caller validates
+/// `args`; any failure there deactivates the whole span back to prose.
+fn parsePostfixSpan(s: []const u8, comptime word: []const u8) ?PostfixSpan {
+    const marker = "." ++ word ++ "(";
+    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
+    if (!std.mem.startsWith(u8, s[close_bracket + 1 ..], marker)) return null;
+    const args_start = close_bracket + 1 + marker.len;
+    const close_paren = std.mem.indexOfScalarPos(u8, s, args_start, ')') orelse return null;
+    return .{
+        .text = s[1..close_bracket],
+        .args = s[args_start..close_paren],
+        .consumed = close_paren + 1,
+    };
+}
+
 const ColorSpan = struct { text: []const u8, color: TextColor, consumed: usize };
 
 /// Parse `[text].color(role)` starting at the leading `[`
-/// (`docs/reference/design/006-color.md`). Same first-`]` scan as `parseLink` — which
-/// is the restriction story: a link's `[label](url)` wins the `[` first, so
-/// `.color()` never attaches to a link, and spans don't nest (the earliest
-/// `].color(` closes the span; the rest stays literal). Unknown roles fail
-/// the parse and stay literal prose.
+/// (`docs/reference/design/006-color.md`). Unknown roles fail the parse and
+/// stay literal prose; empty span text is rejected, matching `.cite`.
 fn parseColorSpan(s: []const u8) ?ColorSpan {
-    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
-    const suffix = s[close_bracket + 1 ..];
-    if (!std.mem.startsWith(u8, suffix, ".color(")) return null;
-    const args_start = close_bracket + 1 + ".color(".len;
-    const close_paren = std.mem.indexOfScalarPos(u8, s, args_start, ')') orelse return null;
-    const role = TextColor.parse(s[args_start..close_paren]) orelse return null;
-    return .{
-        .text = s[1..close_bracket],
-        .color = role,
-        .consumed = close_paren + 1,
-    };
+    const span = parsePostfixSpan(s, "color") orelse return null;
+    if (span.text.len == 0) return null;
+    const role = TextColor.parse(span.args) orelse return null;
+    return .{ .text = span.text, .color = role, .consumed = span.consumed };
 }
 
 const CiteSpanParse = struct { text: []const u8, refs: []CiteRef, consumed: usize };
 
 /// Parse `[text].cite(refs)` starting at the leading `[` — the citation mark
-/// (`docs/reference/design/016-citations.md`), sharing the color span's postfix
-/// mechanics: the same first-`]` scan (a link always wins its `[`; spans
-/// don't nest — the earliest `].cite(` closes the span), and any malformed
-/// part fails the whole parse so the text stays literal prose. `refs` is one
-/// or more comma-separated refs, spaces allowed around commas. Empty span
-/// text (`[].cite(…)`) is rejected — reserved for a possible future
+/// (`docs/reference/design/016-citations.md`). `refs` is one or more
+/// comma-separated refs, spaces allowed around commas; any malformed ref
+/// fails the whole parse so the text stays literal prose. Empty span text
+/// (`[].cite(…)`) is rejected — reserved for a possible future
 /// point-citation form.
 fn parseCiteSpan(arena: Allocator, s: []const u8) Allocator.Error!?CiteSpanParse {
-    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
-    if (close_bracket == 1) return null;
-    const suffix = s[close_bracket + 1 ..];
-    if (!std.mem.startsWith(u8, suffix, ".cite(")) return null;
-    const args_start = close_bracket + 1 + ".cite(".len;
-    const close_paren = std.mem.indexOfScalarPos(u8, s, args_start, ')') orelse return null;
+    const span = parsePostfixSpan(s, "cite") orelse return null;
+    if (span.text.len == 0) return null;
     var refs: std.ArrayList(CiteRef) = .empty;
-    var it = std.mem.splitScalar(u8, s[args_start..close_paren], ',');
+    var it = std.mem.splitScalar(u8, span.args, ',');
     while (it.next()) |part| {
         const ref = parseCiteRef(std.mem.trim(u8, part, " ")) orelse return null;
         try refs.append(arena, ref);
     }
     return .{
-        .text = s[1..close_bracket],
+        .text = span.text,
         .refs = try refs.toOwnedSlice(arena),
-        .consumed = close_paren + 1,
+        .consumed = span.consumed,
     };
 }
 
@@ -1758,7 +1903,11 @@ fn parseCiteRef(tok: []const u8) ?CiteRef {
         }
     }
     if (all_digits) {
-        const n = std.fmt.parseInt(u32, tok, 10) catch return null;
+        // `0` is grammar-invalid (entry numbers are 1-based) and fails the
+        // mark; a number too big for u32 is grammatically fine but can match
+        // nothing — keep that ref unresolved (num 0) so it degrades like an
+        // out-of-range number instead of deactivating the whole mark.
+        const n = std.fmt.parseInt(u32, tok, 10) catch return .{ .raw = tok };
         if (n == 0) return null;
         return .{ .raw = tok, .num = n };
     }
@@ -1780,8 +1929,9 @@ fn startsWithUrlScheme(s: []const u8) bool {
 
 /// True if `url` has anything beyond the bare scheme (`https://` alone is prose).
 fn hasUrlBody(url: []const u8) bool {
-    const scheme_len: usize = if (std.mem.startsWith(u8, url, "https://")) 8 else 7;
-    return url.len > scheme_len;
+    if (std.mem.startsWith(u8, url, "https://")) return url.len > "https://".len;
+    if (std.mem.startsWith(u8, url, "http://")) return url.len > "http://".len;
+    return false;
 }
 
 /// Punctuation excluded from the tail of a bare URL: in `see https://z.dev.`
@@ -1868,6 +2018,27 @@ fn findClosingRun(text: []const u8, from: usize, marker: []const u8) ?usize {
     return null;
 }
 
+/// The length of the run of `ch` starting at `at`.
+fn runLen(text: []const u8, at: usize, ch: u8) usize {
+    var n: usize = 0;
+    while (at + n < text.len and text[at + n] == ch) n += 1;
+    return n;
+}
+
+/// The start of the next run of *exactly* `len` backticks at or after `from`
+/// (GFM code-span closer matching — longer/shorter runs are skipped whole).
+fn findBacktickClose(text: []const u8, from: usize, len: usize) ?usize {
+    var at = from;
+    while (at < text.len) {
+        if (text[at] == '`') {
+            const n = runLen(text, at, '`');
+            if (n == len) return at;
+            at += n;
+        } else at += 1;
+    }
+    return null;
+}
+
 /// The closing `$` of an inline-math span opened at `open`, or null if this `$`
 /// doesn't open one (docs/reference/design/014-flanking.md): the opener must be followed
 /// by a non-space character, the closer preceded by one and not followed by a
@@ -1907,12 +2078,23 @@ fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
             continue;
         }
 
-        // `inline code` — highest precedence, no nested parsing.
+        // `inline code` — highest precedence, no nested parsing. GFM run
+        // matching: an opener run of N backticks closes at the next run of
+        // exactly N, so ``a`b`` embeds a backtick; a run with no matching
+        // closer stays literal. One space strips from each end when both
+        // are present and the body isn't all spaces (the `` ` `` idiom).
         if (c == '`') {
-            if (std.mem.indexOfScalarPos(u8, text, i + 1, '`')) |end| {
+            const open_len = runLen(text, i, '`');
+            if (findBacktickClose(text, i + open_len, open_len)) |close| {
                 try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .code = text[i + 1 .. end] });
-                i = end + 1;
+                var body = text[i + open_len .. close];
+                if (body.len >= 2 and body[0] == ' ' and body[body.len - 1] == ' ' and
+                    std.mem.trim(u8, body, " ").len > 0)
+                {
+                    body = body[1 .. body.len - 1];
+                }
+                try out.append(arena, .{ .code = body });
+                i = close + open_len;
                 continue;
             }
         }
@@ -3504,4 +3686,335 @@ test "indent is non-layout: indent-in-indent nests without stripping" {
     const inner = d.blocks[0].kind.group.sections[0][0];
     try testing.expectEqual(@as(usize, 2), inner.attrs.indent);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
+}
+
+// ---- v0.1.0 fixes ------------------------------------------------------------
+
+test "reverted /cmd() chains leave no warnings behind" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // Both chains end at EOF, so every line reverts to prose — the grid
+    // mismatch / nested-skinny warnings appended mid-chain must revert too.
+    const d1 = try parse(arena_state.allocator(), "/grid(2)\n/color(accent)", .empty);
+    try testing.expectEqual(@as(usize, 2), d1.blocks.len);
+    try testing.expectEqual(@as(usize, 0), d1.warnings.len);
+    const d2 = try parse(arena_state.allocator(), "/skinny(50%)\n/skinny(60%)\n/color(accent)", .empty);
+    try testing.expectEqual(@as(usize, 3), d2.blocks.len);
+    try testing.expectEqual(@as(usize, 0), d2.warnings.len);
+}
+
+test "nesting cap: deep group openers degrade to prose instead of overflowing" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var src: std.ArrayList(u8) = .empty;
+    for (0..200) |_| try src.appendSlice(arena, "// g\n");
+    try src.appendSlice(arena, "x\n");
+    const d = try parse(arena, src.items, .empty);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "nesting deeper than") != null);
+    // The first 64 levels are real groups; walk down and confirm.
+    var b = d.blocks[0];
+    var depth: usize = 0;
+    while (b.kind == .group) : (depth += 1) {
+        const sec = b.kind.group.sections[0];
+        if (sec.len == 0) break;
+        b = sec[0];
+    }
+    try testing.expectEqual(@as(usize, max_nest_depth), depth);
+}
+
+test "nesting cap: deep lists flatten instead of overflowing" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var src: std.ArrayList(u8) = .empty;
+    for (0..200) |lvl| {
+        try src.appendNTimes(arena, ' ', lvl * 2);
+        try src.appendSlice(arena, "- a\n");
+    }
+    const d = try parse(arena, src.items, .empty);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+}
+
+test "nesting cap: an over-deep /cmd() chain reverts to prose with the warning intact" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var src: std.ArrayList(u8) = .empty;
+    // color is non-layout (nests freely), so the only expected warning is
+    // the cap's — a layout command would add its own strip warnings.
+    for (0..200) |_| try src.appendSlice(arena, "/color(accent)\n");
+    try src.appendSlice(arena, "text\n");
+    const d = try parse(arena, src.items, .empty);
+    // The chain can't fully bind past the cap, so it reverts to prose —
+    // but the cap warning survives the revert.
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "nesting deeper than") != null);
+}
+
+test "citations: entry numbering follows the list's start" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// refs citations()\n\n3. [a] First.\n4. Second.\n\n//\n\nClaim [x].cite(3) and [y].cite(a).", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    const list = d.blocks[0].kind.group.sections[0][0].kind.list;
+    try testing.expectEqual(@as(u32, 3), list.items[0].cite_entry);
+    try testing.expectEqual(@as(u32, 4), list.items[1].cite_entry);
+    const para = d.blocks[1].kind.paragraph;
+    // `.cite(3)` targets the *visible* entry 3, and the key ref agrees.
+    try testing.expectEqual(@as(u32, 3), para[1].cite_span.refs[0].num);
+    try testing.expectEqual(@as(u32, 3), para[3].cite_span.refs[0].num);
+    try testing.expectEqual(@as(usize, 2), list.items[0].cite_sites.len);
+}
+
+test "citations: out-of-range, overflowing, and unknown refs all degrade per-ref" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// refs citations()\n\n1. Only.\n\n//\n\n[a].cite(9) [b].cite(99999999999) [c].cite(nope, 1)", .empty);
+    try testing.expectEqual(@as(usize, 3), d.warnings.len);
+    for (d.warnings) |w| try testing.expect(std.mem.indexOf(u8, w, "no matching entry") != null);
+    const para = d.blocks[1].kind.paragraph;
+    try testing.expectEqual(@as(u32, 0), para[0].cite_span.refs[0].num);
+    try testing.expectEqual(@as(u32, 0), para[2].cite_span.refs[0].num);
+    // The mixed mark keeps its resolved ref.
+    try testing.expectEqual(@as(u32, 0), para[4].cite_span.refs[0].num);
+    try testing.expectEqual(@as(u32, 1), para[4].cite_span.refs[1].num);
+}
+
+test "citations: duplicate refs in one mark register one backlink" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// refs citations()\n\n1. Only.\n\n//\n\n[x].cite(1,1)", .empty);
+    const list = d.blocks[0].kind.group.sections[0][0].kind.list;
+    try testing.expectEqual(@as(usize, 1), list.items[0].cite_sites.len);
+}
+
+test "citations: a key-only entry drops its emptied text node" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// refs citations()\n\n1. [k] *Styled.*\n\n//\n\n[x].cite(k)", .empty);
+    const item = d.blocks[0].kind.group.sections[0][0].kind.list.items[0];
+    // The `[k] ` prefix lifted; what remains starts with the emphasis, not
+    // an empty text node.
+    try testing.expect(item.text[0] == .em);
+}
+
+test "citations() absorbs a collapse() on the same opener with a warning" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// refs citations() collapse()\n\n1. Only.\n\n//\n\n[x].cite(1)", .empty);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "collapse ignored") != null);
+    try testing.expect(d.blocks[0].attrs.citations);
+    try testing.expectEqual(@as(?Collapse, null), d.blocks[0].attrs.collapse);
+}
+
+test "unterminated $$ reverts to a paragraph instead of swallowing the document" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "$$\nx\n\nafter", .empty);
+    try testing.expectEqual(@as(usize, 2), d.blocks.len);
+    try testing.expect(d.blocks[0].kind == .paragraph);
+    try testing.expect(d.blocks[1].kind == .paragraph);
+}
+
+test "multi-line $$ body carries no boundary newlines" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "$$\nE = mc^2\n$$", .empty);
+    try testing.expectEqualStrings("E = mc^2", d.blocks[0].kind.math);
+}
+
+test "$$$ is not a display-math opener" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "$$$x\ny$$", .empty);
+    try testing.expect(d.blocks[0].kind == .paragraph);
+}
+
+test "fence info string: tabs separate the language token too" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "```zig\ttest\ncode\n```", .empty);
+    try testing.expectEqualStrings("zig", d.blocks[0].kind.code.lang);
+}
+
+test "backtick runs match GFM: double backticks embed, unmatched stay literal" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const embedded = try parseInlines(arena, "``a`b``");
+    try testing.expectEqualStrings("a`b", embedded[0].code);
+    const spaced = try parseInlines(arena, "`` ` ``");
+    try testing.expectEqualStrings("`", spaced[0].code);
+    // A run with no matching closer is literal text, never an empty span.
+    const bare = try parseInlines(arena, "a `` b");
+    try testing.expectEqualStrings("a `` b", bare[0].text);
+}
+
+test "mismatched group closer warns and stays prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// outer\n\nx\n\n// end other\n\n// end outer", .empty);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "mismatched closer") != null);
+    const sections = d.blocks[0].kind.group.sections;
+    try testing.expectEqual(@as(usize, 2), sections[0].len); // x + the prose closer
+}
+
+test "grid and indent arguments are range-capped" {
+    try testing.expect(parseCommand("grid(12)") != null);
+    try testing.expect(parseCommand("grid(13)") == null);
+    try testing.expect(parseCommand("indent(8)") != null);
+    try testing.expect(parseCommand("indent(9)") == null);
+    try testing.expect(parseCommand("indent(18446744073709551615)") == null);
+    try testing.expect(parseCommand("grid(99999999999999999999)") == null);
+}
+
+test "empty postfix spans stay literal for color and cite alike" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const color = try parseInlines(arena, "[].color(accent)");
+    try testing.expectEqualStrings("[].color(accent)", color[0].text);
+    const cite = try parseInlines(arena, "[].cite(1)");
+    try testing.expectEqualStrings("[].cite(1)", cite[0].text);
+}
+
+test "hasUrlBody checks the scheme by content" {
+    try testing.expect(!hasUrlBody("https://"));
+    try testing.expect(!hasUrlBody("http://"));
+    try testing.expect(hasUrlBody("http://x"));
+    try testing.expect(hasUrlBody("https://x"));
+}
+
+// ---- v0.1.0 test expansion ---------------------------------------------------
+
+test "input edges: empty, whitespace-only, CRLF, no trailing newline" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const empty = try parse(arena, "", .empty);
+    try testing.expectEqual(@as(usize, 0), empty.blocks.len);
+    const blank = try parse(arena, "  \n\t\n", .empty);
+    try testing.expectEqual(@as(usize, 0), blank.blocks.len);
+    const crlf = try parse(arena, "# T\r\n\r\nbody\r\n", .empty);
+    try testing.expectEqualStrings("T", crlf.blocks[0].kind.heading.inlines[0].text);
+    try testing.expectEqualStrings("body", crlf.blocks[1].kind.paragraph[0].text);
+    const no_nl = try parse(arena, "last line", .empty);
+    try testing.expectEqualStrings("last line", no_nl.blocks[0].kind.paragraph[0].text);
+}
+
+test "an unterminated fence runs to end of document" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "```zig\ncode\nmore", .empty);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    try testing.expectEqualStrings("code\nmore\n", d.blocks[0].kind.code.text);
+}
+
+test "table rows pad and truncate to the header's column count" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |", .empty);
+    const t = d.blocks[0].kind.table;
+    try testing.expectEqual(@as(usize, 2), t.header.len);
+    try testing.expectEqual(@as(usize, 2), t.rows[0].len); // padded
+    try testing.expectEqual(@as(usize, 2), t.rows[1].len); // truncated
+    try testing.expectEqual(@as(usize, 0), t.rows[0][1].len); // the pad is empty
+}
+
+test "escaped pipes unescape in body rows too" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "| h |\n|---|\n| a \\| b |", .empty);
+    try testing.expectEqualStrings("a | b", d.blocks[0].kind.table.rows[0][0][0].text);
+}
+
+test "a nested > inside a quote stays literal text" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "> outer\n> > inner", .empty);
+    const q = d.blocks[0].kind.quote;
+    // pinned: no nested-quote model — the inner `>` joins the flow as text
+    try testing.expectEqual(@as(usize, 1), q.paras.len);
+    try testing.expectEqualStrings("outer > inner", q.paras[0][0].text);
+}
+
+test "three list levels nest and dedent" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "- a\n  - b\n    - c\n  - b2\n- a2", .empty);
+    const l = d.blocks[0].kind.list;
+    try testing.expectEqual(@as(usize, 2), l.items.len);
+    const l2 = l.items[0].tail[0].list;
+    try testing.expectEqual(@as(usize, 2), l2.items.len);
+    const l3 = l2.items[0].tail[0].list;
+    try testing.expectEqualStrings("c", l3.items[0].text[0].text);
+    try testing.expectEqualStrings("b2", l2.items[1].text[0].text);
+    try testing.expectEqualStrings("a2", l.items[1].text[0].text);
+}
+
+test "tab indentation nests a list (one tab = one level)" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "- a\n\t- b", .empty);
+    const l = d.blocks[0].kind.list;
+    try testing.expectEqualStrings("b", l.items[0].tail[0].list.items[0].text[0].text);
+}
+
+test "text after a nested list lazily continues the deepest item" {
+    // Pins the reason `Item.Tail.line` never occurs in practice: lazy
+    // continuation is indent-agnostic, so a trailing line always joins the
+    // innermost open item rather than falling back to the parent as a
+    // `.line` segment. (The variant stays in the model for now — see the
+    // v0.1.0 review notes.)
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "- a\n  - sub\n  trailing", .empty);
+    const item = d.blocks[0].kind.list.items[0];
+    try testing.expectEqual(@as(usize, 1), item.tail.len);
+    const sub = item.tail[0].list.items[0];
+    try testing.expectEqualStrings("sub trailing", sub.text[0].text);
+}
+
+test "citation marks resolve in every flowing context" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "# Head [h].cite(1)\n\n> Quote [q].cite(1)\n\n- Item [i].cite(1)\n\n| Cell [c].cite(1) |\n|---|\n\n// refs citations()\n\n1. Entry.\n\n//", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    const entry = d.blocks[4].kind.group.sections[0][0].kind.list.items[0];
+    // all four marks registered backlinks
+    try testing.expectEqual(@as(usize, 4), entry.cite_sites.len);
+}
+
+test "a citations() group nested inside a plain group still adopts" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// outer\n\n// refs citations()\n\n1. Entry.\n\n// end refs\n\n// end outer\n\n[x].cite(1)", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    const para = d.blocks[1].kind.paragraph;
+    try testing.expectEqual(@as(u32, 1), para[0].cite_span.refs[0].num);
+}
+
+test "key refs resolve regardless of document order" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // the mark precedes the group; resolution runs at parse end
+    const d = try parse(arena_state.allocator(),
+        "Claim [x].cite(smith).\n\n// refs citations()\n\n1. [smith] Smith 2024.\n\n//", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(u32, 1), d.blocks[0].kind.paragraph[1].cite_span.refs[0].num);
 }

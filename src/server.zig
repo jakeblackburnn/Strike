@@ -5,15 +5,18 @@
 //! known static-asset extensions are read from the content directory per
 //! request, so `![alt](img.png)` works while serving.
 //!
-//! This is the one file where socket I/O lives. It must never be imported by
-//! `project.zig`/`site.zig`/`shell.zig` — `build.zig` `@import`s those at
-//! configure time and has to stay `std.Build`-safe.
+//! This is the one file where socket I/O lives, as a matter of layering
+//! policy: `project.zig`/`site.zig`/`shell.zig` never import it, so the
+//! content pipeline stays socket-free — reusable by `strike build`, by a
+//! future PDF backend, and from a `std.Build` context should configure-time
+//! export ever return.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const project = @import("project.zig");
 const site = @import("site.zig");
 const shell = @import("shell.zig");
+const escapeAttrInto = @import("html.zig").escapeAttrInto;
 const net = std.Io.net;
 const Allocator = std.mem.Allocator;
 
@@ -50,11 +53,9 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
     // Kept open for static-asset reads; for a single file, its parent dir (so
     // images next to the previewed file resolve too).
     const assets: ?std.Io.Dir = switch (opts.target) {
-        .dir => |d| std.Io.Dir.cwd().openDir(io, d, .{ .iterate = true }) catch |err| return err,
+        .dir => |d| try std.Io.Dir.cwd().openDir(io, d, .{ .iterate = true }),
         .file => |f| std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(f) orelse ".", .{}) catch null,
     };
-
-    const not_found = try buildResponse(arena, "404 Not Found", "text/html; charset=utf-8", not_found_body);
 
     const address = try net.IpAddress.parse(opts.host, opts.port);
     var server = try address.listen(io, .{ .reuse_address = true });
@@ -71,6 +72,7 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
         const loaded = try loadTarget(io, arena, opts.target);
         var routes: std.ArrayList(Route) = .empty;
         try buildRoutes(arena, &routes, loaded, false);
+        const not_found = try buildNotFound(arena, loaded.base, false);
         for (routes.items) |r| std.debug.print("  http://{s}:{d}{s}\n", .{ opts.host, opts.port, r.path });
         if (opts.open) openBrowser(io, arena, opts, loaded.base);
         while (true) {
@@ -87,8 +89,11 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
     // Watch mode: each accepted connection first checks the content
     // fingerprint and rebuilds the whole generation on change. The reload
     // script's ~400ms polling of /__strike/gen is what drives the checks, so
-    // edits appear even when nobody manually refreshes.
+    // edits appear even when nobody manually refreshes — but the recursive
+    // stat walk is throttled, so a page full of asset requests (or several
+    // polling tabs) doesn't re-walk the tree per connection.
     var gen = try buildGeneration(gpa, io, opts.target, 1);
+    var last_check = std.Io.Timestamp.now(io, .awake);
     for (gen.routes) |r| std.debug.print("  http://{s}:{d}{s}\n", .{ opts.host, opts.port, r.path });
     if (opts.open) openBrowser(io, arena, opts, gen.base);
     while (true) {
@@ -96,25 +101,34 @@ pub fn run(arena: Allocator, gpa: Allocator, io: std.Io, opts: Options) !void {
             std.debug.print("accept error: {s}\n", .{@errorName(err)});
             continue;
         };
-        const fp = fingerprint(io, opts.target);
-        if (fp != gen.fingerprint) {
-            if (buildGeneration(gpa, io, opts.target, gen.id + 1)) |new_gen| {
-                var old = gen;
-                gen = new_gen;
-                old.arena.deinit();
-                std.debug.print("strike: content changed — reloaded (generation {d})\n", .{gen.id});
-            } else |err| {
-                // Keep serving the old generation; a later change (e.g. the
-                // author fixing the problem) moves the fingerprint again.
-                gen.fingerprint = fp;
-                std.debug.print("strike: reload failed: {s} (still serving generation {d})\n", .{ @errorName(err), gen.id });
+        const now = std.Io.Timestamp.now(io, .awake);
+        if (now.nanoseconds - last_check.nanoseconds >= fingerprint_interval_ms * std.time.ns_per_ms) {
+            last_check = now;
+            const fp = fingerprint(io, opts.target);
+            if (fp != gen.fingerprint) {
+                if (buildGeneration(gpa, io, opts.target, gen.id + 1)) |new_gen| {
+                    var old = gen;
+                    gen = new_gen;
+                    old.arena.deinit();
+                    std.debug.print("strike: content changed — reloaded (generation {d})\n", .{gen.id});
+                } else |err| {
+                    // Keep serving the old generation; a later change (e.g.
+                    // the author fixing the problem) moves the fingerprint
+                    // again.
+                    gen.fingerprint = fp;
+                    std.debug.print("strike: reload failed: {s} (still serving generation {d})\n", .{ @errorName(err), gen.id });
+                }
             }
         }
-        serveConn(gpa, io, stream, gen.routes, assets, gen.base, not_found, gen.id) catch |err| {
+        serveConn(gpa, io, stream, gen.routes, assets, gen.base, gen.not_found, gen.id) catch |err| {
             std.debug.print("connection error: {s}\n", .{@errorName(err)});
         };
     }
 }
+
+/// Minimum gap between full fingerprint walks — comfortably under the reload
+/// script's 400ms poll, so a change is still noticed within one poll cycle.
+const fingerprint_interval_ms = 250;
 
 /// Best-effort `--open`: open the site's front page (base-aware) in the
 /// system default browser via the platform opener. Called after the listener
@@ -166,6 +180,9 @@ const Generation = struct {
     routes: []const Route,
     /// The site base path of this generation (a yaml edit can change it live).
     base: []const u8,
+    /// This generation's 404 — carries the reload script (a tab left on a
+    /// 404 must recover when the route appears) and the base-aware home link.
+    not_found: []const u8,
     id: u64,
     fingerprint: u64,
 };
@@ -183,7 +200,14 @@ fn buildGeneration(gpa: Allocator, io: std.Io, target: Target, id: u64) !Generat
     const loaded = try loadTarget(io, a, target);
     var routes: std.ArrayList(Route) = .empty;
     try buildRoutes(a, &routes, loaded, true);
-    return .{ .arena = arena, .routes = routes.items, .base = loaded.base, .id = id, .fingerprint = fp };
+    return .{
+        .arena = arena,
+        .routes = routes.items,
+        .base = loaded.base,
+        .not_found = try buildNotFound(a, loaded.base, true),
+        .id = id,
+        .fingerprint = fp,
+    };
 }
 
 /// Hash the target's file metadata (name + size + mtime, recursive, dotfiles
@@ -249,16 +273,16 @@ const Route = struct { path: []const u8, response: []const u8 };
 /// Build the route table from a loaded `Site` by rendering every page
 /// (`site.renderAll`: the `/` picker or root home, each project home, each
 /// document and folder page) and wrapping each into a cached HTTP response —
-/// with the live-reload script spliced in when `watch` is set.
-fn buildRoutes(gpa: Allocator, routes: *std.ArrayList(Route), loaded: project.Site, watch: bool) !void {
-    const pages = try site.renderAll(gpa, loaded);
+/// with the live-reload script spliced in when `watch` is set. `arena`
+/// follows `renderAll`'s never-free-piecemeal contract (the process arena,
+/// or a watch generation's — freed whole on swap).
+fn buildRoutes(arena: Allocator, routes: *std.ArrayList(Route), loaded: project.Site, watch: bool) !void {
+    const pages = try site.renderAll(arena, loaded);
     for (pages) |p| {
-        defer gpa.free(p.html);
-        const html = if (watch) try spliceReload(gpa, p.html) else p.html;
-        defer if (watch) gpa.free(html);
-        try routes.append(gpa, .{
+        const html = if (watch) try spliceReload(arena, p.html) else p.html;
+        try routes.append(arena, .{
             .path = p.route,
-            .response = try buildResponse(gpa, "200 OK", "text/html; charset=utf-8", html),
+            .response = try buildResponse(arena, "200 OK", "text/html; charset=utf-8", html),
         });
     }
 }
@@ -269,10 +293,19 @@ fn lookupRoute(routes: []const Route, path: []const u8) ?[]const u8 {
     return null;
 }
 
-const not_found_body =
-    \\<!doctype html><meta charset="utf-8"><title>404</title>
-    \\<h1>404 — not found</h1><p><a href="/">back to index</a></p>
-;
+/// Build the site's 404 response: the escape-hatch link points at the real
+/// front page (`base:`-aware, `site.homeHref`), and watch mode splices the
+/// reload script in so the page recovers like any other.
+fn buildNotFound(arena: Allocator, base: []const u8, watch: bool) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    errdefer aw.deinit();
+    const w = &aw.writer;
+    try w.writeAll("<!doctype html><meta charset=\"utf-8\"><title>404</title>\n<h1>404 — not found</h1><p><a href=\"");
+    try escapeAttrInto(w, site.homeHref(base));
+    try w.writeAll("\">back to index</a></p>");
+    const body = if (watch) try spliceReload(arena, aw.written()) else aw.written();
+    return buildResponse(arena, "404 Not Found", "text/html; charset=utf-8", body);
+}
 
 const method_not_allowed = "HTTP/1.0 405 Method Not Allowed\r\n" ++
     "Content-Type: text/plain; charset=utf-8\r\n" ++
@@ -300,11 +333,11 @@ fn buildResponse(gpa: Allocator, status: []const u8, content_type: []const u8, b
 
 // ---- connection handling --------------------------------------------------
 
-/// Handle one connection: read the request line, pick a response, then close.
-/// `base` is the site base path (stripped before asset lookups, since assets
-/// live at content-relative paths). `gen_id` is non-null only in watch mode,
-/// enabling the `/__strike/gen` generation-poll endpoint the reload script
-/// fetches.
+/// Handle one connection: read the request line, resolve it, then write and
+/// close. `base` is the site base path (stripped before asset lookups, since
+/// assets live at content-relative paths). `gen_id` is non-null only in watch
+/// mode, enabling the `/__strike/gen` generation-poll endpoint the reload
+/// script fetches.
 fn serveConn(gpa: Allocator, io: std.Io, stream: net.Stream, routes: []const Route, assets: ?std.Io.Dir, base: []const u8, not_found: []const u8, gen_id: ?u64) !void {
     defer stream.close(io);
 
@@ -314,44 +347,55 @@ fn serveConn(gpa: Allocator, io: std.Io, stream: net.Stream, routes: []const Rou
     // Parse the request line and resolve the response *before* draining (which
     // would overwrite the buffer the request-line slices point into).
     var path_buf: [1024]u8 = undefined;
-    var gen_buf: [128]u8 = undefined;
+    var gen_buf: [gen_response_buf_len]u8 = undefined;
     const req: ?Request = requestLine(&reader.interface) catch null;
-    var response: []const u8 = not_found;
-    var owned: ?[]u8 = null; // a per-request asset response, freed after write
-    defer if (owned) |o| gpa.free(o);
-    var head_only = false;
-
-    if (req) |r| {
-        head_only = std.mem.eql(u8, r.method, "HEAD");
-        if (!head_only and !std.mem.eql(u8, r.method, "GET")) {
-            response = method_not_allowed;
-        } else if (normalizePath(&path_buf, r.path)) |p| {
-            if (gen_id != null and std.mem.eql(u8, p, "/__strike/gen")) {
-                response = genResponse(&gen_buf, gen_id.?);
-            } else if (lookupRoute(routes, p)) |cached| {
-                response = cached;
-            } else if (assets) |dir| {
-                // Assets are content-relative: strip the base path first
-                // (`/docs/img.png` -> `/img.png`).
-                var ap = p;
-                if (base.len > 0 and std.mem.startsWith(u8, ap, base) and
-                    ap.len > base.len and ap[base.len] == '/')
-                {
-                    ap = ap[base.len..];
-                }
-                if (try serveAsset(gpa, io, dir, ap)) |a| {
-                    owned = a;
-                    response = a;
-                }
-            }
-        } else |_| {}
-    }
+    const res = try resolveRequest(gpa, io, req, routes, assets, base, not_found, gen_id, &path_buf, &gen_buf);
+    defer if (res.owned) |o| gpa.free(o);
     drainRequest(&reader.interface) catch {};
 
     var write_buf: [4096]u8 = undefined;
     var writer = stream.writer(io, &write_buf);
-    try writer.interface.writeAll(if (head_only) headersOnly(response) else response);
+    try writer.interface.writeAll(if (res.head_only) headersOnly(res.response) else res.response);
     try writer.interface.flush();
+}
+
+/// One resolved request: `response` is what goes on the wire (headers-only if
+/// `head_only`), borrowing the caller's buffers, the route table, or `owned` —
+/// a per-request asset response the caller frees after writing.
+const Resolved = struct { response: []const u8, owned: ?[]u8 = null, head_only: bool = false };
+
+/// Everything `serveConn` decides between reading and writing, socket-free so
+/// tests can drive the request→response mapping directly: method gate (405),
+/// path normalization, the watch-mode generation poll, route lookup, the
+/// base-stripped asset fallback, 404.
+fn resolveRequest(gpa: Allocator, io: std.Io, req: ?Request, routes: []const Route, assets: ?std.Io.Dir, base: []const u8, not_found: []const u8, gen_id: ?u64, path_buf: []u8, gen_buf: []u8) !Resolved {
+    var res: Resolved = .{ .response = not_found };
+    const r = req orelse return res;
+    res.head_only = std.mem.eql(u8, r.method, "HEAD");
+    if (!res.head_only and !std.mem.eql(u8, r.method, "GET")) {
+        res.response = method_not_allowed;
+        return res;
+    }
+    const p = normalizePath(path_buf, r.path) catch return res;
+    if (gen_id != null and std.mem.eql(u8, p, "/__strike/gen")) {
+        res.response = genResponse(gen_buf, gen_id.?);
+    } else if (lookupRoute(routes, p)) |cached| {
+        res.response = cached;
+    } else if (assets) |dir| {
+        // Assets are content-relative: strip the base path first
+        // (`/docs/img.png` -> `/img.png`).
+        var ap = p;
+        if (base.len > 0 and std.mem.startsWith(u8, ap, base) and
+            ap.len > base.len and ap[base.len] == '/')
+        {
+            ap = ap[base.len..];
+        }
+        if (try serveAsset(gpa, io, dir, ap)) |a| {
+            res.owned = a;
+            res.response = a;
+        }
+    }
+    return res;
 }
 
 const Request = struct { method: []const u8, path: []const u8 };
@@ -376,7 +420,9 @@ fn drainRequest(r: *std.Io.Reader) !void {
 }
 
 /// Normalize a raw request path into `buf`: cut at `?`/`#`, percent-decode,
-/// strip one trailing slash (except for `/` itself), reject NUL/empty/too-long.
+/// strip trailing slashes (except for `/` itself), reject NUL/empty/too-long.
+/// Any malformed `%`-sequence — short, truncated, or non-hex (a sign-tolerant
+/// integer parser is *not* a hex-digit check) — is uniformly `error.BadPath`.
 fn normalizePath(buf: []u8, raw: []const u8) ![]const u8 {
     var p = raw;
     if (std.mem.indexOfAny(u8, p, "?#")) |cut| p = p[0..cut];
@@ -386,8 +432,11 @@ fn normalizePath(buf: []u8, raw: []const u8) ![]const u8 {
     while (i < p.len) {
         if (n >= buf.len) return error.BadPath;
         var c = p[i];
-        if (c == '%' and i + 2 < p.len) {
-            c = std.fmt.parseInt(u8, p[i + 1 .. i + 3], 16) catch return error.BadPath;
+        if (c == '%') {
+            if (i + 3 > p.len) return error.BadPath;
+            const hi = hexDigit(p[i + 1]) orelse return error.BadPath;
+            const lo = hexDigit(p[i + 2]) orelse return error.BadPath;
+            c = hi * 16 + lo;
             i += 3;
         } else {
             i += 1;
@@ -397,24 +446,37 @@ fn normalizePath(buf: []u8, raw: []const u8) ![]const u8 {
         n += 1;
     }
     var out: []const u8 = buf[0..n];
-    if (out.len > 1 and out[out.len - 1] == '/') out = out[0 .. out.len - 1];
+    while (out.len > 1 and out[out.len - 1] == '/') out = out[0 .. out.len - 1];
     return out;
 }
 
-/// The `/__strike/gen` response, written into `buf`: the generation id as
-/// plain text, uncacheable, so the reload script sees swaps immediately.
+fn hexDigit(c: u8) ?u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => null,
+    };
+}
+
+const gen_response_fmt = "HTTP/1.0 200 OK\r\n" ++
+    "Content-Type: text/plain\r\n" ++
+    "Content-Length: {d}\r\n" ++
+    "Cache-Control: no-store\r\n" ++
+    "Connection: close\r\n\r\n{s}";
+
+/// A maximal (20-digit) id, sizing `gen_buf` so the `catch unreachable`s in
+/// `genResponse` are provably safe for every possible id.
+const max_gen_id = std.fmt.comptimePrint("{d}", .{std.math.maxInt(u64)});
+pub const gen_response_buf_len = std.fmt.comptimePrint(gen_response_fmt, .{ max_gen_id.len, max_gen_id }).len;
+
+/// The `/__strike/gen` response, written into `buf` (at least
+/// `gen_response_buf_len` bytes): the generation id as plain text,
+/// uncacheable, so the reload script sees swaps immediately.
 fn genResponse(buf: []u8, id: u64) []const u8 {
-    var body_buf: [20]u8 = undefined;
+    var body_buf: [max_gen_id.len]u8 = undefined;
     const body = std.fmt.bufPrint(&body_buf, "{d}", .{id}) catch unreachable;
-    return std.fmt.bufPrint(
-        buf,
-        "HTTP/1.0 200 OK\r\n" ++
-            "Content-Type: text/plain\r\n" ++
-            "Content-Length: {d}\r\n" ++
-            "Cache-Control: no-store\r\n" ++
-            "Connection: close\r\n\r\n{s}",
-        .{ body.len, body },
-    ) catch unreachable;
+    return std.fmt.bufPrint(buf, gen_response_fmt, .{ body.len, body }) catch unreachable;
 }
 
 /// The status line + headers of a prebuilt response (for HEAD).
@@ -446,6 +508,8 @@ fn mimeFor(path: []const u8) ?[]const u8 {
     return null;
 }
 
+const max_asset_bytes = 64 << 20;
+
 /// Serve a static file from the content dir on a route miss. Only known
 /// extensions; `..` and empty segments are rejected. Read per request — a dev
 /// server serves fresh bytes, uncached by design. Returns a full HTTP
@@ -458,7 +522,7 @@ fn serveAsset(gpa: Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !?[
     while (it.next()) |seg| {
         if (seg.len == 0 or std.mem.eql(u8, seg, "..")) return null;
     }
-    const data = dir.readFileAlloc(io, rel, gpa, .limited(64 << 20)) catch return null;
+    const data = dir.readFileAlloc(io, rel, gpa, .limited(max_asset_bytes)) catch return null;
     defer gpa.free(data);
     return try buildResponse(gpa, "200 OK", mime, data);
 }
@@ -654,4 +718,86 @@ test "buildGeneration: a routed generation from a target; a missing target error
         bad.arena.deinit();
         return error.TestUnexpectedResult;
     } else |_| {}
+}
+
+// ---- v0.1.0 fixes ------------------------------------------------------------
+
+test "normalizePath: malformed percent-escapes are uniformly rejected" {
+    var buf: [1024]u8 = undefined;
+    // a sign-tolerant integer parse is not a hex check
+    try testing.expectError(error.BadPath, normalizePath(&buf, "/a%+f"));
+    try testing.expectError(error.BadPath, normalizePath(&buf, "/a%-0"));
+    try testing.expectError(error.BadPath, normalizePath(&buf, "/a%zz"));
+    // truncated escapes (bare or one digit at end) reject like any other
+    try testing.expectError(error.BadPath, normalizePath(&buf, "/a%"));
+    try testing.expectError(error.BadPath, normalizePath(&buf, "/a%2"));
+    // decode still works, and %2e%2e produces the ".." serveAsset rejects
+    try testing.expectEqualStrings("/..", try normalizePath(&buf, "/%2e%2e"));
+    // repeated trailing slashes all strip
+    try testing.expectEqualStrings("/a", try normalizePath(&buf, "/a//"));
+    try testing.expectEqualStrings("/a", try normalizePath(&buf, "/a///"));
+}
+
+test "genResponse holds the maximal id (buffer sized by comptime print)" {
+    var buf: [gen_response_buf_len]u8 = undefined;
+    const r = genResponse(&buf, std.math.maxInt(u64));
+    try testing.expect(std.mem.endsWith(u8, r, "18446744073709551615"));
+}
+
+test "buildNotFound: base-aware home link; reload script only in watch mode" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const plain = try buildNotFound(a, "", false);
+    try testing.expect(std.mem.indexOf(u8, plain, "href=\"/\"") != null);
+    try testing.expect(std.mem.indexOf(u8, plain, "/__strike/gen") == null);
+    const mounted = try buildNotFound(a, "/docs", true);
+    try testing.expect(std.mem.indexOf(u8, mounted, "href=\"/docs\"") != null);
+    // a tab left on a 404 must poll and recover when the route appears
+    try testing.expect(std.mem.indexOf(u8, mounted, "/__strike/gen") != null);
+}
+
+test "resolveRequest: routes, 405, HEAD, gen poll, and the base-stripped asset path" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "pix.png", .data = "PNGDATA" });
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const routes: []const Route = &.{.{ .path = "/docs/page", .response = "HTTP-PAGE" }};
+    const nf = try buildNotFound(a, "/docs", true);
+    var path_buf: [1024]u8 = undefined;
+    var gen_buf: [gen_response_buf_len]u8 = undefined;
+
+    // a cached route hit
+    const hit = try resolveRequest(a, testing.io, .{ .method = "GET", .path = "/docs/page" }, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    try testing.expectEqualStrings("HTTP-PAGE", hit.response);
+    try testing.expect(!hit.head_only);
+
+    // HEAD marks the response headers-only
+    const head = try resolveRequest(a, testing.io, .{ .method = "HEAD", .path = "/docs/page" }, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    try testing.expect(head.head_only);
+
+    // non-GET/HEAD is 405
+    const post = try resolveRequest(a, testing.io, .{ .method = "POST", .path = "/docs/page" }, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    try testing.expect(std.mem.indexOf(u8, post.response, "405") != null);
+
+    // the watch-mode generation poll
+    const gen = try resolveRequest(a, testing.io, .{ .method = "GET", .path = "/__strike/gen" }, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    try testing.expect(std.mem.endsWith(u8, gen.response, "7"));
+
+    // an asset under the base: /docs/pix.png -> content-relative /pix.png
+    const asset = try resolveRequest(a, testing.io, .{ .method = "GET", .path = "/docs/pix.png" }, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    defer if (asset.owned) |o| a.free(o);
+    try testing.expect(asset.owned != null);
+    try testing.expect(std.mem.endsWith(u8, asset.response, "PNGDATA"));
+
+    // an encoded traversal misses everything and 404s
+    const trav = try resolveRequest(a, testing.io, .{ .method = "GET", .path = "/%2e%2e/pix.png" }, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    try testing.expectEqualStrings(nf, trav.response);
+
+    // an unreadable request line resolves to the 404
+    const bad = try resolveRequest(a, testing.io, null, routes, tmp.dir, "/docs", nf, 7, &path_buf, &gen_buf);
+    try testing.expectEqualStrings(nf, bad.response);
 }

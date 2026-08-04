@@ -130,13 +130,13 @@ element, so they nest freely and inner wins.
 
 | Command | Meaning |
 | --- | --- |
-| `grid(n)` | n columns; sections fill left-to-right and wrap. n ≥ 1. A section count ≠ n still renders, with a warning. |
+| `grid(n)` | n columns; sections fill left-to-right and wrap. n is 1–12. A section count ≠ n still renders, with a warning. |
 | `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/reference/design/003-skinny.md`)* |
 | `wide(N%)` | the mirror of `skinny`: the element/group takes N% of the main body's width, centered, bleeding evenly into both margins. N is 101–200, `%` required. `wide()` defaults to 125%. (`docs/reference/design/012-wide.md`) |
 | `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/reference/design/005-center.md`) |
 | `color(role)` | text within the element/group takes the theme color role `accent`, `muted`, or `fg`. Non-layout: color-in-color nests, innermost wins. (`docs/reference/design/006-color.md`) |
 | `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/reference/design/007-collapse.md`) |
-| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
+| `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). n is 1–8. Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
 | `citations()` | the group's numbered list is the document's reference list: entries become anchor targets and `[text].cite(refs)` marks bind to them. One per document. No arguments. See "Citations". (`docs/reference/design/016-citations.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
@@ -272,11 +272,10 @@ non-key bracket stays literal prose. Key lifting happens only inside the
 declared citations group — nowhere else does a leading bracket mean anything
 new.
 
-Entries are numbered **1..n by position**, whatever numbers the list is
-written with. A list that starts at 1 — the overwhelmingly normal case — has
-nothing to think about. A list that starts anywhere else warns, because the
-numbers the reader sees would otherwise disagree with the numbers marks bind
-to.
+Entries carry **the numbers the reader sees**: the list's own numbering, from
+its `start` onward. `.cite(3)` always means the entry rendered as 3, whether
+the list starts at 1 or at 3 — anchors, marks, and previews agree with the
+visible numbers by construction. Key refs are position-independent either way.
 
 One citations group per document: later ones keep their content but drop the
 command with a warning (and citations-in-citations strips under the
@@ -352,9 +351,14 @@ recording the result here.
   cell; an unescaped one splits, including inside a code span.
 - **Fenced code** ```` ``` ```` with an info-string language (the first token;
   the rest is ignored); the body is verbatim, never inline-parsed. An
-  unterminated fence runs to end-of-document, as does an unterminated `$$`.
+  unterminated fence runs to end-of-document.
 - **Display math** `$$…$$` and **inline math** `$…$` — the TeX passes
-  through raw (backends decide typesetting); never inline-parsed. An inline
+  through raw (backends decide typesetting); never inline-parsed. A
+  multi-line `$$` block ends at a line ending in `$$`; a blank line (or
+  end-of-document) first means the opener was a stray `$$` and the whole
+  thing reverts to a paragraph. Inline code spans match backtick run
+  lengths (GFM): ` ``a`b`` ` embeds a backtick, and a run with no matching
+  closer stays literal. An inline
   span requires all of: the opening `$` followed by a non-whitespace
   character, the closing `$` preceded by one and *not* followed by a digit,
   and a non-empty body. So `costs $5 and $10` and `$HOME and $PATH` are prose,
@@ -406,10 +410,12 @@ line literally asked for, and says so — layout mistakes are visible, not fatal
 | `single command: <cmd> ignored (already inside a <cmd>)` | the same rule on a `/cmd()` line or chain |
 | `group '<name>': citations ignored (the document already has a citations group)` | a second `citations()` group; it renders as an ordinary group |
 | `group '<name>': citations ignored (no numbered list in the group)` | `citations()` with no entry list to declare |
-| `citations: the entry list starts at n; entries still bind as 1..n` | a bibliography written with numbers that don't start at 1 |
 | `citations: duplicate key [k] (the first entry wins)` | two entries claiming one key |
-| `cite(k): unknown key` / `cite(n): only m entries` | a mark referencing an entry that isn't there; that reference renders inert |
+| `cite(r): no matching entry` | a mark referencing an entry that isn't there — unknown key, out-of-range or overflowing number; that reference renders inert |
 | `n citation mark(s) but no citations group` | marks with nothing to bind to, reported once |
+| `group '<name>': mismatched closer '// end <other>' treated as prose` | a closer naming a group that isn't the innermost open one |
+| `group '<name>': collapse ignored on the citations group` | `citations() collapse()` on one opener; the bibliography can't fold |
+| `nesting deeper than 64 levels; deeper structure flattens to prose` | the recursion cap, reported once per document |
 
 ## Canonical examples
 

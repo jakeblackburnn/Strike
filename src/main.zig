@@ -21,28 +21,47 @@ const yaml = @import("yaml.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    // Every subcommand below allocates-and-uses-once, the same "process- or
-    // build-lifetime, never free piecemeal" contract `project.load` already
+    // Every subcommand below allocates-and-uses-once, the same
+    // "process-lifetime, never free piecemeal" contract `project.load`
     // documents — `init.arena` (freed automatically on exit) matches that
     // contract, instead of tripping `init.gpa`'s leak checker on every run.
     // The one exception: `serve --watch` rebuilds the site repeatedly, so its
     // per-generation arenas are backed by `init.gpa` and freed on every swap.
-    const gpa = init.arena.allocator();
+    const arena = init.arena.allocator();
 
-    var args = try std.process.Args.iterateAllocator(init.minimal.args, gpa);
+    var args = try std.process.Args.iterateAllocator(init.minimal.args, arena);
     defer args.deinit();
     _ = args.next(); // argv[0]: the executable path
 
     const cmd = args.next() orelse return usage();
-    if (std.mem.eql(u8, cmd, "serve")) return cmdServe(gpa, init.gpa, io, &args);
-    if (std.mem.eql(u8, cmd, "render")) return cmdRender(gpa, io, &args);
-    if (std.mem.eql(u8, cmd, "build")) return cmdBuild(gpa, io, &args);
-    if (std.mem.eql(u8, cmd, "init")) return cmdInit(io, &args);
+    if (std.mem.eql(u8, cmd, "serve")) return cmdServe(arena, init.gpa, io, &args) catch |err| fail(cmd, err);
+    if (std.mem.eql(u8, cmd, "render")) return cmdRender(arena, io, &args) catch |err| fail(cmd, err);
+    if (std.mem.eql(u8, cmd, "build")) return cmdBuild(arena, io, &args) catch |err| fail(cmd, err);
+    if (std.mem.eql(u8, cmd, "init")) return cmdInit(io, &args) catch |err| fail(cmd, err);
     if (std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "--help")) return usage();
 
     std.debug.print("strike: unknown command '{s}'\n\n", .{cmd});
     usage();
-    return error.UnknownCommand;
+    std.process.exit(1);
+}
+
+/// One friendly line + exit 1 instead of a raw error return trace — flag
+/// mistakes additionally reprint the usage text.
+fn fail(cmd: []const u8, err: anyerror) noreturn {
+    switch (err) {
+        error.UnknownFlag, error.MissingValue, error.UnexpectedArgument, error.MissingFile, error.InvalidCharacter, error.Overflow => {
+            std.debug.print("strike {s}: {s}\n\n", .{ cmd, switch (err) {
+                error.UnknownFlag => "unknown flag",
+                error.MissingValue => "a flag is missing its value",
+                error.UnexpectedArgument => "too many arguments",
+                error.MissingFile => "a file argument is required",
+                else => "a flag value doesn't parse",
+            } });
+            usage();
+        },
+        else => std.debug.print("strike {s}: {s}\n", .{ cmd, @errorName(err) }),
+    }
+    std.process.exit(1);
 }
 
 fn usage() void {
@@ -59,11 +78,14 @@ fn usage() void {
         \\  strike build  [dir] [-o outdir]                   Export a content directory to static HTML.
         \\  strike init   [dir] [--site]                      Scaffold a starter strike.yaml.
         \\
-        \\Defaults: dir "." for serve/build/init; host 127.0.0.1; port 8080; outdir "html".
+        \\Defaults: dir "." for serve/build/init; host {s}; port {d}; outdir "html".
         \\A dir's strike.yaml `serve:` map (watch/open/host/port) fills unset serve flags.
         \\
-    , .{});
+    , .{ default_host, default_port });
 }
+
+const default_host = "127.0.0.1";
+const default_port: u16 = 8080;
 
 // ---- serve ------------------------------------------------------------------
 
@@ -90,19 +112,33 @@ const ServeOpts = struct {
 fn resolveServe(parsed: ServeArgs, cfg: yaml.Value) ServeOpts {
     const serve_cfg = cfg.get("serve") orelse yaml.Value{ .map = &.{} };
     return .{
-        .host = parsed.host orelse serve_cfg.getScalar("host") orelse "127.0.0.1",
+        .host = parsed.host orelse serve_cfg.getScalar("host") orelse default_host,
         .port = parsed.port orelse blk: {
-            const s = serve_cfg.getScalar("port") orelse break :blk 8080;
-            break :blk std.fmt.parseInt(u16, s, 10) catch 8080;
+            const s = serve_cfg.getScalar("port") orelse break :blk default_port;
+            break :blk std.fmt.parseInt(u16, s, 10) catch default_port;
         },
         .watch = parsed.watch orelse yamlBool(serve_cfg, "watch"),
         .open = parsed.open orelse yamlBool(serve_cfg, "open"),
     };
 }
 
+/// Fail-soft yaml boolean: the usual spellings of yes (any casing) are true,
+/// everything else — including typos — is false.
 fn yamlBool(cfg: yaml.Value, key: []const u8) bool {
     const s = cfg.getScalar(key) orelse return false;
-    return std.mem.eql(u8, s, "true");
+    for ([_][]const u8{ "true", "yes", "on", "1" }) |t| {
+        if (std.ascii.eqlIgnoreCase(s, t)) return true;
+    }
+    return false;
+}
+
+/// The value token following a `--flag`. A `-`-leading token is another
+/// flag, not a value — `--host --watch` fails loudly instead of silently
+/// binding "--watch" as the host.
+fn flagValue(args: anytype) ![]const u8 {
+    const v = args.next() orelse return error.MissingValue;
+    if (std.mem.startsWith(u8, v, "-")) return error.MissingValue;
+    return v;
 }
 
 /// Parse `serve`'s flags from any iterator exposing `next() ?[:0]const u8` (or
@@ -113,9 +149,9 @@ fn parseServeArgs(args: anytype) !ServeArgs {
     var have_dir = false;
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--port")) {
-            parsed.port = try std.fmt.parseInt(u16, args.next() orelse return error.MissingValue, 10);
+            parsed.port = try std.fmt.parseInt(u16, try flagValue(args), 10);
         } else if (std.mem.eql(u8, a, "--host")) {
-            parsed.host = args.next() orelse return error.MissingValue;
+            parsed.host = try flagValue(args);
         } else if (std.mem.eql(u8, a, "--watch")) {
             parsed.watch = true;
         } else if (std.mem.eql(u8, a, "--no-watch")) {
@@ -166,11 +202,11 @@ fn parseRenderArgs(args: anytype) !RenderArgs {
     var parsed: RenderArgs = .{};
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "-o")) {
-            parsed.out = args.next() orelse return error.MissingValue;
+            parsed.out = try flagValue(args);
         } else if (std.mem.eql(u8, a, "--fragment")) {
             parsed.fragment = true;
         } else if (std.mem.eql(u8, a, "--header")) {
-            parsed.header = args.next() orelse return error.MissingValue;
+            parsed.header = try flagValue(args);
         } else if (std.mem.startsWith(u8, a, "-")) {
             return error.UnknownFlag;
         } else if (parsed.path == null) {
@@ -187,28 +223,33 @@ fn parseRenderArgs(args: anytype) !RenderArgs {
 /// for the `strike.yaml` `header:` a project would provide. Unlike the
 /// fail-soft project path, an explicitly named header that can't be read is
 /// an error — the user asked for it by name.
-fn cmdRender(gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
+fn cmdRender(arena: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     const parsed = try parseRenderArgs(args);
     const path = parsed.path orelse return error.MissingFile;
 
     const base: sheet.Sheet = if (parsed.header) |hp|
-        try sheet.load(io, gpa, std.Io.Dir.cwd(), hp)
+        try sheet.load(io, arena, std.Io.Dir.cwd(), hp)
     else
         .empty;
-    const md = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 << 20));
-    const body = try render_html.render(gpa, md, .{ .sheet = base });
-
-    const html = if (parsed.fragment) body else blk: {
-        const title = project.firstHeading(md) orelse
-            try project.prettify(gpa, project.stripExtension(std.fs.path.basename(path)));
-        break :blk try shell.wrapPage(gpa, shell.standalone(title), body);
-    };
+    const md = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(project.max_doc_bytes));
+    const html = try renderStandalone(arena, md, path, parsed.fragment, base);
 
     if (parsed.out) |op| {
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = op, .data = html });
     } else {
         try writeStdout(io, html);
     }
+}
+
+/// The pure middle of `cmdRender`: one document's HTML, as a bare fragment or
+/// wrapped in the standalone shell (title from the first heading, else the
+/// prettified filename).
+fn renderStandalone(arena: std.mem.Allocator, md: []const u8, path: []const u8, fragment: bool, base: sheet.Sheet) ![]u8 {
+    const body = (try render_html.render(arena, md, .{ .sheet = base })).takeHtml(arena, path);
+    if (fragment) return body;
+    const title = project.firstHeading(md) orelse
+        try project.prettify(arena, project.stripExtension(std.fs.path.basename(path)));
+    return shell.wrapPage(arena, shell.standalone(title), body);
 }
 
 fn writeStdout(io: std.Io, bytes: []const u8) !void {
@@ -227,7 +268,7 @@ fn parseBuildArgs(args: anytype) !BuildArgs {
     var have_dir = false;
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "-o")) {
-            parsed.out_dir = args.next() orelse return error.MissingValue;
+            parsed.out_dir = try flagValue(args);
         } else if (std.mem.startsWith(u8, a, "-")) {
             return error.UnknownFlag;
         } else if (!have_dir) {
@@ -241,23 +282,29 @@ fn parseBuildArgs(args: anytype) !BuildArgs {
 /// Static-export `dir` to `out_dir` through the same
 /// `site.renderAll`/`site.outPath` pipeline `serve` renders with. This is the
 /// only static export there is — `zig build` only compiles the CLI.
-fn cmdBuild(gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
+fn cmdBuild(arena: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     const parsed = try parseBuildArgs(args);
 
     var content = try std.Io.Dir.cwd().openDir(io, parsed.dir, .{ .iterate = true });
     defer content.close(io);
-    const loaded = try project.load(io, gpa, content);
-    const pages = try site.renderAll(gpa, loaded);
-
     var out = try std.Io.Dir.cwd().createDirPathOpen(io, parsed.out_dir, .{});
     defer out.close(io);
 
+    const count = try exportSite(arena, io, content, out);
+    std.debug.print("strike build: rendered {d} page(s) to {s}/\n", .{ count, parsed.out_dir });
+}
+
+/// The dir-to-dir middle of `cmdBuild`: load `content`, render every page,
+/// write the export tree into `out`. Returns the page count.
+fn exportSite(arena: std.mem.Allocator, io: std.Io, content: std.Io.Dir, out: std.Io.Dir) !usize {
+    const loaded = try project.load(io, arena, content);
+    const pages = try site.renderAll(arena, loaded);
     for (pages) |p| {
-        const rel = try site.outPath(gpa, p, loaded.base);
+        const rel = try site.outPath(arena, p, loaded.base);
         if (std.fs.path.dirname(rel)) |d| try out.createDirPath(io, d);
         try out.writeFile(io, .{ .sub_path = rel, .data = p.html });
     }
-    std.debug.print("strike build: rendered {d} page(s) to {s}/\n", .{ pages.len, parsed.out_dir });
+    return pages.len;
 }
 
 // ---- init -------------------------------------------------------------------
@@ -316,16 +363,28 @@ fn cmdInit(io: std.Io, args: *std.process.Args.Iterator) !void {
 
     var dir = try std.Io.Dir.cwd().openDir(io, parsed.dir, .{});
     defer dir.close(io);
+    if (try writeScaffold(io, dir, parsed.site_level)) {
+        std.debug.print("wrote {s}/strike.yaml\n", .{parsed.dir});
+        return;
+    }
+    // The refusal is its own complete message — exit directly rather than
+    // returning an error `fail` would report a second time.
+    std.debug.print("strike init: {s}/strike.yaml already exists\n", .{parsed.dir});
+    std.process.exit(1);
+}
+
+/// Write the scaffold into `dir` unless a strike.yaml already exists there
+/// (never overwrite). True when written.
+fn writeScaffold(io: std.Io, dir: std.Io.Dir, site_level: bool) !bool {
     dir.access(io, "strike.yaml", .{}) catch |err| {
         if (err != error.FileNotFound) return err;
         try dir.writeFile(io, .{
             .sub_path = "strike.yaml",
-            .data = if (parsed.site_level) site_yaml_template else project_yaml_template,
+            .data = if (site_level) site_yaml_template else project_yaml_template,
         });
-        return std.debug.print("wrote {s}/strike.yaml\n", .{parsed.dir});
+        return true;
     };
-    std.debug.print("strike init: {s}/strike.yaml already exists\n", .{parsed.dir});
-    return error.AlreadyExists;
+    return false;
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -463,3 +522,91 @@ test "parseBuildArgs and parseInitArgs apply defaults" {
     try testing.expect(i.site_level);
 }
 
+
+// ---- v0.1.0 fixes ------------------------------------------------------------
+
+test "yamlBool accepts the usual spellings of yes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const cfg = try yaml.parse(arena.allocator(), "a: true\nb: Yes\nc: ON\nd: 1\ne: flase\nf: false");
+    try testing.expect(yamlBool(cfg, "a"));
+    try testing.expect(yamlBool(cfg, "b"));
+    try testing.expect(yamlBool(cfg, "c"));
+    try testing.expect(yamlBool(cfg, "d"));
+    try testing.expect(!yamlBool(cfg, "e"));
+    try testing.expect(!yamlBool(cfg, "f"));
+    try testing.expect(!yamlBool(cfg, "missing"));
+}
+
+test "a flag value may not itself be a flag" {
+    var args: SliceArgs = .{ .items = &.{ "--host", "--watch" } };
+    try testing.expectError(error.MissingValue, parseServeArgs(&args));
+    var args2: SliceArgs = .{ .items = &.{ "-o", "--fragment", "x.md" } };
+    try testing.expectError(error.MissingValue, parseRenderArgs(&args2));
+}
+
+test "writeScaffold writes once and refuses to overwrite" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try testing.expect(try writeScaffold(testing.io, tmp.dir, false));
+    const first = try tmp.dir.readFileAlloc(testing.io, "strike.yaml", testing.allocator, .limited(1 << 16));
+    defer testing.allocator.free(first);
+    try testing.expect(std.mem.indexOf(u8, first, "title: My Project") != null);
+    // second run: refused, file untouched
+    try testing.expect(!(try writeScaffold(testing.io, tmp.dir, true)));
+    const second = try tmp.dir.readFileAlloc(testing.io, "strike.yaml", testing.allocator, .limited(1 << 16));
+    defer testing.allocator.free(second);
+    try testing.expectEqualStrings(first, second);
+}
+
+test "writeScaffold --site writes the site template" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try testing.expect(try writeScaffold(testing.io, tmp.dir, true));
+    const data = try tmp.dir.readFileAlloc(testing.io, "strike.yaml", testing.allocator, .limited(1 << 16));
+    defer testing.allocator.free(data);
+    try testing.expect(std.mem.indexOf(u8, data, "# base: /docs") != null);
+}
+
+test "renderStandalone: fragment vs wrapped, title fallback" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const frag = try renderStandalone(a, "# T\n\nbody", "x.md", true, .empty);
+    try testing.expectEqualStrings("<h1 id=\"t\">T</h1>\n<p>body</p>\n", frag);
+    // wrapped: full page, title from the heading
+    const page = try renderStandalone(a, "# My Title\n\nbody", "x.md", false, .empty);
+    try testing.expect(std.mem.indexOf(u8, page, "<title>My Title</title>") != null);
+    try testing.expect(std.mem.indexOf(u8, page, "<p>body</p>") != null);
+    // no heading: the prettified filename is the title
+    const named = try renderStandalone(a, "just prose", "notes/02_lab-report.md", false, .empty);
+    try testing.expect(std.mem.indexOf(u8, named, "<title>Lab Report</title>") != null);
+}
+
+test "exportSite writes the same tree serve routes" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "content/blog");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "content/blog/post.md", .data = "# Post\nbody" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "content/blog/main.md", .data = "# Blog Home" });
+    try tmp.dir.createDirPath(testing.io, "out");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var content = try tmp.dir.openDir(testing.io, "content", .{ .iterate = true });
+    defer content.close(testing.io);
+    var out = try tmp.dir.openDir(testing.io, "out", .{});
+    defer out.close(testing.io);
+
+    const count = try exportSite(arena.allocator(), testing.io, content, out);
+    try testing.expectEqual(@as(usize, 3), count); // picker + project home + doc
+    const picker = try tmp.dir.readFileAlloc(testing.io, "out/index.html", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(picker);
+    try testing.expect(std.mem.indexOf(u8, picker, "href=\"/blog\"") != null);
+    const home = try tmp.dir.readFileAlloc(testing.io, "out/blog/index.html", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(home);
+    try testing.expect(std.mem.indexOf(u8, home, "Blog Home") != null);
+    const doc = try tmp.dir.readFileAlloc(testing.io, "out/blog/post.html", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(doc);
+    try testing.expect(std.mem.indexOf(u8, doc, "<h1 id=\"post\">Post</h1>") != null);
+}

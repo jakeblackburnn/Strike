@@ -69,12 +69,16 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     var out: Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     const w = &out.writer;
+    // These three land inside the pre-paint `<script>`'s string literals,
+    // where attribute escaping is the wrong tool (a `\` or newline would
+    // break the bootstrap and with it every stored reader preference) —
+    // they're machine tokens, not prose, so validate instead of escape.
     try w.writeAll(head_pre_a);
-    try escapeAttrInto(w, shell.season);
+    try w.writeAll(safeToken(shell.season));
     try w.writeAll(head_pre_b);
-    try escapeAttrInto(w, shell.time);
+    try w.writeAll(safeToken(shell.time));
     try w.writeAll(head_pre_c);
-    try escapeAttrInto(w, shell.width);
+    try w.writeAll(safeToken(shell.width));
     try w.writeAll(head_pre_d);
     try escapeInto(w, shell.title);
     try w.writeAll(head_post_a);
@@ -85,6 +89,17 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     try w.writeAll(body_html);
     try w.writeAll(page_tail);
     return out.toOwnedSlice();
+}
+
+/// A value safe inside a JS string literal without escaping: ASCII
+/// alphanumerics, space, `-`, `_`, at most 32 bytes. Anything else yields ""
+/// — fail-soft, like the yaml the values come from.
+fn safeToken(s: []const u8) []const u8 {
+    if (s.len > 32) return "";
+    for (s) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != ' ' and c != '-' and c != '_') return "";
+    }
+    return s;
 }
 
 /// The brand is a *path*, not a name. The sidebar nav below it shows one
@@ -244,9 +259,10 @@ const head_post_a =
     \\<style>
     \\
 ++ theme_rules ++
+    \\  :root { --sidebar-width: 14rem; --on-accent: #fff; }
     \\  * { box-sizing: border-box; }
     \\  body {
-    \\    margin: 0; padding-left: 14rem;
+    \\    margin: 0; padding-left: var(--sidebar-width);
     \\    background: var(--bg); color: var(--fg);
     \\    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     \\    transition: padding-left .2s ease;
@@ -287,6 +303,10 @@ const head_post_a =
     \\  .sx-alert-important { border-left-color: var(--fg); }
     \\  .sx-alert-important .sx-alert-title { color: var(--fg); }
     \\  a { color: var(--accent); }
+    \\  img { max-width: 100%; }
+    \\  table { border-collapse: collapse; margin: 1rem 0; }
+    \\  th, td { border: 1px solid var(--border); padding: .35rem .65rem; text-align: left; }
+    \\  th { background: var(--code-bg); }
     \\  ul.sx-plain { list-style: none; padding-left: 0; }
     \\  /* Collapsible groups (007-collapse, restyled 2026-07-25): the whole
     \\     summary — the group's leader element — is the hitbox, with the
@@ -304,12 +324,11 @@ const head_post_a =
     \\  .sx-collapse { background: var(--collapse-closed-bg); border-radius: 8px; padding: .35rem .75rem; margin: 1rem -.75rem; border-bottom: 1px solid var(--border); box-shadow: var(--collapse-closed-shadow, none); transition: background .15s ease, box-shadow .15s ease, border-color .15s ease; }
     \\  .sx-collapse[open] { background: var(--collapse-open-bg); border-bottom-color: transparent; box-shadow: var(--collapse-shadow, none); }
     \\  .sx-collapse > summary { cursor: pointer; list-style: none; margin: -.35rem -.75rem; padding: .35rem .75rem; border-radius: 8px; transition: background .15s ease; text-indent: 0; }
-    \\  .sx-collapse > summary:hover { background: rgba(0,0,0,.07); }
+    \\  .sx-collapse > summary:hover { background: rgba(125,125,125,.14); }
     \\  .sx-collapse > summary:hover::before { color: var(--accent); }
     \\  .sx-collapse > summary::-webkit-details-marker { display: none; }
     \\  .sx-collapse > summary::before { content: "\25B8"; display: inline-block; width: 1em; color: var(--muted); transition: transform .12s; }
     \\  .sx-collapse[open] > summary::before { transform: rotate(90deg); }
-    \\  .sx-collapse > summary > * { display: inline; }
     \\  .sx-collapse > summary.sx-collapse-bar { display: block; min-height: 1.6em; }
     \\  /* Citations (016-citations): the cited claim is the affordance. At
     \\     rest a .sx-cite span is invisible — body text, none of the link
@@ -331,7 +350,7 @@ const head_post_a =
     \\  a.sx-cite-back:hover { color: var(--accent); }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     \\  .sidebar {
-    \\    position: fixed; top: 0; left: 0; width: 14rem; height: 100vh;
+    \\    position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 100vh;
     \\    display: flex; flex-direction: column; gap: 1rem;
     \\    padding: 1.25rem 1rem;
     \\    background: var(--sidebar-bg);
@@ -356,7 +375,7 @@ const head_post_a =
     \\  .nav-tree li { margin: .05rem 0; }
     \\  .nav-doc { display: block; padding: .2rem .5rem; border-radius: 6px; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     \\  .nav-doc:hover { background: var(--code-bg); color: var(--fg); }
-    \\  .nav-doc.active { background: var(--accent); color: #fff; }
+    \\  .nav-doc.active { background: var(--accent); color: var(--on-accent); }
     \\  .nav-folder > summary { padding: .2rem .35rem; border-radius: 6px; cursor: pointer; color: var(--fg); font-weight: 600; list-style: none; white-space: nowrap; }
     \\  .nav-folder-link { color: inherit; text-decoration: none; }
     \\  .nav-folder-link:hover, .nav-folder-link.active { color: var(--accent); }
@@ -368,7 +387,7 @@ const head_post_a =
     \\     strip itself lights it accent, clicking toggles. Collapsed, the strip
     \\     slides to the screen's left edge and reopens the sidebar the same way. */
     \\  .sidebar-edge {
-    \\    position: fixed; top: 0; left: calc(14rem - .75rem); width: 1.5rem; height: 100vh; z-index: 10;
+    \\    position: fixed; top: 0; left: calc(var(--sidebar-width) - .75rem); width: 1.5rem; height: 100vh; z-index: 10;
     \\    margin: 0; padding: 0; border: none; background: transparent; cursor: pointer;
     \\    transition: left .2s ease;
     \\  }

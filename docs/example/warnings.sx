@@ -114,20 +114,17 @@ citations slot — a later group can still claim it, which the next one does.
 
 // end empty_citations
 
-Then the real bibliography, written with three problems at once: it starts at 3
-rather than 1, and two entries claim the same key.
+Then the real bibliography, with a genuine problem: two entries claim the same
+key. (It also starts at 3, which is *not* a problem — entries carry the numbers
+the reader sees, so `.cite(3)` means the entry rendered as 3.)
 
 // bad_citations citations()
 
-3. First entry — the numbers below are what the author wrote.
+3. First entry — the numbers below are what the author wrote, and what marks bind to.
 4. [dup] Second entry.
 5. [dup] Third entry, claiming a key the second already took.
 
 // end bad_citations
-
-Entries always bind by **position**, 1..n, whatever numbers the list carries.
-That is why a list starting anywhere but 1 is worth a warning: the numbers a
-reader sees would otherwise disagree with the numbers marks bind to.
 
 Finally, a second `citations()` group. The document already has one, so this
 keeps its content and loses the command:
@@ -142,13 +139,12 @@ All together, in the order they are reported:
 
 ```
 group 'empty_citations': citations ignored (no numbered list in the group)
-citations: the entry list starts at 3; entries still bind as 1..3
 citations: duplicate key [dup] (the first entry wins)
 group 'second_citations': citations ignored (the document already has a citations group)
-cite(99): only 3 entries
-cite(nosuchkey): unknown key
-cite(99): only 3 entries
-cite(nosuchkey): unknown key
+cite(99): no matching entry
+cite(nosuchkey): no matching entry
+cite(99): no matching entry
+cite(nosuchkey): no matching entry
 ```
 
 The last four come in pairs because the third mark cites both bad references at
