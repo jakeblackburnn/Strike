@@ -1,0 +1,89 @@
+# Degradation
+
+Every superset form is inert prose in a document that never activates it. That
+is what lets you point strike at a folder of ordinary markdown and get the same
+document back — and it is why superset syntax is strict rather than forgiving.
+
+Each line below *looks* like a strikedown feature and is deliberately not one.
+Read this page rendered, then read the source: every one of them is a plain
+paragraph.
+
+## Directives that don't parse cleanly
+
+// just a comment here
+
+// box glow(5)
+
+//foo
+
+/usr/bin/env zsh
+
+/skinny(50%) with trailing text
+
+/color(red)
+
+/collapse(true)
+
+/indent(x)
+
+:thin-grid grid(2) skinny(80%)
+
+A `//` line is a directive **only if the whole line parses** — every command
+recognized, every argument valid, the name well formed. One typo and the line
+is text. So a stale document renders as visible prose rather than silently
+wrong layout, and a `//` you wrote as a comment stays a comment.
+
+## Directives that parse but have nothing to act on
+
+Parsing cleanly is only half of it. Separators and closers also need a group to
+actually be open, and a `/cmd()` line needs a content element to follow. These
+three lines are all perfectly well formed and all still prose, because nothing
+here is open:
+
+// --
+
+// end some_group
+
+//
+
+That is the second half of the activation rule, and it is worth knowing
+separately: the first half is about how the line is written, the second about
+where it sits. A `// --` in a document with no groups is not a typo — it is a
+correct line in the wrong place, and it degrades the same way.
+
+## Unknown types and names
+
+> [!IDEA] An unrecognized alert type is not a marker at all — this is a plain
+> blockquote whose first line happens to start with a bracket.
+
+A `[!NOTE]` written anywhere but a quote's first line is likewise just text.
+
+## Inline near-misses
+
+[x].color(bright)
+
+[a link](markdown.md).color(muted)
+
+[].cite(1)
+
+a * b * c and 5 * 4 * 3
+
+The book costs $5 and the pen costs $10.
+
+$HOME and $PATH are set
+
+.item
+
+(name)# not a heading
+
+Unknown color roles fail the parse. A link wins its own `[`, so the `.color()`
+after one is literal text. Empty brackets are not a citation mark. Emphasis and
+math delimiters have to hug their content, so asterisks and dollar signs in
+prose stay put.
+
+## The one thing to remember
+
+> [!IMPORTANT]
+> If a line of yours reads like prose, it renders like prose. Activation is
+> always explicit and always strict — there is no partial credit, and no form
+> that changes meaning based on something you cannot see.

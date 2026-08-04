@@ -1,6 +1,7 @@
 # 009 — Alerts (`> [!NOTE]`, superset deltas)
 
-**Status: accepted** (decision dictated by Jack, 2026-07-20)
+**Status: shipped** (decision dictated by Jack, 2026-07-20; implemented and tested the
+same day)
 
 **Amended 2026-07-25** (visual, implementation only — no language change): the type
 title rendered at body size on an accent-colored bar, which read as louder than the

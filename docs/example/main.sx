@@ -1,0 +1,80 @@
+# strikedown by example
+
+Every page in this project exercises features you can copy into your own
+documents. It is the fastest way to see what the language does: read a page in
+your browser, then open the same file in your editor and compare.
+
+// tour grid(2)
+
+**The language**
+
+. [The markdown subset](markdown.md) — the rules that surprise people, and the
+  one `.md` file left in the tour
+. [Gallery](gallery.sx) — every form at once, minimal prose
+. [One flavor](syntax.sx) — why the extension never matters
+. [Groups and directives](groups.sx) — `//` and `/cmd()`, in full
+
+// --
+
+**The superset**
+
+. [Commands](commands.sx) — all eight, every argument form
+. [Citations](citations.sx) — marks and a bibliography
+. [Degradation](degradation.sx) — why plain markdown never breaks
+. [Warnings](warnings.sx) — what strike tells you, and when
+
+// end tour
+
+// tour_two grid(2)
+
+**The project**
+
+. [Guide](guide/main.sx) — a folder with its own page
+. [Cross-document links](guide/cross-links.sx) — linking between files
+. `strike.yaml` in this folder — this project's nav labels and order
+
+// --
+
+**What this is**
+
+. **strikedown** (`.sx`) is the language: a typography-first superset of
+  markdown
+. **strike** is the toolkit: this reader, a static exporter, and a renderer
+
+// end tour_two
+
+Everything a document says about its own layout is written in the document.
+Everything about *navigating* documents lives in `strike.yaml`.
+
+## Where this sits
+
+This project is one half of the site you are reading. Its parent folder,
+`docs/`, is the content root. Because every document there lives inside a
+subfolder, `/` is a **project picker** — this tour on one side and the
+[reference docs](../reference/main.md) on the other.
+
+The `main.md` sitting beside those folders does not change that. A `main.*` at
+the content root supplies the picker's intro text and nothing else; it takes
+loose documents *next to* it to make the root a project of its own. Site-wide
+settings — theme, default width, serve defaults — live in `docs/strike.yaml`;
+this folder's own `strike.yaml` carries only what shapes this project's nav.
+
+## Try it
+
+```sh
+strike serve docs --watch          # the whole site, live-reloading as you edit
+strike serve docs/example          # just this project, as a site of its own
+strike render docs/example/main.sx # one file to HTML on stdout
+strike build docs -o html          # the whole site as static HTML
+```
+
+> [!TIP]
+> With `--watch` running, edit any file under `docs/` and the browser reloads
+> itself. The `serve: watch: true` line in `docs/strike.yaml` turns that on by
+> default, so plain `strike serve docs` watches too — and so does
+> `zig build run`.
+
+  Serving this folder directly is worth trying: with loose documents at the
+  content root and no folder to pick from, strike drops the picker and treats
+  the whole tree as one **root project** at `/`. Same files, same output, one
+  less level of navigation.

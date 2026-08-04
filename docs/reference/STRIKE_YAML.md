@@ -1,9 +1,14 @@
 # `strike.yaml`
 
-`strike.yaml` is the optional config that controls how `strikedown/` is organized into
-**projects** and how each project's sidebar nav is labelled and ordered. It is parsed once
-at startup by `src/yaml.zig` — **restart the server to pick up changes** (or run
-`strike serve --watch`, which re-scans content *and* config on change).
+`strike.yaml` is the optional config that controls how a content directory is organized
+into **projects** and how each project's sidebar nav is labelled and ordered. It is parsed
+once at startup by `src/yaml.zig` — **restart the server to pick up changes**, or run
+`strike serve --watch`, which re-scans content and config together.
+
+The one exception is `serve:` itself, which is resolved before the server starts: editing
+it under `--watch` has no effect until the next `strike serve`.
+
+Examples below use `docs/` as the content directory, the same one this site is built from.
 
 Everything is optional. With no `strike.yaml` anywhere, the site still works: projects are
 the top-level folders (alphabetical), docs auto-discover, and labels fall back to each
@@ -13,7 +18,7 @@ doc's first heading (then a prettified filename).
 
 There are two scopes, each a separate file.
 
-### Site — `strikedown/strike.yaml`
+### Site — `docs/strike.yaml`
 
 Controls the whole site: the `/` project picker and global defaults.
 
@@ -22,12 +27,12 @@ title: strikedown   # picker heading + browser title base
 theme: winter evening  # default theme: a season (fall|winter|spring|summer), a time
                     # (morning|evening), or both; light/dark are aliases for
                     # morning/evening. Readers can still override in Settings.
-width: 44           # default content width, in rem
+width: 46           # default content width, in rem
 base: /docs         # mount the site under a subpath of an existing website (see below)
 header: theme.sxh   # typography header applied to every project's documents (see below)
 projects:           # project order on the picker + nav; unlisted ones sort alphabetically after
-  - data_mining
-  - pchem
+  - example
+  - reference
 serve:              # default options for `strike serve <this dir>` (see below)
   watch: true
   open: true
@@ -36,47 +41,57 @@ serve:              # default options for `strike serve <this dir>` (see below)
 #### `serve` — default reader options
 
 The `serve:` map fills in any `strike serve` option the command line left unset, so a
-site can declare its preferred reading setup (`strike serve strikedown` behaving like
-`--watch --open`) with no flags. Keys: `watch`, `open` (booleans), `host`, `port`.
+directory can declare its preferred reading setup (`strike serve docs` behaving like
+`--watch --open`) with no flags. Keys: `watch`, `open`, `host`, `port`.
 **Explicit flags always win** — including the negations `--no-watch` / `--no-open` for
-overriding a yaml `true`. Only directory targets read it; serving a single file uses
-flags and built-in defaults. Malformed values (e.g. a non-numeric `port`) are ignored,
-fail-soft like everything else here.
+overriding a yaml `true`.
+
+`serve:` is read from **whatever directory you serve**, so a project folder may carry its
+own — `strike serve docs/example` honours `docs/example/strike.yaml`'s `serve:`, not the
+site's. It is listed as a site key because that is where it usually belongs, not because
+the loader looks only there. Serving a single *file* uses flags and built-in defaults
+only.
+
+`watch` and `open` are read strictly: the literal `true` enables them and **every other
+value, including YAML's `yes` and `on`, means false**. A malformed `port` is ignored.
+Fail-soft, like everything else here.
 
 #### `base` — mounting under a subpath
 
 Set `base:` when the site lives under a subpath of an existing website (e.g.
 `yoursite.com/docs/`) rather than at a domain root. Every generated link then carries the
-prefix (`/docs`, `/docs/pchem/quantum`, …), and `strike serve` answers under it too, so the
-local preview mirrors production exactly. The **static export stays mount-point-relative**
-(`index.html`, `pchem/quantum.html`, …) — deploy the output directory *at* the base (e.g.
-`webroot/docs/`), don't nest it again. `docs`, `/docs`, and `docs/` all mean the same
-thing; multi-segment bases (`/help/v2`) work. Without `base:` everything behaves as before
-(links from `/`).
+prefix (`/docs`, `/docs/example/layout`, …), and `strike serve` answers under it too, so
+the local preview mirrors production closely. The **static export stays
+mount-point-relative** (`index.html`, `example/layout.html`, …) — deploy the output
+directory *at* the base (e.g. `webroot/docs/`), don't nest it again. `docs`, `/docs`, and
+`docs/` all mean the same thing; multi-segment bases (`/help/v2`) work. Without `base:`
+everything behaves as before (links from `/`).
 
-### Per-project — `strikedown/<project>/strike.yaml`
+One known seam: the server's own 404 page links back to `/` rather than to the base, so a
+missing route under a mounted preview offers a way out of the mount point.
+
+### Per-project — `docs/<project>/strike.yaml`
 
 Controls one project's display metadata and its sidebar nav.
 
 ```yaml
-title: Data Mining                       # display name (else the prettified folder name)
-description: CSCI 436/536 — course notes  # shown on the generated project home
-home: FINAL_REVIEW_GUIDE.md              # doc served at /<project> (else a generated index)
+title: strikedown by example             # display name (else the prettified folder name)
+description: Every language feature      # shown on the generated project home
+home: overview.md                        # doc served at /<project> (else a generated index)
 header: theme.sxh                        # project typography header, layered over the site one
 
 labels:                                  # project-relative path → sidebar label
-  01_probability_statistics.md: Probability & Statistics
-  topo: Topology                         # folders get labels too
-  topo/algo_ref: Algorithm Reference
-  topo/topology.md: Lesson 1 — Continuity
+  markdown.md: The markdown subset
+  guide: Guide                           # folders get labels too
+  guide/cross-links.sx: Cross-document links
 
 order:                                   # sorts each directory; unlisted siblings follow alphabetically
-  - FINAL_REVIEW_GUIDE.md
-  - 01_probability_statistics.md
-  - topo
+  - markdown.md
+  - gallery.sx
+  - guide
 
 hidden:                                  # excluded from the nav AND from routes (404)
-  - PRACTICE_EXAM.md
+  - guide/scratch.sx
 ```
 
 ### Root project — loose docs at the content root
@@ -104,13 +119,14 @@ becomes the page at its containing folder's route:
 
 - **In a project root** (`<content>/<project>/main.md`): the project's home at
   `/<project>`, exactly as if `home: main.md` were set. An explicit `home:` still wins.
-- **In a subfolder** (`.../topo/main.md`): the folder gains its own page at
-  `/<project>/topo`, and its sidebar label becomes a link. Folders without a `main.*`
+- **In a subfolder** (`.../guide/main.sx`): the folder gains its own page at
+  `/<project>/guide`, and its sidebar label becomes a link. Folders without a `main.*`
   have no page (unchanged).
-- **At the content root, in picker mode**: its content replaces the picker's default
-  site-title heading (the project grid still follows). It does *not* create a root
-  project by itself. If loose docs already make a root project, `main.*` is simply that
-  project's home at `/`.
+- **At the content root, in picker mode**: its content *is* the picker page — it replaces
+  the generated site-title heading and project list outright, nothing is appended after
+  it. (Navigation doesn't depend on it: the sidebar carries every project and its
+  documents regardless.) It does *not* create a root project by itself. If loose docs
+  already make a root project, `main.*` is simply that project's home at `/`.
 
 `main.sx` beats `main.md` when both exist in one directory.
 
@@ -135,7 +151,7 @@ nav or routes. A missing/unreadable header prints a warning and is ignored.
 | `width` | site | Default content width in rem |
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
 | `projects` | site | Explicit project order on the picker + nav |
-| `serve` | site | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win |
+| `serve` | served dir | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win; not re-read by `--watch` |
 | `description` | project | Generated project-home subtitle |
 | `home` | project | Project-relative doc served at `/<project>` (else the project's `main.*`, else a generated index) |
 | `header` | site / project | Typography header (`.sxh`) seeding every document in the scope; project layers over site |
@@ -148,11 +164,8 @@ use forward slashes, and include the file extension for documents.
 
 ## Not configurable
 
-The sidebar's brand links to the **current project's root** (`/<project>`, or `/` for a
-root project), and beneath it a fixed subtitle credits strike itself. Neither is a yaml
-key: the first is derived from where the reader is, the second is attribution rather
-than configuration. There is no per-site repo link — if you want one, put it in your
-`main.*`, where author content belongs.
+The sidebar's brand and its subtitle are chrome, not config — there is no yaml key for
+either, and no per-site repo link. `docs/reference/UI.md` says why and what to do instead.
 
 ## How values resolve
 
@@ -161,11 +174,14 @@ than configuration. There is no per-site repo link — if you want one, put it i
 - **Ordering**: within each directory, children listed in `order:` come first (in that
   order); everything else follows alphabetically by path.
 - **Theme / width defaults**: spliced into the no-flash bootstrap as the fallback used only
-  when the reader has no saved preference — they never override a reader's choice.
-- **Self-contained projects**: a project's sidebar only shows that project. `/` is the single
-  place to cross between projects (a picker) — unless a root project exists, in which case
-  `/` is its home instead and there's no automatic cross-project page (see "Root project"
-  above). The brand link always returns to `/`.
+  when the reader has no saved preference — they never override a reader's choice, and
+  nothing in the reader may overwrite them for a reader who has expressed none
+  (`docs/reference/UI.md`, "The reader-state contract").
+- **Self-contained projects**: inside a project the sidebar shows only that project, so
+  crossing between projects goes through `/` — where the sidebar instead carries the whole
+  site, every project expandable into its own documents. From a project page the brand's
+  first segment is the way back there. (A root project has no picker: `/` is its home, and
+  there's no cross-project page — see "Root project" above.)
 
 ## Supported YAML
 

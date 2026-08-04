@@ -1,8 +1,9 @@
 # One flavor
 
-This file is named `syntax.sx`. Every other page in this project is a `.md`
-file, and that is the only difference between them — rename this one to
-`syntax.md` and not one byte of the output changes.
+This file is named `syntax.sx`, and so is nearly every page in this project —
+with one deliberate exception. [The markdown subset](markdown.md) is still a
+`.md` file, and that is the only difference between it and this one. Rename
+either, and not one byte of the output changes.
 
 ## Why there are no dialects
 
@@ -57,8 +58,9 @@ directive line.
 
 // --
 
-The [layout page](layout.md) explains both, and this is a cross-document link
-resolving from a `.sx` file to a `.md` one — which also needs no special case.
+The [commands page](commands.sx) explains both, and [the markdown
+subset](markdown.md) is a cross-document link from a `.sx` file to a `.md` one —
+which also needs no special case.
 
 // end proof
 

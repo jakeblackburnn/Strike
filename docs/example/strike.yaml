@@ -9,19 +9,25 @@ description: Every language feature, in a document you can read and then open in
 
 order:                  # nav order; unlisted entries follow alphabetically
   - markdown.md
+  - gallery.sx
   - syntax.sx
-  - layout.md
-  - citations.md
-  - degradation.md
+  - groups.sx
+  - commands.sx
+  - citations.sx
+  - degradation.sx
+  - warnings.sx
   - guide
 
 labels:                 # nav labels; otherwise the first heading, then the filename
   markdown.md: The markdown subset
-  syntax.sx: One flavor (.sx)
-  layout.md: Layout & commands
-  citations.md: Citations
-  degradation.md: Degradation
+  gallery.sx: Gallery
+  syntax.sx: One flavor
+  groups.sx: Groups & directives
+  commands.sx: Commands
+  citations.sx: Citations
+  degradation.sx: Degradation
+  warnings.sx: Warnings
   guide: Guide           # folders take labels too
 
 hidden:                 # dropped from the nav AND from the routes (404)
-  - guide/scratch.md
+  - guide/scratch.sx

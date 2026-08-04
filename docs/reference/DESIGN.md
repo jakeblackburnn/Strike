@@ -32,8 +32,15 @@ need goes through the language process.
 | `docs/reference/STRIKEDOWN.md` | The language spec — every form, its meaning, canonical examples. Implementation-independent: every sentence must stay true for the PDF backend. |
 | `docs/reference/design/NNN-*.md` | One design note per language feature — the candidates considered and the decision made. History; the spec is truth. |
 | `docs/reference/MODEL.md` | The internal model of record — the document tree, the pipeline, the taxonomy↔types mapping, and the extension recipes implementations follow. |
-| `docs/reference/UI.md` | Reader chrome principles. |
-| `docs/reference/STRIKE_YAML.md` | Reader/config reference. |
+| `docs/reference/UI.md` | Reader chrome principles, the palettes, and the reader-state contract. |
+| `docs/reference/STRIKE_YAML.md` | Reader/config reference — every yaml key and how it resolves. |
+| `docs/reference/DESIGN.md` | This file: the process itself. |
+| `README.md` | The project's front door — motivation, install, CLI invocation. It links to the documents above and never restates them. |
+| `docs/example/` | The demo project: every language feature as a live document. A shipped feature with no example there is not finished. |
+
+Each fact has exactly one of these homes. A doc that needs a fact it doesn't own links to
+the owner rather than restating it — every duplicated statement in this repo has
+eventually drifted.
 
 ## When a design note is required
 
@@ -53,7 +60,16 @@ Notes live at `docs/reference/design/NNN-slug.md`, numbered sequentially, never 
 - **accepted** — the Decision section is written. Implementation may begin.
 - **shipped** — implemented and tested; the canonical examples are merged into
   `STRIKEDOWN.md`. From here the note is a record, not a reference.
+- **living** — the note is not history: it is the place a class of decisions gets made,
+  one at a time, and it stays open as the language grows. A living note is authoritative
+  for the cells it has decided and explicitly non-binding for the rest. Only
+  `013-command-realization.md` holds this state today, and adding another needs a reason
+  — the default is that a note closes.
 - **rejected / superseded** — kept, with a line saying why.
+
+A shipped note may qualify its status when part of it is still under review — `003`'s
+"shipped, defaults provisional" means the feature is settled and its concrete numbers are
+not. The qualifier goes on the status line so it cannot be missed.
 
 ## Division of labor
 
@@ -64,10 +80,12 @@ This repo is developed with AI assistance; the process is shaped around that:
 - **The AI diverges before the decision.** A draft presents 2–3 genuine syntax
   candidates with worked examples, a degradation analysis for each, and the edge cases —
   alternatives to choose between, not one proposal to approve.
-- **The corpus is the validator.** Every syntax candidate is checked against the real
-  documents in `strikedown/` for accidental activation — text that today is inert prose
-  and would silently change meaning. A candidate that collides needs either a narrower
-  trigger or a rejection note.
+- **The corpus is the validator.** Every syntax candidate is checked against real
+  documents for accidental activation — text that today is inert prose and would silently
+  change meaning. `docs/` is the corpus of record, because it is in the repo and anyone
+  can rerun the check; notes through 015 also cite a local writing folder, which later
+  notes no longer rely on. A candidate that collides needs either a narrower trigger or a
+  rejection note.
 - **Degradation is a mandatory section.** Every superset form must be inert prose in
   documents that never activate it (the parses-cleanly precedent of `//` lines). A
   draft that cannot state its degradation story is not ready to decide on.

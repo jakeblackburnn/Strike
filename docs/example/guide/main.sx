@@ -1,6 +1,6 @@
 # Guide
 
-This folder has a `main.md`, so the folder itself has a page — this one — and
+This folder has a `main.sx`, so the folder itself has a page — this one — and
 its nav label is a link rather than a plain heading. Files named `main.md` or
 `main.sx` never appear in the nav; they *become* the page at their containing
 folder's route.
@@ -31,10 +31,10 @@ project-relative paths:
 labels:
   guide: Guide                  # a folder gets a label like any document
 hidden:
-  - guide/scratch.md            # dropped from the nav AND from the routes
+  - guide/scratch.sx            # dropped from the nav AND from the routes
 ```
 
-`scratch.md` really is in this folder on disk. It has no nav entry and its route
+`scratch.sx` really is in this folder on disk. It has no nav entry and its route
 404s — which is how a working file lives beside published ones.
 
 > [!NOTE]
@@ -44,4 +44,4 @@ hidden:
 > tree becomes one **root project** served at `/`, subfolders nesting into its
 > nav, which is how a repo's `docs/` folder works with no config at all.
 
-Next: [cross-document links](cross-links.md).
+Next: [cross-document links](cross-links.sx).

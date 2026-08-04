@@ -34,10 +34,12 @@ does, which the spec deliberately doesn't say.
 > [!NOTE]
 > The spec wins. Where a design note and [STRIKEDOWN.md](STRIKEDOWN.md)
 > disagree, the note is history and the spec is current — notes are written
-> before a feature ships and are not revised afterwards.
+> before a feature ships and are not revised afterwards. The one exception is a
+> note marked **living**, which stays open because it is where a whole class of
+> decisions gets made one at a time.
 
 ## Elsewhere
 
-The [example project](../example/main.md) is the same material as running code:
+The [example project](../example/main.sx) is the same material as running code:
 a working site where every language feature appears in a document you can read
 in the browser and open in your editor side by side.

@@ -1,0 +1,164 @@
+# Groups and directives
+
+Two directive families arrange a document: `//` lines bracket content into
+**groups**, and `/cmd()` lines apply one command to the next element. This page
+is the grammar; [Commands](commands.sx) is the vocabulary.
+
+## The `//` family
+
+| Line | Meaning |
+| --- | --- |
+| `// name cmd()` | opener — a named group |
+| `// cmd()` | opener — nameless, when the first token has parens |
+| `// --` | separator — start the next section |
+| `// end name` | closer — must name the innermost open group |
+| `// end` | closer — the innermost group, unnamed |
+| `//` | closer — the same, shorter |
+
+// two_col grid(2)
+
+**Left section**
+
+Sections fill left to right. Each one holds as many content elements as you
+want — paragraphs, lists, code, anything.
+
+// --
+
+**Right section**
+
+This group is named `two_col`, and the name is optional. The one below opens
+with no name at all.
+
+// end two_col
+
+A nameless opener needs parens on its first token, which is how a command is
+told apart from a name:
+
+// grid(2)
+
+**Nameless, section one**
+
+Written `// grid(2)` — no name, straight to the command.
+
+// --
+
+**Nameless, section two**
+
+Closed with a bare `//`, which means the same as `// end`.
+
+//
+
+## Groups nest
+
+A group inside a group is ordinary. Different commands nest freely; the same
+command does not, and that is the [layout-level rule](#the-layout-level-rule)
+below.
+
+// outer grid(2)
+
+// inner_left color(muted)
+
+**A group inside a cell**
+
+This muted group sits entirely inside the left cell of a grid. It is closed
+before the separator, so the separator still belongs to `outer`.
+
+// end inner_left
+
+// --
+
+**The right cell**
+
+Separators and closers always bind to the innermost group that is open, so
+nesting never needs the author to think about which `//` matches what — only
+to close in order.
+
+// end outer
+
+A group with no commands at all is just a named container: it groups content,
+creates no layout, and nests as deeply as you like.
+
+## Single commands
+
+A `/command()` line applies one command to the **very next content element**,
+with no closer to remember.
+
+/skinny(60%)
+
+This paragraph renders at 60% of the body column, centered in it. Only this
+paragraph — the next one is back to full width.
+
+Commands chain: consecutive `/cmd()` lines all bind to the same element,
+nesting innermost-last, so a chain is the nested-group form without the
+ceremony.
+
+/skinny(70%)
+
+/center()
+
+Narrow *and* centered, from two stacked directives.
+
+## When a directive is not a directive
+
+A `//` line is a directive only if **both** halves of the activation rule hold:
+the line parses cleanly, *and* — for separators and closers — a group is
+actually open to act on. Failing either one, the line is prose.
+
+The four lines below are all ordinary text on this rendered page. Two are
+malformed; two parse perfectly and simply have nothing to close.
+
+// just a comment here
+
+// box glow(5)
+
+// --
+
+// end nothing_is_open
+
+The same holds for `/cmd()` lines: the command must parse, *and* a content
+element must follow. A chain that runs into the end of a document, or into
+another directive, reverts to prose in full. There is a `/skinny(50%)` line at
+the very bottom of this page doing exactly that.
+
+> [!NOTE]
+> This is the degradation story in one sentence: strikedown only ever *adds*
+> meaning to a line that earns it. [Degradation](degradation.sx) collects the
+> near-misses; [Warnings](warnings.sx) covers the lines that do activate and
+> still get told something.
+
+## The layout-level rule
+
+Groups nest freely, but **each layout command applies at most once** along any
+chain of containers: a `skinny` inside a `grid` cell is fine, a `grid` inside a
+`grid` is not. The inner one is ignored with a warning on stderr, and the group
+still forms — layout mistakes never break your document's structure.
+
+// nesting_ok grid(2)
+
+/skinny(80%)
+
+A narrow paragraph inside the left cell. Different commands, so this nests
+happily.
+
+// --
+
+The right cell.
+
+// end nesting_ok
+
+Only the colliding command is stripped. On an opener carrying several, the rest
+still apply — and a group with no layout commands never consumes a level, so a
+grid inside a plain named container is fine.
+
+## Unterminated groups
+
+A closer is optional. A group left open runs to the end of the document, which
+is what the group below does — there is no `// end` after it, and the page ends
+correctly anyway.
+
+// tail_group color(muted)
+
+This muted group is never closed. It swallows the rest of the page, which is
+exactly one paragraph and one inert directive line.
+
+/skinny(50%)

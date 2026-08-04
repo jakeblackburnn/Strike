@@ -1,6 +1,7 @@
 # 007 — The `collapse` command (`collapse()`, `collapse(open)`)
 
-**Status: accepted** (decision dictated by Jack, 2026-07-20)
+**Status: shipped** (decision dictated by Jack, 2026-07-20; implemented and tested the
+same day)
 
 **Amended 2026-07-22** (visual fix, implementation only — no language change): the
 open-state card background was specified as "lighter than the page," which has no

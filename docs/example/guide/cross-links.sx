@@ -8,14 +8,14 @@ an ordinary file link. One spelling works in both worlds.
 
 **From this folder**
 
-. [This folder's page](main.md) — a `main.*` target lands on the folder route
-. [Sibling by name](cross-links.md) — itself
+. [This folder’s page](main.sx) — a `main.*` target lands on the folder route
+. [Sibling by name](cross-links.sx) — itself
 
 // --
 
 **Up a level**
 
-. [This project's home](../main.md)
+. [This project’s home](../main.sx)
 . [The markdown subset](../markdown.md)
 . [A specific section](../markdown.md#tables) — fragments survive
 . [Another project](../../reference/main.md) — `../` climbs as far as you like

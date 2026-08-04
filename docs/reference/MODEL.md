@@ -134,19 +134,24 @@ backlink targets). Keys are transient: lifted from entry text and consumed by
 resolution, they never appear in the tree.
 
 The load-bearing decision: **`Attrs` lives on every `Block`**, not on `Group`.
-Groups are today the only *targeting mechanism* — the only syntax that gets a
-command applied somewhere — so in practice only group blocks carry non-default
-attrs, and `Group` itself holds pure structure (name + sections). But the slot
-is uniform: a future element-type-specific command (`// ###.color(accent)`,
-still needing a design note for its selector syntax) will write these same
-fields onto heading blocks directly, and no model change will be needed —
-only the new targeting syntax. Emitters already read `block.attrs` on every
-arm through one shared style helper, so a styled heading renders correctly
-the day the parser can produce one.
+Groups are today the main *targeting mechanism* — the syntax that gets a
+command applied somewhere — and `Group` itself holds pure structure (name +
+sections). Two block kinds carry non-default attrs today: group blocks, and
+any paragraph whose first line is whitespace-indented (`indent = 1`, note
+015). But the slot is uniform: a future element-type-specific command
+(`// ###.color(accent)`, still needing a design note for its selector syntax)
+will write these same fields onto heading blocks directly, and no model change
+will be needed — only the new targeting syntax.
 
-Invariant: `attrs.columns` only ever appears on a group block — the parser
-writes attrs nowhere else today, and `grid` arranges *sections*, which only
-groups have. Backends may rely on this without a guard.
+Emission is uniform with one exception. Every emitter arm passes its block's
+attrs through the shared style helper — *except display math*, which the HTML
+backend emits as bare delimiters with no element to hang a style on, silently
+dropping any attrs it carries. That is the `*open, blocked*` column in note
+013's matrix, and it is a gap to close, not a rule.
+
+Invariant: `attrs.columns` only ever appears on a group block, because `grid`
+arranges *sections* and only groups have them. Backends may rely on this
+without a guard.
 
 Two content-element payloads carry a *variant* of their form rather than a
 separate kind: `Quote.alert` (an `Alert` tag when the quote's first content
@@ -172,6 +177,12 @@ are *types* and which are *roles* — the distinction resolves every fuzzy edge.
 | directive (group / single-command / alias) | `GroupLine` / `parseSingleCommandLine` / `sheet` namespace — transient parse classifications; directives never appear in the tree |
 | color role                   | `TextColor` (accent, muted, fg)                   |
 
+The tree types above (`Doc`, `Block`, `Attrs`, `Inline`, `TextColor`, …) are public;
+the parsing machinery named in the last two rows — `Command`, `GroupLine`,
+`parseCommand`, `applyCommand`, `isLayout`, `resolveCitations`, `isBlockStart` — is
+private to `strikedown.zig`. A second backend consumes the tree and never touches them;
+the extension recipes below are for work *inside* the parser.
+
 So "is a color-only group a layout element?" — no. Layout-element-ness is a
 per-block *role* derived from attrs (`isLayout` classifies each command tag),
 never a distinct node type. A single-command directive produces the same
@@ -179,28 +190,35 @@ never a distinct node type. A single-command directive produces the same
 or styled container by exactly the same test. The main body of the document
 (the top-level `[]Block`) is the implicit outermost layout element.
 
-## Command semantics (backend-neutral)
+## Command realization (the HTML backend)
 
-What each command *means*, independent of any output format. The HTML
-realization lives in one place — `render_html.writeStyleAttr` — and is listed
-here only as the first backend's interpretation.
+What each command *means*, and its argument grammar, is
+`docs/reference/STRIKEDOWN.md`'s — this table is only what the first backend
+does with it. Style declarations come from one place,
+`render_html.writeStyleAttr`; structural commands shape elements instead.
 
-| Command      | Meaning                                                    | Layout? | HTML realization |
-| ------------ | ---------------------------------------------------------- | ------- | ---------------- |
-| `grid(n)`    | arrange the group's sections in `n` columns                | yes     | CSS grid, fixed gap |
-| `skinny(N%)` | render at N% of the body column's width, centered in it (bare `skinny()` = 75%, provisional) | yes | `width:N%;margin-inline:auto` |
-| `wide(N%)` | render at N% of the body column's width, centered in it, overflowing evenly on both sides (bare `wide()` = 125%) | yes | `width:N%;margin-inline:calc((100% - N%) / 2)` |
-| `center()`   | center-align contained text                                | yes     | `text-align:center` |
-| `color(role)`| set contained text to a theme role's color                 | no      | `color:var(--role)` |
-| `collapse()` / `collapse(open)` | fold the group behind its leader (first block when it has ≥ 2; an empty bar otherwise), closed/open initially | yes | `<details>`/`<summary>` + a body wrapper — element shape, not style |
-| `indent(n)` | inset the element from the left by `n` steps | no | realization depends on the element type — see below |
-| `citations()` | the group's numbered list is the document's reference list; marks bind to its entries (one group per document, enforced by the parse-end pass) | yes | a `<section class="sx-citations">` wrapper; entry `<li>`s get `id` anchors + backlinks, marks become links + a `<sup>` — element shape, not style |
+| Command      | Layout? | HTML realization |
+| ------------ | ------- | ---------------- |
+| `grid(n)`    | yes     | CSS grid, fixed gap |
+| `skinny(N%)` | yes     | `width:N%;margin-inline:auto` |
+| `wide(N%)`   | yes     | `width:N%;margin-inline:calc((100% - N%) / 2)` |
+| `center()`   | yes     | `text-align:center` |
+| `color(role)`| no      | `color:var(--role)` |
+| `collapse()` / `collapse(open)` | yes | `<details class="sx-group sx-collapse">`/`<summary>` + a body wrapper carrying the group's other attrs — element shape, not style |
+| `indent(n)`  | no      | depends on the element type — see below |
+| `citations()`| yes     | a `<section class="sx-group sx-citations">` wrapper; entry `<li>`s get `id` anchors + backlinks, marks become links + a `<sup>` — element shape, not style |
+
+The leader a `collapse` group folds behind is the first block of its **first
+section**, and only when the group holds ≥ 2 blocks in total; anything else
+gets the anonymous empty bar.
 
 Backend obligations, in spec terms:
 
 - **Theme-role indirection**: `color` names a role, never a concrete color; a
-  backend maps roles to its own palette. Element-owned colors (links, quotes,
-  code) win inside colored regions.
+  backend maps roles to its own palette. Keeping element-owned colors (links,
+  quotes, code) intact inside colored regions is part of that mapping, not
+  something the tree encodes — the emitter writes one `color` declaration on
+  the wrapper and the backend's own stylesheet decides what survives it.
 - **The layout-level rule** is enforced at *parse time*, per command: the
   parser keeps one open-group counter per command tag (`Parser.layout_depth`);
   a layout command whose counter is already > 0 is stripped from the opener
@@ -214,18 +232,13 @@ Backend obligations, in spec terms:
 - **Attribute emission is uniform**: one helper renders a block's attrs; the
   declaration order (grid, width, center, color, indent) is owned there and
   locked by the render tests. New commands extend at the end.
-- **Realization is per element type.** A command's *meaning* is one thing;
-  how a given content element carries it out is another, and where an
-  element's own structure occupies the space the command acts on, the
-  structure moves with it. `indent` is the live case: flowing prose takes a
-  first-line inset (`text-indent`), while a list — which owns a marker column
-  — shifts as a whole box (`margin-left`, plus a `text-indent:0` reset so an
-  enclosing group's inherited value doesn't also move the item text). The
-  emitter threads an enclosing group's indent down the walk so a box-mode
-  element can realize it itself rather than inheriting the wrong property.
-  Most (command, element) pairs are still undecided:
-  `docs/reference/design/013-command-realization.md` is the matrix and the place they
-  get decided. A second backend has no CSS inheritance to fall back on and
+- **Realization is per element type.** A command's *meaning* is one thing; how
+  a given content element carries it out is another. Which pairs are decided
+  and which are still open is one table:
+  `docs/reference/design/013-command-realization.md`. The model-level
+  consequence is that the emitter threads an enclosing group's indent down the
+  walk, so a box-mode element can realize it itself instead of inheriting the
+  wrong property. A second backend has no CSS inheritance to fall back on and
   must realize every pair explicitly.
 - **Structural commands** (`isStructural`; `collapse` and `citations`) are
   realized as *element shape*, not style declarations — `Attrs.anyStyle`

@@ -1,8 +1,8 @@
 # 013 — Command realization by content-element type
 
-**Status: partially accepted** (the `indent` × list cell was dictated by Jack,
-2026-07-25, and is shipped; every other cell is **open** — this note is the
-place they get decided, not a record that they have been.)
+**Status: living** (the `indent` × list cell was dictated by Jack, 2026-07-25, and is
+shipped; every other cell is **open** — this note is the place they get decided, not a
+record that they have been. See `docs/reference/DESIGN.md` for what *living* means.)
 
 > Read this as a working model, not settled spec. `docs/reference/STRIKEDOWN.md` carries
 > only the cells that have actually been decided; everything marked *open*
@@ -21,7 +21,7 @@ the item instead of moving the line. The list marker did not move because
 Nothing in the language or the model says how a command's meaning maps onto
 different element types, so each new command has been decided one element at
 a time, in the emitter, by whichever CSS property seemed right at the time.
-That is fine while there are six commands and eight element types and most
+That is fine while there are eight commands and eight element types and most
 combinations are rare — it stops being fine the moment images, figures, or a
 second backend arrive, because PDF has to answer the same questions with none
 of CSS's inheritance to hide behind.
@@ -60,7 +60,7 @@ Commands down, element types across. **shipped** = decided and implemented;
 | `center()` | text centers — *shipped* (005) | *open*: item text centers, markers hang | *open*: quote text centers | *open*: source text centers | *open*: cell text centers | *open*: no effect | *open, blocked* |
 | `skinny(N%)` / `wide(N%)` | width on the box — uniform | uniform | uniform | uniform | uniform | uniform | *open, blocked* |
 | `color(role)` | text takes the role — *shipped* (006) | uniform | element color wins — *shipped* (006) | element color wins — *shipped* (006) | uniform | *open*: no effect | *open, blocked* |
-| `grid(n)` / `collapse()` | group-only by construction | | | | | | |
+| `grid(n)` / `collapse()` / `citations()` | group-only by construction | | | | | | |
 
 ### The decided cell: `indent` on a list
 

@@ -1,11 +1,14 @@
 # Strikedown — the language
 
 The spec of record for strikedown (`.sx`), a typography-first superset of
-markdown. Every form, its meaning, and its canonical examples live here;
-`docs/reference/design/NNN-*.md` records how each decision was reached (history), and
-this file is what wins when they disagree. Everything in this document is
-implementation-independent: each sentence must stay true for every backend
-(HTML today, PDF planned), so nothing here names tags, CSS, or files.
+markdown: every form and what it means. `docs/reference/design/NNN-*.md`
+records how each decision was reached (history), and this file is what wins
+when they disagree. Everything here is implementation-independent — each
+sentence must stay true for every backend (HTML today, PDF planned), so nothing
+names tags, CSS, or files.
+
+For worked examples, read the `docs/example/` project, where every form below
+is a rendered page you can open beside its source.
 
 Two principles govern everything below:
 
@@ -32,22 +35,23 @@ Every block-position construct in a document is one of:
 - **Layout element** — a *created* thing: layout commands make them.
   Layout elements dictate how content elements are organized — they hold
   content, they are not content. The **main body of the document is itself
-  the top-level layout element**. Layout elements nest, but **each layout
-  command applies at most once along any chain of containing layout
-  elements**: no grids inside grids, no skinny inside skinny — while a
-  skinny element inside a grid cell is fine. (Enforcement: a repeated
-  command still forms its group, but that command is ignored and a warning
-  is emitted; other commands on the same opener are untouched. This is the
-  **layout-level rule**.)
+  the top-level layout element**. Layout elements nest, under the constraint
+  set out in "The layout-level rule" below.
 - **Directive** — a line addressed to the renderer rather than the reader.
   Directives emit nothing themselves; they configure, bracket, or create
   the above.
 
 **Groups** sit between the taxa: a group (`//` lines, below) is a *named
-container* bracketing a run of content elements into sections. A group with
-no layout commands is only a container — it may nest freely and creates no
-layout element. A group given layout commands *becomes* a layout element,
-and the layout-level rule applies to it.
+container* bracketing a run of content elements into sections. What a group
+*is* depends on what it carries:
+
+- no commands — a **plain container**. It creates no layout element and nests
+  freely.
+- only non-layout commands (`color`, `indent`) — a **styled container**. It
+  still creates no layout element, and still nests freely; it just changes how
+  its contents read.
+- any layout command — a **layout element**, and the layout-level rule applies
+  to it.
 
 ## Directives
 
@@ -71,14 +75,18 @@ content into a group. Grammar:
 - A **name** is one bare token of `[A-Za-z0-9_-]+`; `end` and `--` are
   reserved. A **section** is the run of content elements between
   opener/separator/closer — one cell of whatever layout applies.
-- **Activation**: a `//` line is a directive **iff it parses cleanly** —
-  every command recognized with valid args, valid name — and, for
-  separator/closer/bare forms, a group actually open. Anything else is
-  literal prose, and keeps soft-wrapping into a preceding paragraph exactly
-  as in plain markdown.
+- **Activation** has two halves, and a line needs both. It must **parse
+  cleanly** — every command recognized with valid args, a valid name — *and*,
+  for separator/closer/bare forms, a group must actually be open. `// --`
+  parses perfectly and is still prose where nothing is open to separate.
+  Anything that fails either half is literal prose.
 - An unknown or malformed command deactivates the whole line (strict, so
   typos are *seen* — and an older strike renders a newer document's opener
   as visible prose, never broken layout).
+- Deactivated lines are prose, but a line that parses cleanly and fails only
+  the *context* half still breaks a preceding paragraph rather than
+  soft-wrapping into it. A deliberate divergence: the alternative is deciding
+  a line's block-ness from something arbitrarily far ahead of it.
 - Unterminated groups run to end-of-document; the closer is optional.
 - Groups nest; separators and closers bind to the innermost open group. A
   `// end <name>` naming anything other than the innermost group is prose.
@@ -107,25 +115,18 @@ element**, as if that one element were a nameless one-section group.
 ### Alias directives — `:` (reserved)
 
 The `:` namespace is reserved for **alias definitions** — naming a command or
-command-set for reuse, usable in-document and collected into shared `.sxh`
-header files. Intended direction (2026-07-16): `:thin-grid grid(2)
-skinny(80%)` would define `thin-grid`, and `// thin-grid` would then open a
-group carrying both commands. **No `:` directive is currently defined** —
-every `:` line is ordinary prose, and `.sxh` contents are inert. (The
-namespace was originally earmarked for typography *settings* — the `:color`
-directive and its `(name)` block prefix, removed 2026-07-14; the alias
-direction supersedes that idea. Open for the eventual design: an alias name
-in a `//` opener sits in the group-name position, so alias resolution and
-group naming must be disambiguated. A `(name)` prefix remains plain prose.)
+command-set for reuse, in-document and in shared `.sxh` header files
+(`docs/reference/design/010-aliases.md`). **Nothing is defined yet**: every `:`
+line is ordinary prose and `.sxh` contents are inert.
 
 ## Commands
 
 A **command** is a `word(args)` token — parens required, so command keywords
 can never collide with group names. One vocabulary serves group openers and
 single-command directives. Most commands are **layout commands** (they make
-their target a layout element and count under the layout-level rule);
-`color` is the first **non-layout command** — it styles content without
-creating a layout element and never counts under the rule.
+their target a layout element and count under the layout-level rule); `color`
+and `indent` are **non-layout** — they style content without creating a layout
+element, so they nest freely and inner wins.
 
 | Command | Meaning |
 | --- | --- |
@@ -141,7 +142,10 @@ creating a layout element and never counts under the rule.
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
 `center(5)`, `color(red)`, `collapse(true)`, `indent(x)`, `citations(2)`,
-`glow(5)` all leave their line as prose.
+`glow(5)` all leave their line as prose. Numeric arguments are read as plain
+decimal integers; write them plainly, and treat anything a stricter reading
+would reject (`grid(+2)`, `skinny(5_0%)`) as unspecified rather than as
+syntax.
 
 `skinny` and `wide` are one width control with two names: both set the
 element's width as a percentage of the body column, and their ranges meet at
@@ -157,16 +161,18 @@ which of those cells are decided; most are still open.
 
 A group carrying `collapse()` folds away behind its **leader** until the
 reader opens it; `collapse(open)` arrives already open. The leader is the
-group's first content element — it never folds, it always carries an
-open/close indicator, and the whole element is the control. A group with at
-most one content element has no leader to show: it renders an anonymous
+first content element of the group's **first section** — it never folds, it
+always carries an open/close indicator, and the whole element is the control.
+A group with fewer than two content elements has no leader to show, and one
+whose first section is empty has none to find: either renders an anonymous
 **empty bar** (indicator only) and folds everything beneath it. Other
 commands on the same group apply to the *folded body*, not the leader.
 Open/closed state belongs to the reading, not the document — nothing
 persists. `collapse` is a layout command, so collapsible groups do not nest
-(the layout-level rule strips the inner `collapse` with a warning), and
-renderers without interactivity (print, PDF) show collapsible groups
-expanded.
+(the layout-level rule strips the inner `collapse` with a warning).
+
+Folding is a screen affordance, not document meaning: a renderer without
+interactivity should show collapsible groups expanded.
 
 ### Indentation
 
@@ -174,10 +180,7 @@ expanded.
 indentation, not a margin shift: the rest of a wrapped paragraph stays flush
 against the body's left edge. On a group, the same command indents *each*
 content element inside it (every paragraph, heading, etc. gets its own
-first-line inset), not the group as a single shifted box — the HTML backend
-achieves this by emitting the indent as CSS `text-indent` once on the
-wrapper, an inherited, first-line-only property that reaches every
-descendant block independently.
+first-line inset), not the group as a single shifted box.
 
 A **list** is the exception, because its marker column is part of the element
 and not part of its text: an indented list moves as a whole, markers and items
@@ -188,22 +191,20 @@ which also tracks the still-open cases: quotes, code blocks, and tables
 currently inset their contents rather than moving as boxes.)
 
 **Leading whitespace** on a paragraph is sugar for one step of the same data
-(`docs/reference/design/015-paragraph-indent.md`): a paragraph whose **first line**
-begins with any whitespace — one space, two, four, or a tab — carries
-`indent(1)`. The amount and kind are deliberately not significant (the
-convention is two or four spaces); depth beyond one step is `indent(n)`.
+(`docs/reference/design/015-paragraph-indent.md`): a paragraph whose **first
+line** begins with any whitespace carries `indent(1)`. The amount and kind are
+deliberately not significant (the convention is two or four spaces); depth
+beyond one step is `indent(n)`.
 
-The rule reaches **paragraphs only**. Headings, quotes, lists, tables, code
-blocks, math blocks, and all three directive families ignore leading
-whitespace exactly as they always have, and use `indent(n)` when they want an
-inset. And only a paragraph's *first* line is read, so an indented line
-following a paragraph line is an ordinary soft-wrap continuation — an indented
-paragraph must be preceded by a blank line.
+Two boundaries make that safe. It reaches **paragraphs only** — every other
+block form, and all three directive families, ignore leading whitespace
+exactly as they always have. And only a paragraph's *first* line is read, so
+an indented line after a paragraph line is an ordinary soft-wrap continuation:
+an indented paragraph must be preceded by a blank line.
 
-`indent` is non-layout: nesting *scopes* rather than stacks — an inner
-`indent(n)` overrides the inherited value for its own subtree, the same
-inner-wins cascade `color` uses, so indents never count under the
-layout-level rule and nest freely.
+Being non-layout, `indent` *scopes* rather than stacks — an inner `indent(n)`
+overrides the inherited value for its own subtree, the same inner-wins cascade
+`color` uses.
 
 ### Color roles and the inline color span
 
@@ -225,8 +226,15 @@ Color is deliberately restricted where interactions would be ambiguous:
   literal prose (links can't be colored), and a link inside a span's
   brackets parses exactly as it would in plain markdown (no span forms).
 - Spans don't nest: the earliest `].color(` closes the span.
-- Elements that own a theme color — links, blockquotes, code — keep it
-  inside colored groups and spans; `color` reaches only plain flowing text.
+- `[].color(role)` is degenerate rather than rejected — it parses and colors
+  nothing. (The citation mark, which shares this grammar, rejects empty
+  brackets outright; see "Citations".)
+- `color` is for plain flowing text. Elements that own a theme color — links,
+  blockquotes, code — should keep it inside colored regions. That is an
+  obligation on a renderer's theme rather than something the document
+  encodes, so how completely it holds is the renderer's business; strike's
+  own reader honors it everywhere except citation marks, which take the
+  surrounding color deliberately.
 
 ### Citations
 
@@ -252,31 +260,34 @@ cites two sources with one mark.
 
 The **bibliography** is a group carrying `citations()` — a structural
 command, like `collapse`: it shapes what renderers emit rather than styling
-it. The group must contain a **numbered list**; its items are the entries,
-and the author's list order *is* the numbering. Entries are ordinary content
-— full inline markup, written and ordered by the author; `citations()` does
-not define a data format, it declares what an already-written list is. An
-entry may open with a leading `[key]` (the same key shape), which binds that
-key to the entry and is lifted from the rendered text; an all-digit or
-otherwise non-key bracket stays literal prose. Key lifting happens only
-inside the declared citations group — nowhere else does a leading bracket
-mean anything new.
+it. The group must contain a **numbered list** — specifically the first one
+sitting directly in the group, taking its sections in order; a list nested
+inside a sub-group does not count, and a second list is ignored. Its items
+are the entries, in the author's order. Entries are ordinary content — full
+inline markup, written and ordered by the author; `citations()` does not
+define a data format, it declares what an already-written list is. An entry
+may open with a leading `[key]` (the same key shape), which binds that key to
+the entry and is lifted from the rendered text; an all-digit or otherwise
+non-key bracket stays literal prose. Key lifting happens only inside the
+declared citations group — nowhere else does a leading bracket mean anything
+new.
+
+Entries are numbered **1..n by position**, whatever numbers the list is
+written with. A list that starts at 1 — the overwhelmingly normal case — has
+nothing to think about. A list that starts anywhere else warns, because the
+numbers the reader sees would otherwise disagree with the numbers marks bind
+to.
 
 One citations group per document: later ones keep their content but drop the
 command with a warning (and citations-in-citations strips under the
-layout-level rule). Marks anywhere in the document — before or after the
-group — bind to it. A number out of range, an unknown key, or a mark with no
-citations group at all warns and renders that reference inert.
+layout-level rule). A group carrying the command with no numbered list to
+find keeps its content, warns, and renders as an ordinary group. Marks
+anywhere in the document — before or after the group — bind to it. A number
+out of range, an unknown key, a duplicate key (the first entry wins), or a
+mark with no citations group at all warns and renders that reference inert.
 
 Renderers set the group as a bibliography: entries become anchor targets,
-marks link to them, entries link back to every citing mark. What never
-varies: the numbers the reader sees are the entry positions the author
-wrote.
-
-Degradation is the feature's strongest property: a renderer that knows
-neither form shows `[the claim].cite(1)` as readable prose and the reference
-list as a correctly ordered numbered list — nothing is lost but the linking
-and the bibliography setting.
+marks link to them, entries link back to every citing mark.
 
 ### The layout-level rule
 
@@ -293,21 +304,27 @@ fine.
 
 ## The markdown subset
 
-A practical GFM subset. Four standard-markdown forms are deliberately not
-implemented yet — **setext headings**, **HTML blocks**, **footnotes and
-reference links**, and **front matter**. They need no design note when they
-land: GFM is already their spec, so closing a gap means implementing to it and
+A practical GFM subset. These standard-markdown forms are not implemented yet:
+**setext headings**, **HTML blocks**, **footnotes and reference links**,
+**front matter**, **`_underscore_` emphasis**, **hard line breaks** (trailing
+two spaces or `\`), **`~~~` fences**, **`1)` ordered markers**, and **HTML
+entities**. Each is inert text today. They need no design note when they land:
+GFM is already their spec, so closing a gap means implementing to it and
 recording the result here.
 
 - **ATX headings** `#`–`######`, each with an anchor id slugified from its
-  text and deduplicated per document (`-2`, `-3`, …).
+  text and deduplicated per document (`-2`, `-3`, …). Slugs lowercase ASCII,
+  swap runs of non-alphanumerics for `-`, and pass other bytes through as
+  written; a heading that slugifies to nothing gets `section`.
 - **Paragraphs** — consecutive normal text lines join into one flowing text
   element (soft-wrap, joined with a space); a blank line separates.
 - **Blockquotes** `>` — the same merging rule inside the quote:
   consecutive `>` lines flow into one paragraph; a bare `>` line breaks
   paragraphs within the quote; a plain line directly after a `>` line
   **lazily continues** the open quote paragraph. A blank line — or any line
-  starting a new block form — ends the quote.
+  starting a new block form — ends the quote. A quote holds **flowing
+  paragraphs only**: a list, heading, fence, or nested `>` inside a quote is
+  literal text in the quote's paragraph, not a nested block.
 - **Alerts** — a blockquote whose *first* content is `[!TYPE]` becomes a
   callout titled by its type: `NOTE`, `TIP`, `IMPORTANT`, `WARNING`,
   `CAUTION` (GFM's five) plus `TODO`, `EXAMPLE`, `QUESTION` (superset),
@@ -316,7 +333,8 @@ recording the result here.
   follows normal blockquote rules. An unknown type is no marker: the quote
   stays plain and the text literal. (`docs/reference/design/009-alerts.md`)
 - **Lists** — unordered (`-`/`*`/`+`) and ordered (`1.`), nested by
-  indentation (≥ 2 columns), `[ ]`/`[x]` task boxes. A plain line — indented
+  indentation (≥ 2 columns, a tab counting as 4), `[ ]`/`[x]` task boxes
+  (`[X]` too). A plain line — indented
   or not — **lazily continues** the open item (the same rule as quotes).
   A **raw list** (superset) uses the `. ` marker: unordered, rendered with
   no visible marker; otherwise a full list (nesting, task boxes, the rules
@@ -330,21 +348,28 @@ recording the result here.
   item spacing is the renderer's concern). An ordered list starts at its
   first item's written number (GFM: later numbers are ignored).
 - **Pipe tables** — header row + `|---|` separator, `:-:` alignment;
-  body rows pad/truncate to the header width.
-- **Fenced code** ```` ``` ```` with an info-string language; the body is
-  verbatim, never inline-parsed.
+  body rows pad/truncate to the header width. `\|` puts a literal pipe in a
+  cell; an unescaped one splits, including inside a code span.
+- **Fenced code** ```` ``` ```` with an info-string language (the first token;
+  the rest is ignored); the body is verbatim, never inline-parsed. An
+  unterminated fence runs to end-of-document, as does an unterminated `$$`.
 - **Display math** `$$…$$` and **inline math** `$…$` — the TeX passes
   through raw (backends decide typesetting); never inline-parsed. An inline
   span requires all of: the opening `$` followed by a non-whitespace
   character, the closing `$` preceded by one and *not* followed by a digit,
   and a non-empty body. So `costs $5 and $10` and `$HOME and $PATH` are prose,
   while `$x^2$` is math.
-- **Horizontal rules** `---` / `***` / `___`.
+- **Horizontal rules** `---` / `***` / `___` — three or more of one character,
+  unbroken. GFM's space-separated `- - -` is not a rule here.
 - **Inlines**, in precedence order: backslash escape, `` `code` ``,
   `$math$`, `![image](src)`, `[link](url)`, `[text].color(role)` color
   spans (superset — see "Color roles"), `[text].cite(refs)` citation marks
   (superset — see "Citations"), `<autolink>` and bare `http(s)://`
   URLs, `***bold-italic***` / `**bold**` / `*italic*`, `~~strikethrough~~`.
+  Autolinks and bare URLs are `http`/`https` only. A bare URL must start the
+  text or follow a space or `(`, and trailing `.,;:!?)` stays outside the
+  link, so a sentence-final URL reads correctly. An image's alt text is
+  literal, never inline-parsed.
   Inline syntax reads the *joined* text of a flowing element, not one source
   line: a span may open on one soft-wrapped line and close on a later one
   (`*asdf` then `asdf*` is one italic run), in paragraphs, quote paragraphs
@@ -358,13 +383,33 @@ recording the result here.
   can't close is skipped rather than fatal: `*a * b*` is one emphasis
   containing an asterisk.
 - **Cross-document links** — a *relative* link target ending in `.md`/`.sx`
-  (optional `#fragment`) addresses a sibling document by file path, resolved
+  (with an optional `#fragment` or `?query`, carried through untouched)
+  addresses a sibling document by file path, resolved
   from the linking document's own directory (`design/spec.md`,
   `../notes.sx#anchor`). Renderers that know the site resolve it to the
   target's route (extension dropped; a `main.*` target lands on its folder's
   own page); the same source stays a working file link on GitHub or any
   plain-markdown viewer. Absolute URLs, `/site-absolute` paths, and non-doc
   targets pass through verbatim.
+
+## Diagnostics
+
+Nothing below is an error: every one of these renders, and the document keeps
+its structure. A warning means the renderer did something other than what the
+line literally asked for, and says so — layout mistakes are visible, not fatal.
+
+| Warning | Cause |
+| --- | --- |
+| `group '<name>': grid(n) but m section(s)` | a `grid(n)` group with the wrong number of sections; all sections still render |
+| `single command: grid(n) but 1 element` | `/grid(n)` on a single content element |
+| `group '<name>': <cmd> ignored (already inside a <cmd>)` | the layout-level rule; the group still forms |
+| `single command: <cmd> ignored (already inside a <cmd>)` | the same rule on a `/cmd()` line or chain |
+| `group '<name>': citations ignored (the document already has a citations group)` | a second `citations()` group; it renders as an ordinary group |
+| `group '<name>': citations ignored (no numbered list in the group)` | `citations()` with no entry list to declare |
+| `citations: the entry list starts at n; entries still bind as 1..n` | a bibliography written with numbers that don't start at 1 |
+| `citations: duplicate key [k] (the first entry wins)` | two entries claiming one key |
+| `cite(k): unknown key` / `cite(n): only m entries` | a mark referencing an entry that isn't there; that reference renders inert |
+| `n citation mark(s) but no citations group` | marks with nothing to bind to, reported once |
 
 ## Canonical examples
 
@@ -384,52 +429,6 @@ Two lists side by side:
 // end two_lists
 ```
 
-One narrow paragraph:
-
-```
-/skinny(50%)
-
-this paragraph takes half the body width
-```
-
-A narrow element inside a grid cell (different commands nest; a second
-`grid` here would be ignored with a warning):
-
-```
-// outer grid(2)
-
-/skinny(50%)
-a narrow paragraph in the left cell
-
-// --
-
-the right cell
-
-// end outer
-```
-
-A muted aside, and one accent word (block and inline color):
-
-```
-// aside color(muted)
-
-secondary text; the [key point].color(accent) still pops
-
-// end aside
-```
-
-A collapsed FAQ entry — the question stays visible, the answer folds:
-
-```
-// faq collapse()
-
-**What is strikedown?**
-
-A typography-first superset of markdown.
-
-// end faq
-```
-
 A cited claim and its bibliography — the span binds to entry 1 by position
 and the key `lamport86` names entry 2; the `[lamport86]` prefix is lifted
 from the rendered entry:
@@ -447,61 +446,17 @@ noted].cite(lamport86).
 //
 ```
 
-A raw list — three markerless lines that stay a list:
-
-```
-. one
-. two
-. three
-```
-
-An indented paragraph — leading whitespace, no directive needed (and the
-second line is an ordinary continuation, not a second indent):
-
-```
-  this paragraph is indented one step,
-  and this line just wraps into it
-```
-
-An indented group — each paragraph gets its own first-line inset, not the
-group as a whole:
-
-```
-// aside indent()
-
-first paragraph
-
-second paragraph
-
-// end aside
-```
-
-An alert, long form and the same-line superset form:
-
-```
-> [!NOTE]
-> body line one
-> body line two
-
-> [!warning] one-liner body
-```
-
-A merged, lazily-continued quote (two paragraphs):
-
-```
-> quote line one
-> quote line two
->
-> second paragraph
-lazy continuation line
-```
+Every other form has a live example in the `docs/example/` project rather than
+a sample here, so the examples are rendered documents you can read next to
+their source.
 
 Degradation — every line below is an ordinary paragraph:
 
 ```
 // just a comment here      (bare words after the name → unknown → prose)
 // box glow(5)              (unknown command → whole line deactivates)
-// --                       (no group open)
+// --                       (parses fine; no group open)
+// end other                (names something other than the innermost group)
 //foo                       (no space after the marker)
 /usr/bin/env foo            (not a command: no parens)
 /skinny(50%) extra          (trailing text)
@@ -510,6 +465,7 @@ Degradation — every line below is an ordinary paragraph:
 /indent(x)                  (unknown indent argument)
 [x].color(bright)           (inline near-miss: unknown role → literal text)
 [z](https://z.dev).color(muted)   (the link wins its `[`; postfix is prose)
+[].cite(1)                  (empty brackets: not a citation mark)
 :thin-grid grid(2) skinny(80%)   (reserved namespace, nothing defined yet)
 (name)# not a heading       (retired prefix: plain prose)
 .item                       (no space after the dot: not a raw-list marker)

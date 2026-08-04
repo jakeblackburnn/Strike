@@ -28,6 +28,12 @@ pub const Shell = struct {
     /// Where the brand links: the root of the project being read (`/<slug>`,
     /// or `/` for a root project and the picker).
     home_href: []const u8,
+    /// The site root, when the page sits inside a project of a *picker* site:
+    /// the brand becomes a two-level path, `site / project`. "" (the default)
+    /// means the project is the whole site — root-project mode, the picker page
+    /// itself, or `strike render` — and the brand stays a single link.
+    site_title: []const u8 = "",
+    site_href: []const u8 = "",
     nav_html: []const u8,
     /// Site default theme (season + time) and width, used as the pre-paint
     /// fallback when the reader has no `localStorage` preference yet.
@@ -72,15 +78,32 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     try w.writeAll(head_pre_d);
     try escapeInto(w, shell.title);
     try w.writeAll(head_post_a);
-    try escapeAttrInto(w, shell.home_href);
-    try w.writeAll(head_post_b);
-    try escapeInto(w, shell.brand);
+    try writeBrand(w, shell);
     try w.writeAll(head_post_c);
     try w.writeAll(shell.nav_html);
     try w.writeAll(head_post_d);
     try w.writeAll(body_html);
     try w.writeAll(page_tail);
     return out.toOwnedSlice();
+}
+
+/// The brand is a *path*, not a name. The sidebar nav below it shows one
+/// project's tree, so on a picker site it can never be the way back to `/` —
+/// leading with the site title makes the front page one click from any document.
+/// With no site segment the brand stays the single link it has always been.
+fn writeBrand(w: *Writer, shell: Shell) Writer.Error!void {
+    if (shell.site_title.len > 0) {
+        try w.writeAll("<a class=\"brand-site\" href=\"");
+        try escapeAttrInto(w, shell.site_href);
+        try w.writeAll("\">");
+        try escapeInto(w, shell.site_title);
+        try w.writeAll("</a><span class=\"brand-sep\">/</span>");
+    }
+    try w.writeAll("<a class=\"brand-home\" href=\"");
+    try escapeAttrInto(w, shell.home_href);
+    try w.writeAll("\">");
+    try escapeInto(w, shell.brand);
+    try w.writeAll("</a>");
 }
 
 // The no-flash bootstrap: it restores season/time/width/font-size/line-height/
@@ -314,13 +337,17 @@ const head_post_a =
     \\    background: var(--sidebar-bg);
     \\    transition: transform .2s ease;
     \\  }
-    \\  /* Brand block: the project title links to that project's own root, with
-    \\     a small muted subtitle crediting strike (a text link, per UI.md — the
-    \\     one outbound link in the chrome). */
+    \\  /* Brand block: the project title links to that project's own root, led on
+    \\     a picker site by the site title (the way back to `/`, which the nav
+    \\     below can't offer). Under it a small muted subtitle credits strike (a
+    \\     text link, per UI.md — the one outbound link in the chrome). */
     \\  .sidebar-head { display: flex; flex-direction: column; gap: .1rem; }
     \\  .sidebar-brand { font-weight: 600; font-size: 1.05rem; letter-spacing: .02em; }
     \\  .brand-home { color: inherit; text-decoration: none; }
     \\  .brand-home:hover { color: var(--accent); }
+    \\  .brand-site { color: var(--muted); text-decoration: none; }
+    \\  .brand-site:hover { color: var(--accent); }
+    \\  .brand-sep { color: var(--muted); font-weight: 400; margin: 0 .25rem; }
     \\  .brand-repo { font-size: .75rem; color: var(--muted); text-decoration: none; }
     \\  .brand-repo:hover { color: var(--accent); text-decoration: underline; }
     \\  .sidebar-nav { flex: 1; min-height: 0; overflow-y: auto; }
@@ -399,19 +426,15 @@ const head_post_a =
     \\<body>
     \\<aside class="sidebar">
     \\  <div class="sidebar-head">
-    \\    <div class="sidebar-brand"><a class="brand-home" href="
+    \\    <div class="sidebar-brand">
 ;
 
-// `head_post_a` ends mid-attribute so `wrapPage` can splice the brand's link
-// (the current project's root), the brand text, and the rendered sidebar nav.
-const head_post_b =
-    \\">
-;
-
-// The brand subtitle is a constant: it credits strike itself, so unlike the
-// brand above it needs nothing from the page.
+// `head_post_a` ends with the brand block still open, so `wrapPage` can splice
+// in `writeBrand`'s one or two links and then the rendered sidebar nav.
+// The brand subtitle below is a constant: it credits strike itself, so unlike
+// the brand it needs nothing from the page.
 const head_post_c =
-    \\</a></div>
+    \\</div>
     \\    <a class="brand-repo" href="
 ++ project_url ++
     \\" target="_blank" rel="noopener noreferrer">built with strike</a>
@@ -535,28 +558,36 @@ const page_tail =
     \\  });
     \\
     \\  // Text sliders share one shape: restore from localStorage, apply live,
-    \\  // echo the value next to the label.
-    \\  function slider(id, valId, key, unit, apply){
+    \\  // echo the value next to the label. With nothing saved the slider must
+    \\  // apply nothing — the head bootstrap has already put the site default
+    \\  // (yaml `width:`) on the root's inline style, and applying here would
+    \\  // overwrite it with the markup's own default. So an unset reader only
+    \\  // syncs the knob to whatever is already in effect.
+    \\  function slider(id, valId, key, unit, prop, apply){
     \\    var range = document.getElementById(id);
     \\    var val = document.getElementById(valId);
     \\    if (!range) return;
     \\    var saved = null;
     \\    try { saved = localStorage.getItem(key); } catch (e) {}
-    \\    if (saved) range.value = saved;
-    \\    function go(v){ apply(v); if (val) val.textContent = v + unit; }
-    \\    go(range.value);
+    \\    if (saved) { range.value = saved; apply(saved); }
+    \\    else {
+    \\      var cur = parseFloat(d.style.getPropertyValue(prop));
+    \\      if (!isNaN(cur)) range.value = cur;
+    \\    }
+    \\    if (val) val.textContent = range.value + unit;
     \\    range.addEventListener("input", function(){
-    \\      go(range.value);
+    \\      apply(range.value);
+    \\      if (val) val.textContent = range.value + unit;
     \\      try { localStorage.setItem(key, range.value); } catch (e) {}
     \\    });
     \\  }
-    \\  slider("width-range", "width-value", "width", "rem", function(v){
+    \\  slider("width-range", "width-value", "width", "rem", "--content-width", function(v){
     \\    d.style.setProperty("--content-width", v + "rem");
     \\  });
-    \\  slider("size-range", "size-value", "fontsize", "px", function(v){
+    \\  slider("size-range", "size-value", "fontsize", "px", "--font-size", function(v){
     \\    d.style.setProperty("--font-size", v + "px");
     \\  });
-    \\  slider("line-range", "line-value", "lineheight", "", function(v){
+    \\  slider("line-range", "line-value", "lineheight", "", "--line-height", function(v){
     \\    d.style.setProperty("--line-height", v);
     \\  });
     \\

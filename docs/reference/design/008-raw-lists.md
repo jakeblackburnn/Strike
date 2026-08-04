@@ -1,6 +1,7 @@
 # 008 — Raw lists (`. item`)
 
-**Status: accepted** (decision dictated by Jack, 2026-07-20)
+**Status: shipped** (decision dictated by Jack, 2026-07-20; implemented and tested the
+same day)
 
 ## Problem
 

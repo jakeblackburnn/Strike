@@ -1,0 +1,252 @@
+# Commands
+
+Eight commands, one vocabulary. Every one of them works in a `//` group opener
+and on a `/cmd()` line, and they combine on the same opener. [Groups](groups.sx)
+covers the grammar those lines are written in; this page is what you can put in
+them.
+
+| Command | Argument | Bare form |
+| --- | --- | --- |
+| `grid(n)` | column count, n ≥ 1 | — |
+| `skinny(N%)` | 1–100 | 75% |
+| `wide(N%)` | 101–200 | 125% |
+| `center()` | none | — |
+| `color(role)` | `accent`, `muted`, `fg` | — |
+| `collapse()` | nothing, or `open` | closed |
+| `indent(n)` | n ≥ 1 | one step |
+| `citations()` | none | — |
+
+## grid
+
+`grid(n)` arranges a group's sections in n columns; sections fill left to right
+and wrap.
+
+// three grid(3)
+
+**One**
+
+Narrow columns want short content.
+
+// --
+
+**Two**
+
+Three across is about the limit at the default reading width.
+
+// --
+
+**Three**
+
+A `grid(n)` opened with the wrong number of sections still renders every
+section — it just warns.
+
+// end three
+
+`grid(1)` is legal and does exactly what it says: one column, which is a way to
+give a run of content a container without changing its arrangement.
+
+// single grid(1)
+
+One column. The group is real, the layout is a no-op, and any other command on
+the opener still applies.
+
+// end single
+
+## skinny and wide
+
+One width control with two names, meeting at 100%. `skinny` takes a percentage
+below it, `wide` above, and both center what they hold.
+
+/skinny(60%)
+
+60% of the body column.
+
+/skinny()
+
+The bare form: `skinny()` with no argument, which is 75%.
+
+// wide_demo wide(115%)
+
+This group bleeds past the reading column on both sides — useful for a wide
+table or a figure that suffocates at the body width.
+
+| a wide table | column two | column three | column four |
+| --- | --- | --- | --- |
+| room to breathe | without | squeezing | the text |
+
+// end wide_demo
+
+/wide()
+
+And the bare form of the other one: `wide()`, which is 125%.
+
+Written on the same opener they do not stack — they are one setting under two
+names, so the last one wins.
+
+## center
+
+`center()` centers the text within whatever contains it, with no argument.
+
+/center()
+
+Centered relative to the body column.
+
+// centered_narrow skinny(50%) center()
+
+Centered *within* a skinny group, which is itself centered in the body. The two
+commands are independent, which is why they combine.
+
+// end centered_narrow
+
+## color
+
+`color(role)` sets a theme **role** — never a concrete color — so colored text
+follows the reader's theme. There are three, and all three are here.
+
+// accent_block color(accent)
+
+**accent** — the theme's signature color. Try the season buttons in Settings and
+watch this paragraph change with the rest of the page.
+
+// end accent_block
+
+// muted_block color(muted)
+
+**muted** — secondary text, for asides and marginal notes like this one.
+
+Roles nest and the inner one wins, so [`fg` reads as a reset].color(fg) back to
+the body color from inside a muted region.
+
+// end muted_block
+
+Inline, the same command marks a run mid-sentence: an
+[accent phrase].color(accent), a [muted phrase].color(muted), and an
+[fg phrase].color(fg) all in one paragraph.
+
+The bracketed text is fully parsed, so a span can hold
+[**bold**, `code`, and $x^2$].color(accent) alike. What it cannot hold is a
+link: `[label](url).color(accent)` is a link followed by literal text, because
+the link form wins the bracket.
+
+## collapse
+
+`collapse()` folds a group behind its **leader** — the first content element,
+which stays visible and becomes the control.
+
+// faq collapse()
+
+**`collapse()` folds a group behind its first element**
+
+Everything after the leader folds away until the reader opens it.
+
+Other commands on the same group apply to the folded body, not the leader.
+
+// end faq
+
+// faq_open collapse(open)
+
+**`collapse(open)` is the same fold, starting expanded**
+
+Use it when the body is the point and the fold is a courtesy — the reader can
+still collapse it, but nothing is hidden on arrival.
+
+// end faq_open
+
+A group with fewer than two content elements has no leader to show, so it
+renders an anonymous bar instead and folds everything beneath it:
+
+// bar collapse()
+
+// --
+
+The whole of this group's content lives in its second section, so the first has
+nothing to lift into a leader. The bar above is what that looks like.
+
+// end bar
+
+Open and closed are properties of the reading, not the document — nothing
+persists, and a renderer with no interactivity should show these expanded.
+
+## indent
+
+`indent(n)` is a typographic tab: it insets an element's **first line**, not its
+whole box.
+
+/indent()
+
+The bare form is one step. This paragraph's first line is inset and the rest of
+it wraps flush against the body's left edge, which is what a tab indent means in
+typesetting and what a margin shift does not.
+
+/indent(3)
+
+Three steps deep, same rule — first line only.
+
+  Leading whitespace on a paragraph is sugar for exactly one step, so this
+  paragraph needs no directive at all. Only the first line is read, which is why
+  this second line is an ordinary continuation rather than a second indent.
+
+On a **group**, indent reaches each content element separately — every paragraph
+gets its own first-line inset, rather than the group moving as one block:
+
+// indented_group indent(2)
+
+The first paragraph of an indented group, inset two steps on its first line.
+
+The second paragraph, inset the same way. The group is not a shifted box; each
+element inside it is indented in its own right.
+
+// end indented_group
+
+A **list** is the exception, and it is the interesting one. A list owns its
+marker column, and that column is part of the element rather than part of its
+text — so an indented list moves as a whole, markers and items together:
+
+/indent(2)
+
+- an indented list
+- moves as one box
+  - and a sublist inside it is not shifted again, because its parent already
+    moved
+- so the numbers and bullets travel with their items
+
+/indent(2)
+
+1. the same is true of an ordered list
+2. where a first-line inset would otherwise land *between* the number and the
+   item, which is plainly wrong
+
+Compare that with the paragraph indents further up: same command, same meaning,
+two realizations, because the elements are not alike. Which command means what
+on which element type is tracked in the reference docs — most pairs are still
+open, and this one is decided.
+
+Being non-layout, `indent` nests by scope rather than stacking: an inner value
+overrides the inherited one for its own subtree.
+
+## citations
+
+`citations()` declares that a group's numbered list is the document's
+bibliography. It gets its own page — [Citations](citations.sx) — because the
+other half of the feature is an inline form.
+
+## Combining
+
+Commands combine on one opener, and the group is the intersection of all of
+them:
+
+// combined grid(2) skinny(85%) color(muted)
+
+**A narrow, muted grid**
+
+Three commands on one opener: two columns, 85% of the body width, muted text.
+
+// --
+
+**Nothing special about the combination**
+
+Each command writes its own setting. They interact only where they genuinely
+overlap, which is why `skinny` and `wide` are the one pair that cannot usefully
+combine.
+
+// end combined

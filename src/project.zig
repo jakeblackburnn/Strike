@@ -75,6 +75,11 @@ pub const Project = struct {
     time: []const u8, // site default theme time ("", "morning", "evening")
     width: []const u8, // site default content width ("" or bare rem number)
     base: []const u8 = "", // site base path ("" or "/sub/path"), copied like theme/width
+    /// The site's title, set only in picker mode — where the project is one of
+    /// several and `/` is a page of its own, so the chrome leads with it. "" in
+    /// root-project mode: the project *is* the site, and naming it twice would
+    /// link to the page you are already on.
+    site_title: []const u8 = "",
     home: ?*Doc, // doc served at /<slug>; null ⇒ generated index
     tree: []NavNode,
     docs: []*Doc, // flat list, for route building
@@ -173,13 +178,20 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     }
 
     const theme = parseTheme(site_cfg.getScalar("theme") orelse "");
+    const title = site_cfg.getScalar("title") orelse "strikedown";
+    const project_slice = try projects.toOwnedSlice(gpa);
+    // Picker mode only: `/` is the picker, a page no project's own nav can
+    // reach, so each project carries the site title for the chrome's path.
+    if (!has_root_docs) for (project_slice) |*p| {
+        p.site_title = title;
+    };
     return .{
-        .title = site_cfg.getScalar("title") orelse "strikedown",
+        .title = title,
         .season = theme.season,
         .time = theme.time,
         .width = site_cfg.getScalar("width") orelse "",
         .base = base,
-        .projects = try projects.toOwnedSlice(gpa),
+        .projects = project_slice,
         .main = site_main,
         .sheet = site_sheet,
     };
@@ -660,6 +672,33 @@ test "load resolves labels, order, and hidden from strike.yaml, and finds home" 
     try testing.expectEqualStrings("b.md", p.home.?.rel_path);
     try testing.expectEqualStrings("/docs/b", p.tree[0].doc.route); // order: b before a
     try testing.expectEqualStrings("First", p.tree[1].doc.label); // labels: a.md -> First
+}
+
+test "picker mode gives every project the site title; root-project mode does not" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "strike.yaml", .data = "title: Site\n" });
+    try tmp.dir.createDirPath(testing.io, "blog");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/post.md", .data = "# Post\nbody" });
+    try tmp.dir.createDirPath(testing.io, "notes");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "notes/one.md", .data = "# One\nbody" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    // Two projects behind a picker: `/` is a page neither project's nav can
+    // reach, so each carries the site title for the chrome's brand path.
+    try testing.expectEqual(@as(usize, 2), site.projects.len);
+    try testing.expectEqualStrings("Site", site.projects[0].site_title);
+    try testing.expectEqualStrings("Site", site.projects[1].site_title);
+
+    // One loose doc at the root collapses the whole tree into one project,
+    // whose own root *is* `/` — a site segment would link to itself.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.md", .data = "# Hello\nbody" });
+    const root_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqual(@as(usize, 1), root_site.projects.len);
+    try testing.expectEqualStrings("", root_site.projects[0].site_title);
 }
 
 test "load detects the implicit root project from loose docs at the content root" {

@@ -1,41 +1,62 @@
 # The markdown subset
 
-Everything on this page is ordinary markdown. It renders the same here as it
-does anywhere else — that is the whole point of the subset rule.
+Everything on this page is ordinary markdown, and this file is the one page in
+the tour still named `.md` — every other page is `.sx`. Both go through the same
+parser and the same renderer. That is the whole of the "one flavor" claim, and
+you are looking at the proof: nothing here is doing anything special, and
+nothing here is missing anything the `.sx` pages have.
+
+This page covers the *rules* that surprise people. For a dense look at every
+form at once, read [the gallery](gallery.sx).
 
 ## Headings and anchors
 
-Every heading gets an anchor id slugified from its text, deduplicated within
-the document, so [links to a section](#lists-of-every-kind) work.
+Every heading gets an anchor id slugified from its text — lowercased, runs of
+punctuation and spaces collapsed to `-` — and deduplicated within the document,
+so [links to a section](#lists) work. Non-ASCII characters survive as written
+rather than collapsing away, so a heading in any script still gets a usable id.
 
 ## Text
 
 *Italic*, **bold**, ***both***, ~~struck~~, `inline code`, and a backslash
 escape for when you want a literal \*asterisk\*.
 
-Emphasis delimiters have to hug their content, so prose survives: `a * b * c`
-and `5 * 4 * 3` render as the asterisks you typed, not as emphasis.
+Emphasis delimiters have to hug their content — CommonMark's flanking rule — so
+ordinary prose survives: `a * b * c` and `5 * 4 * 3` render as the asterisks you
+typed. A delimiter that cannot close is skipped rather than fatal, so `*a * b*`
+is one emphasis containing an asterisk.
 
 Soft-wrapped lines join into one paragraph, and a span may open on one line
 and *close on
-a later one*.
+a later one*. Inline syntax reads the joined paragraph, not the source line.
 
   A paragraph that starts with whitespace is indented one step. Two spaces,
   four spaces, or a tab all mean the same thing — one step. This second line
   is just a continuation, so it stays flush.
 
-## Lists of every kind
+Underscores are *not* emphasis here: `_this_` stays literal. So do hard line
+breaks, `~~~` fences, `1)` ordered markers, setext headings, footnotes, and
+front matter — all still-open gaps rather than decisions.
+
+## Lists
 
 - unordered
 - lists
   - nest by indentation
     - as deep as you like
 
+An ordered list starts at its first written number and ignores the rest:
+
 1. ordered lists
 2. start at their first written number
-7. and ignore the rest
+7. and this renders as 3
 
-5. this one starts at five
+A blank line does **not** end a list — a marker that could continue it simply
+continues it. Only something that is not a continuation ends it, like this
+paragraph, which is why the next list starts fresh:
+
+5. so this one really does start at five
+6. and counts on from there
 
 - [ ] task boxes
 - [x] that render as checkboxes
@@ -49,44 +70,30 @@ a later one*.
 > A blockquote. Consecutive `>` lines flow into one paragraph.
 >
 > A bare `>` line starts a second one.
+A plain line right after a quote line lazily continues it.
 
-Alerts are typed blockquotes — a `[!TYPE]` marker on the first line. There are
-eight types, and all eight are here:
+A blockquote holds flowing paragraphs and nothing else. A list, heading, or
+fence written inside one is literal text in the quote — worth knowing before you
+try to nest.
+
+Alerts are typed blockquotes — a `[!TYPE]` marker on the first line, one of
+eight types ([all eight are in the gallery](gallery.sx#alerts)):
 
 > [!NOTE]
 > Something worth knowing, in passing.
 
-> [!TIP]
-> A shortcut you would not have guessed.
+> [!WARNING] The body can also start on the marker's own line — a superset
+> convenience; GFM wants the marker alone.
 
-> [!IMPORTANT]
-> Don't skip this one.
+An unrecognized type is not a marker at all: `> [!IDEA] hm` is a plain
+blockquote with literal text.
 
-> [!WARNING] The body can also start on the marker's own line.
+## Rules and code
 
-> [!CAUTION]
-> Stronger than a warning: this is how you lose work.
-
-> [!TODO]
-> Unfinished — a note to yourself that survives into the rendered page.
-
-> [!EXAMPLE]
-> `strike serve docs --watch`
-
-> [!QUESTION]
-> Should this section say more? Alerts are as good for open questions as for
-> answers.
-
-## Horizontal rules
-
-Three or more `-`, `*`, or `_` on a line of their own draw a rule:
+Three or more `-`, `*`, or `_` on a line of their own draw a rule. They have to
+be unbroken — GFM's spaced `- - -` is a list item here, not a rule.
 
 ---
-
-Above and below that line are two separate paragraphs. A rule is a content
-element like any other, so a `/cmd()` line can take one.
-
-## Code
 
 ```zig
 pub fn main() !void {
@@ -94,7 +101,9 @@ pub fn main() !void {
 }
 ```
 
-Indented or not, code bodies are verbatim — no inline parsing happens inside.
+Code bodies are verbatim — no inline parsing happens inside, and the info string
+past the first token is ignored. There is no four-space indented code block:
+leading whitespace on a paragraph means [indentation](commands.sx#indent).
 
 ## Tables
 
@@ -104,7 +113,8 @@ Indented or not, code bodies are verbatim — no inline parsing happens inside.
 | `skinny` | percentage | 75% |
 | `wide` | percentage | 125% |
 
-Alignment comes from the separator row: `:-:` centers, `--:` right-aligns.
+Alignment comes from the separator row: `:-:` centers, `--:` right-aligns. A
+`\|` puts a literal pipe inside a cell.
 
 ## Math
 
@@ -116,15 +126,20 @@ $$
 $$
 
 Dollar signs in prose are safe: the book costs $5 and the pen costs $10, and
-$HOME and $PATH are still environment variables.
+$HOME and $PATH are still environment variables. Math needs a non-space right
+after the opening `$`, a non-space before the closing one, and no digit after
+it.
 
 ## Links and images
 
 An [inline link](https://ziglang.org), an autolink <https://ziglang.org>, and
-a bare URL: https://ziglang.org
+a bare URL: https://ziglang.org — trailing sentence punctuation stays out of
+the link, so that period is not part of it.
 
-A [link to another document](layout.md) resolves to its route here, and stays
-a working file link on GitHub.
+A [link to another document](groups.sx) resolves to its route here, and stays
+a working file link on GitHub. That is the one piece of this page that behaves
+differently depending on who is rendering it, and it degrades in the direction
+that keeps working.
 
 Images use the same syntax with a leading `!`, and their targets are left
 content-relative — `logo.svg` sits next to this file on disk, and `strike serve`

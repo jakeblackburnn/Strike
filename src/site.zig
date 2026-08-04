@@ -143,8 +143,9 @@ pub fn outPath(gpa: Allocator, page: Page, base: []const u8) ![]u8 {
 }
 
 /// Render the `/` picker as a full page. The sidebar nav — navigation's home —
-/// lists every project, so they're reachable however the body was authored
-/// (a root `main.*` fully owns the body content). Caller owns the result.
+/// carries every project *and* its documents, so the whole site is reachable
+/// however the body was authored (a root `main.*` fully owns the body content).
+/// Caller owns the result.
 pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
     const body = try renderPicker(gpa, site);
     defer gpa.free(body);
@@ -198,6 +199,8 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
         .title = p.title,
         .brand = p.title,
         .home_href = brand_href,
+        .site_title = p.site_title,
+        .site_href = homeHref(p.base),
         .nav_html = nav,
         .season = p.season,
         .time = p.time,
@@ -219,6 +222,8 @@ pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 
         .title = d.title,
         .brand = p.title,
         .home_href = brand_href,
+        .site_title = p.site_title,
+        .site_href = homeHref(p.base),
         .nav_html = nav,
         .season = p.season,
         .time = p.time,
@@ -291,9 +296,16 @@ fn navContainsActive(nodes: []const project.NavNode, active: []const u8) bool {
     return false;
 }
 
-/// The picker page's sidebar nav: one `.nav-doc` link per project, same
-/// classes as a project's own doc nav. Returns "" when there are no projects.
-/// Caller owns the result.
+/// The picker page's sidebar nav: the whole site, one expandable node per
+/// project. Each project is the same `<details class="nav-folder">` a folder
+/// inside a project gets — its summary links the project home, its children are
+/// that project's own tree — so the picker reaches every document directly
+/// instead of bouncing the reader through a project home first. Open by default
+/// (the front page's job is to show what's there); `data-folder` is the bare
+/// slug, which no folder key can collide with since those always carry a `/`,
+/// so a reader's collapse survives in `localStorage` like any other folder.
+/// A project with no documents of its own stays a plain link. Returns "" when
+/// there are no projects. Caller owns the result.
 pub fn renderPickerNav(allocator: Allocator, site: project.Site) ![]u8 {
     if (site.projects.len == 0) return allocator.dupe(u8, "");
     var out: Writer.Allocating = .init(allocator);
@@ -301,16 +313,32 @@ pub fn renderPickerNav(allocator: Allocator, site: project.Site) ![]u8 {
     const w = &out.writer;
     try w.writeAll("<ul class=\"nav-tree\">");
     for (site.projects) |p| {
-        try w.writeAll("<li><a class=\"nav-doc\" href=\"");
-        try escapeAttrInto(w, site.base);
-        try w.writeByte('/');
+        if (p.tree.len == 0) {
+            try w.writeAll("<li><a class=\"nav-doc\" href=\"");
+            try writeProjectHref(w, site.base, p.slug);
+            try w.writeAll("\">");
+            try escapeInto(w, p.title);
+            try w.writeAll("</a></li>");
+            continue;
+        }
+        try w.writeAll("<li><details class=\"nav-folder\" data-folder=\"");
         try escapeAttrInto(w, p.slug);
+        try w.writeAll("\" open><summary><a class=\"nav-folder-link\" href=\"");
+        try writeProjectHref(w, site.base, p.slug);
         try w.writeAll("\">");
         try escapeInto(w, p.title);
-        try w.writeAll("</a></li>");
+        try w.writeAll("</a></summary>");
+        try renderNavList(w, p.slug, p.tree, "");
+        try w.writeAll("</details></li>");
     }
     try w.writeAll("</ul>");
     return out.toOwnedSlice();
+}
+
+fn writeProjectHref(w: *Writer, base: []const u8, slug: []const u8) Writer.Error!void {
+    try escapeAttrInto(w, base);
+    try w.writeByte('/');
+    try escapeAttrInto(w, slug);
 }
 
 /// Render the body fragment for the `/` project picker. A content-root
@@ -504,7 +532,7 @@ test "renderNav links a folder's label to its main page and marks it active" {
     try testing.expect(std.mem.indexOf(u8, nav, "data-folder=\"p/sub\" open>") != null);
 }
 
-test "picker page sidebar nav lists every project" {
+test "picker page sidebar nav links a project with no documents plainly" {
     var projects = [_]project.Project{
         .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
         .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
@@ -513,7 +541,72 @@ test "picker page sidebar nav lists every project" {
     const page = try renderPickerPage(testing.allocator, site);
     defer testing.allocator.free(page);
 
+    // Nothing to expand into, so no <details> — just the two project links.
     try testing.expect(std.mem.indexOf(u8, page, "<nav class=\"sidebar-nav\"><ul class=\"nav-tree\"><li><a class=\"nav-doc\" href=\"/a\">A</a></li><li><a class=\"nav-doc\" href=\"/b\">B</a></li></ul></nav>") != null);
+}
+
+test "picker page sidebar nav expands each project into its own tree" {
+    var one = testDoc("/a/one", "One");
+    var nested = testDoc("/a/sub/deep", "Deep");
+    var two = testDoc("/b/two", "Two");
+    var a_children = [_]project.NavNode{.{ .doc = &nested }};
+    var a_docs = [_]*project.Doc{ &one, &nested };
+    var a_tree = [_]project.NavNode{
+        .{ .doc = &one },
+        .{ .folder = .{ .label = "Sub", .rel_path = "sub", .children = &a_children } },
+    };
+    var b_docs = [_]*project.Doc{&two};
+    var b_tree = [_]project.NavNode{.{ .doc = &two }};
+    var projects = [_]project.Project{
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &a_tree, .docs = &a_docs },
+        .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &b_tree, .docs = &b_docs },
+    };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
+    const nav = try renderPickerNav(testing.allocator, site);
+    defer testing.allocator.free(nav);
+
+    // Each project is a folder node keyed by its bare slug, open by default,
+    // its summary linking the project home.
+    try testing.expect(std.mem.indexOf(u8, nav, "<details class=\"nav-folder\" data-folder=\"a\" open><summary><a class=\"nav-folder-link\" href=\"/a\">A</a></summary>") != null);
+    try testing.expect(std.mem.indexOf(u8, nav, "data-folder=\"b\" open>") != null);
+    // Every document is reachable from the front page, nesting included.
+    try testing.expect(std.mem.indexOf(u8, nav, "href=\"/a/one\">One</a>") != null);
+    try testing.expect(std.mem.indexOf(u8, nav, "data-folder=\"a/sub\"") != null);
+    try testing.expect(std.mem.indexOf(u8, nav, "href=\"/a/sub/deep\">Deep</a>") != null);
+    try testing.expect(std.mem.indexOf(u8, nav, "href=\"/b/two\">Two</a>") != null);
+    // No document is active on the picker.
+    try testing.expect(std.mem.indexOf(u8, nav, "active") == null);
+}
+
+test "a picker site's brand leads with the site title" {
+    var doc = testDoc("/blog/post", "Post");
+    var docs = [_]*project.Doc{&doc};
+    var tree = [_]project.NavNode{.{ .doc = &doc }};
+    var p: project.Project = .{
+        .slug = "blog",
+        .title = "Blog",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .site_title = "Site",
+        .home = null,
+        .tree = &tree,
+        .docs = &docs,
+    };
+    // The sidebar nav below is one project's tree, so the site segment is the
+    // only way back to `/` from a document.
+    const page = try renderDocPage(testing.allocator, p, &doc);
+    defer testing.allocator.free(page);
+    try testing.expect(std.mem.indexOf(u8, page, "<a class=\"brand-site\" href=\"/\">Site</a><span class=\"brand-sep\">/</span><a class=\"brand-home\" href=\"/blog\">Blog</a>") != null);
+
+    // Root-project mode leaves it off: `site_title` is unset, so the brand is
+    // the single link it always was.
+    p.site_title = "";
+    const plain = try renderDocPage(testing.allocator, p, &doc);
+    defer testing.allocator.free(plain);
+    try testing.expect(std.mem.indexOf(u8, plain, "<a class=\"brand-site\"") == null);
+    try testing.expect(std.mem.indexOf(u8, plain, "<div class=\"sidebar-brand\"><a class=\"brand-home\" href=\"/blog\">Blog</a></div>") != null);
 }
 
 test "renderPicker: site main.* dictates the entire page" {

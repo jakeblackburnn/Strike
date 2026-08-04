@@ -1,0 +1,161 @@
+# Warnings
+
+Strike talks back. When a directive activates but asks for something the
+renderer cannot do literally, the page still renders — and a line goes to
+stderr saying what happened instead.
+
+This page is deliberately full of mistakes. Serve the site and watch the
+terminal:
+
+```sh
+strike serve docs
+```
+
+Nothing on this page is broken. Every group below still forms, every section
+still renders, and every citation mark still appears. A warning is information,
+not an error — which is the point: a layout mistake in the middle of a long
+document must never cost you the document.
+
+> [!NOTE]
+> Warnings are per *document*, printed when the page is rendered. Under
+> `--watch` you get a fresh set each time a file changes, which makes the
+> terminal a decent live linter while you write.
+
+## A grid with the wrong number of sections
+
+`grid(2)` with three sections renders all three — the third wraps onto a second
+row — and warns.
+
+// mismatch grid(2)
+
+**One**
+
+// --
+
+**Two**
+
+// --
+
+**Three, which wraps**
+
+// end mismatch
+
+```
+group 'mismatch': grid(2) but 3 section(s)
+```
+
+## A single command that has nothing to arrange
+
+`/grid(2)` applies to one content element, and one element has no sections to
+put in columns.
+
+/grid(2)
+
+A lone paragraph under a `/grid(2)` line.
+
+```
+single command: grid(2) but 1 element
+```
+
+## The layout-level rule
+
+The same layout command twice along one chain of containers: the inner one is
+dropped, the group still forms, and the warning names the command.
+
+// outer_grid grid(2)
+
+// inner_grid grid(2)
+
+**The inner grid is stripped**
+
+This group is real — it just has no `grid` on it, so its content stacks
+instead of splitting.
+
+// --
+
+**Its sections still exist**
+
+Structure never depends on nesting depth. That is what makes the rule safe.
+
+// end inner_grid
+
+// --
+
+**The outer grid still works**
+
+Only the colliding command is dropped, and only on the inner group.
+
+// end outer_grid
+
+```
+group 'inner_grid': grid ignored (already inside a grid)
+```
+
+The same rule reaches a `/cmd()` chain, which is why `/skinny() /skinny()`
+warns once about the inner one.
+
+## Citations
+
+The [Citations](citations.sx) page has a working bibliography. Here are the
+ways one can go wrong. Every mark below renders as ordinary text with an inert
+reference.
+
+A [claim citing entry 99].cite(99) of three, a
+[claim citing an unknown key].cite(nosuchkey), and a
+[claim citing both at once].cite(99, nosuchkey).
+
+First, a `citations()` group with no numbered list in it. There is nothing for
+the command to declare, so the group renders as an ordinary group:
+
+// empty_citations citations()
+
+No numbered list here, so no entries. This does *not* use up the document's one
+citations slot — a later group can still claim it, which the next one does.
+
+// end empty_citations
+
+Then the real bibliography, written with three problems at once: it starts at 3
+rather than 1, and two entries claim the same key.
+
+// bad_citations citations()
+
+3. First entry — the numbers below are what the author wrote.
+4. [dup] Second entry.
+5. [dup] Third entry, claiming a key the second already took.
+
+// end bad_citations
+
+Entries always bind by **position**, 1..n, whatever numbers the list carries.
+That is why a list starting anywhere but 1 is worth a warning: the numbers a
+reader sees would otherwise disagree with the numbers marks bind to.
+
+Finally, a second `citations()` group. The document already has one, so this
+keeps its content and loses the command:
+
+// second_citations citations()
+
+1. This list is never a bibliography.
+
+// end second_citations
+
+All together, in the order they are reported:
+
+```
+group 'empty_citations': citations ignored (no numbered list in the group)
+citations: the entry list starts at 3; entries still bind as 1..3
+citations: duplicate key [dup] (the first entry wins)
+group 'second_citations': citations ignored (the document already has a citations group)
+cite(99): only 3 entries
+cite(nosuchkey): unknown key
+cite(99): only 3 entries
+cite(nosuchkey): unknown key
+```
+
+The last four come in pairs because the third mark cites both bad references at
+once — marks are reported per reference, not per mark.
+
+## The one you will not see here
+
+`2 citation mark(s) but no citations group` needs a document with marks and no
+bibliography anywhere, which this page is not. It is reported once for the whole
+document rather than once per mark.

@@ -1,0 +1,206 @@
+# Gallery
+
+Every form, minimal prose. Read this page next to its source — the point is
+density, not explanation. The explanations are in
+[The markdown subset](markdown.md), [Groups](groups.sx) and
+[Commands](commands.sx).
+
+# Heading 1
+
+## Heading 2
+
+### Heading 3
+
+#### Heading 4
+
+##### Heading 5
+
+###### Heading 6
+
+## Inlines
+
+*italic* · **bold** · ***bold italic*** · ~~struck~~ · `code` · $x^2 + y^2$
+
+Escapes: \*not emphasis\* · \`not code\` · \$not math\$ · \[not a link\] ·
+\\backslash · \|not a cell divider\|
+
+Flanking near-misses: `a * b * c` · `5 * 4 * 3` · `costs $5 and $10` ·
+`$HOME and $PATH` · `intra*word*em` emphasizes · `**"quoted"**` emphasizes
+
+Links: [inline](https://ziglang.org) · <https://ziglang.org> ·
+https://ziglang.org · [to a document](markdown.md) ·
+[to an anchor](markdown.md#lists) · [/site-absolute](/example) untouched
+
+Spans: [accent].color(accent) · [muted].color(muted) · [fg].color(fg) ·
+[**bold** inside a span].color(accent)
+
+Image: ![the strike logo](logo.svg)
+
+## Lists
+
+- dash bullet
+* star bullet
+
++ plus bullet
+
+1. ordered
+2. items
+
+. raw list
+. no markers
+
+- [ ] unchecked
+- [x] checked
+- [X] also checked
+
+- nesting
+  - two columns is enough
+	- a tab counts as four
+
+- item text
+  wrapping onto a second line
+- a plain line after an item
+
+  lazily continues it
+
+## Rules
+
+---
+
+***
+
+___
+
+## Alerts
+
+> [!NOTE]
+> note
+
+> [!TIP]
+> tip
+
+> [!IMPORTANT]
+> important
+
+> [!WARNING]
+> warning
+
+> [!CAUTION]
+> caution
+
+> [!TODO]
+> todo
+
+> [!EXAMPLE]
+> example
+
+> [!QUESTION]
+> question
+
+> [!IDEA] unknown type — a plain quote with literal text
+
+> [!note] lowercase matches; body on the marker line
+
+## Quotes
+
+> one paragraph
+> flowing across lines
+>
+> a second paragraph
+lazily continued from outside
+
+> - a list inside a quote is literal text
+> # so is a heading
+
+## Code
+
+```zig
+const std = @import("std");
+```
+
+```
+no info string
+```
+
+```zig extra tokens ignored
+info strings keep only the first token
+```
+
+## Tables
+
+| left | center | right |
+| --- | :-: | ---: |
+| a | b | c |
+| escaped \| pipe | still one cell | `a \| b` |
+| ragged row |
+| too | many | cells | here |
+
+## Math
+
+Inline $e^{i\pi} + 1 = 0$, single-line display:
+
+$$ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} $$
+
+And multi-line:
+
+$$
+\int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}
+$$
+
+## Layout
+
+// gallery_grid grid(2)
+
+**A table in a grid cell**
+
+| a | b |
+| --- | --- |
+| 1 | 2 |
+
+// --
+
+/skinny(70%)
+
+A skinny paragraph in the right cell — different commands, so they nest.
+
+// end gallery_grid
+
+// gallery_wide wide(130%)
+
+// inner_grid grid(3)
+
+**Wide**
+
+A grid inside a wide group.
+
+// --
+
+**Three**
+
+Different commands at every level.
+
+// --
+
+**Columns**
+
+Nothing here repeats a command.
+
+// end inner_grid
+
+// end gallery_wide
+
+/center()
+
+Centered.
+
+/indent(2)
+
+An indented paragraph, first line only.
+
+// gallery_collapse collapse()
+
+**A collapsed group**
+
+Folded until opened.
+
+// end gallery_collapse

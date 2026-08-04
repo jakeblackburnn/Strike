@@ -1,11 +1,10 @@
 //! `strike` — the CLI for the strikedown markdown/`.sx` renderer.
 //!
-//! Subcommands:
-//!   strike serve  [dir|file] [--host HOST] [--port PORT] [--watch]
-//!                                                     Serve a content dir (or one .md/.sx file) over HTTP.
-//!   strike render <file> [-o out.html] [--fragment]   Render a single .md/.sx file to HTML.
-//!   strike build  [dir] [-o outdir]                   Export a content directory to static HTML.
-//!   strike init   [dir] [--site]                      Scaffold a starter strike.yaml.
+//! Subcommands (`usage()` below is the authoritative flag list):
+//!   strike serve  [dir|file]   Serve a content dir (or one .md/.sx file) over HTTP.
+//!   strike render <file>       Render a single .md/.sx file to HTML.
+//!   strike build  [dir]        Export a content directory to static HTML.
+//!   strike init   [dir]        Scaffold a starter strike.yaml.
 //!
 //! `serve`'s HTTP server itself lives in `server.zig`; `build` renders through
 //! the same `site.renderAll`/`site.outPath` pipeline `serve` does, so the
@@ -263,8 +262,9 @@ fn cmdBuild(gpa: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator
 
 // ---- init -------------------------------------------------------------------
 
-// Mirrors STRIKE_YAML.md's own example blocks, so the scaffold and the docs
-// stay in sync by construction.
+// A starting point, not a full key list: the commented lines are the keys worth
+// knowing about on day one. `docs/reference/STRIKE_YAML.md` is the complete
+// reference, and the scaffold deliberately stays shorter than it.
 const project_yaml_template =
     \\title: My Project
     \\description: ""
