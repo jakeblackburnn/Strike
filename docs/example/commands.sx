@@ -1,9 +1,12 @@
 # Commands
 
-Eight commands, one vocabulary. Every one of them works in a `//` group opener
-and on a `/cmd()` line, and they combine on the same opener. [Groups](groups.sx)
-covers the grammar those lines are written in; this page is what you can put in
-them.
+Nine commands, one vocabulary. Every one of them works in a `//` group opener
+and on a `/cmd()` line, and they combine on the same opener — except
+`caption`, which only ever means something on a `//` group: it
+**backward-attaches**, binding to the block immediately *before* it rather
+than wrapping what follows, so a `/cmd()` directive (which only ever wraps
+forward) can never mean it. [Groups](groups.sx) covers the grammar those
+lines are written in; this page is what you can put in them.
 
 | Command | Argument | Bare form |
 | --- | --- | --- |
@@ -15,6 +18,8 @@ them.
 | `collapse()` | nothing, or `open` | closed |
 | `indent(n)` | n ≥ 1 | one step |
 | `citations()` | none | — |
+| `caption()` / `caption(pos)` | `top`, `bottom`, `left`, `right` | bottom |
+| `caption(left\|right, N%)` | split percent, 1–99 | 30% |
 
 ## grid
 
@@ -229,6 +234,37 @@ overrides the inherited one for its own subtree.
 `citations()` declares that a group's numbered list is the document's
 bibliography. It gets its own page — [Citations](citations.sx) — because the
 other half of the feature is an inline form.
+
+## caption
+
+A `caption` group wraps the element *before* it in a `<figure>`, with its own
+content as the `<figcaption>` — a real caption, not a paragraph that merely
+sits nearby ([Images](images.sx) has the before/after and every position).
+
+![the strike logo](logo.svg)
+
+// caption()
+The strike wordmark.
+// end
+
+A sibling command on the same opener applies to the whole figure, caption
+included:
+
+![the strike logo](logo.svg)
+
+// skinny(50%) caption(top)
+Narrowed, captioned above instead of below — still one figure.
+// end
+
+`left`/`right` put the caption beside the image instead, sized by a split
+percent:
+
+![the strike logo](logo.svg)
+
+// caption(left, 35%)
+A left-side caption, sitting at the bottom of the column when it's shorter
+than the image.
+// end
 
 ## Combining
 

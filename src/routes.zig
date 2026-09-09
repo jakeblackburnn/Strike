@@ -28,12 +28,16 @@ pub fn collapseMain(stem: []const u8) []const u8 {
 /// slices into the inputs — no allocation.
 pub const DocTarget = struct { base: []const u8, stem: []const u8 };
 
-/// Resolve a doc-relative path against `base` (the linking document's
-/// containing-directory route): leading `./`s drop, each leading `../` pops a
-/// segment off `base` — never past `floor` (the site mount point; "" means
-/// the site root) — then the extension drops and a trailing `main` segment
-/// collapses to its folder's route.
-pub fn resolveDocTarget(base: []const u8, path: []const u8, floor: []const u8) DocTarget {
+/// A resolved doc-relative asset target: the (possibly popped) base route the
+/// asset lands under, and its path underneath — extension intact, no `main`
+/// collapse (an asset isn't a document). Both are slices into the inputs.
+pub const AssetTarget = struct { base: []const u8, path: []const u8 };
+
+/// Pop `../`s off `base` (never past `floor`, the site mount point — "" means
+/// the site root) and drop leading `./`s off `path`. Shared by
+/// `resolveDocTarget` and `resolveAssetTarget`, which differ only in what
+/// they do to what's left of `path` once the walk settles.
+fn popRelative(base: []const u8, path: []const u8, floor: []const u8) struct { base: []const u8, rest: []const u8 } {
     var b = base;
     var p = path;
     while (true) {
@@ -47,7 +51,27 @@ pub fn resolveDocTarget(base: []const u8, path: []const u8, floor: []const u8) D
             }
         } else break;
     }
-    return .{ .base = b, .stem = collapseMain(stripExtension(p)) };
+    return .{ .base = b, .rest = p };
+}
+
+/// Resolve a doc-relative path against `base` (the linking document's
+/// containing-directory route): leading `./`s drop, each leading `../` pops a
+/// segment off `base` — never past `floor` (the site mount point; "" means
+/// the site root) — then the extension drops and a trailing `main` segment
+/// collapses to its folder's route.
+pub fn resolveDocTarget(base: []const u8, path: []const u8, floor: []const u8) DocTarget {
+    const r = popRelative(base, path, floor);
+    return .{ .base = r.base, .stem = collapseMain(stripExtension(r.rest)) };
+}
+
+/// Resolve a doc-relative asset (image) path the same way `resolveDocTarget`
+/// resolves a doc-relative link, except the result keeps its extension and
+/// no `main` collapse applies — because routes mirror the content tree 1:1,
+/// this is also exactly the asset's content-root-relative file path once any
+/// site `base:` prefix is stripped.
+pub fn resolveAssetTarget(base: []const u8, path: []const u8, floor: []const u8) AssetTarget {
+    const r = popRelative(base, path, floor);
+    return .{ .base = r.base, .path = r.rest };
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -91,4 +115,24 @@ test "resolveDocTarget clamps at the floor" {
     const t2 = resolveDocTarget("/mnt/docs/p/a", "../../../../x.md", "/mnt/docs");
     try testing.expectEqualStrings("/mnt/docs", t2.base);
     try testing.expectEqualStrings("x", t2.stem);
+}
+
+test "resolveAssetTarget keeps the extension and doesn't collapse main" {
+    const t1 = resolveAssetTarget("/p/a", "cat.png", "");
+    try testing.expectEqualStrings("/p/a", t1.base);
+    try testing.expectEqualStrings("cat.png", t1.path);
+
+    const t2 = resolveAssetTarget("/p/a", "./img/cat.png", "");
+    try testing.expectEqualStrings("/p/a", t2.base);
+    try testing.expectEqualStrings("img/cat.png", t2.path);
+
+    const t3 = resolveAssetTarget("/p/a", "../shared/main.png", "");
+    try testing.expectEqualStrings("/p", t3.base);
+    try testing.expectEqualStrings("shared/main.png", t3.path);
+}
+
+test "resolveAssetTarget clamps at the floor" {
+    const t1 = resolveAssetTarget("/mnt/docs/p/a", "../../../../cat.png", "/mnt/docs");
+    try testing.expectEqualStrings("/mnt/docs", t1.base);
+    try testing.expectEqualStrings("cat.png", t1.path);
 }

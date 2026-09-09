@@ -1,0 +1,77 @@
+# Images
+
+An image is inline (`![alt](src)`), so it composes with every layout command
+in [Commands](commands.sx) — no image-specific syntax needed for sizing or
+arrangement.
+
+## Sizing
+
+/skinny(50%)
+
+![a red panda](img.jpg)
+
+## Side by side
+
+// grid(2)
+
+![a red panda](img.jpg)
+
+// --
+
+Here is some caption text, but its not part of the image element.
+
+// end
+
+## Full width
+
+/wide(130%)
+
+![a red panda](img.jpg)
+
+## Captions
+
+A `caption` group wraps the image *before* it in a real `<figure>`/
+`<figcaption>` pair — coupled to the image as one element, not a paragraph
+that merely sits nearby (`docs/reference/design/018-image-captions-v2.md`;
+the full command grammar is in [Commands](commands.sx)). Bare `caption()`
+puts it below, matching where a caption is usually expected:
+
+![a red panda](img.jpg)
+
+// caption()
+A red panda spotted at the sanctuary, 2024.
+// end
+
+`caption(top)` puts it above instead:
+
+![a red panda](img.jpg)
+
+// caption(top)
+A red panda spotted at the sanctuary, 2024.
+// end
+
+It stacks with sizing commands on the same opener — the caption travels with
+the image:
+
+![a red panda](img.jpg)
+
+// skinny(50%) caption()
+The same figure, narrowed.
+// end
+
+`left`/`right` put the caption in its own column beside the image instead of
+below it, sized by a split percent (30% by default). A caption shorter than
+the image sits at the bottom of its column rather than floating to the top:
+
+![a red panda](img.jpg)
+
+// caption(left, 35%)
+A red panda, 2024.
+// end
+
+![a red panda](img.jpg)
+
+// caption(right)
+A red panda spotted at the sanctuary during the autumn count, 2024. This one
+runs long enough to fill most of the column's height on its own.
+// end

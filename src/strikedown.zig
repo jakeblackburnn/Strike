@@ -57,239 +57,68 @@ const std = @import("std");
 const sheet = @import("sheet.zig");
 const Allocator = std.mem.Allocator;
 
-// ---- document model ----------------------------------------------------------
 
-pub const Doc = struct {
-    blocks: []Block,
-    /// Parse-time diagnostics (e.g. a `grid(n)` section-count mismatch):
-    /// flat human-readable arena strings in discovery order, deliberately
-    /// unstructured — callers print them, nothing branches on them (grow a
-    /// typed field only when a structured consumer exists). `parse` stays
-    /// pure — callers decide whether to print.
-    warnings: []const []const u8 = &.{},
-};
+const model = @import("strikedown/model.zig");
+const command = @import("strikedown/command.zig");
+const citations = @import("strikedown/citations.zig");
+const inlines = @import("strikedown/inline.zig");
 
-/// One block-level element — a *content element*, or a group arranging
-/// content elements. Shared command-derived attributes live in `attrs`
-/// beside the structural payload in `kind`, so every block type gets them
-/// uniformly; today only group blocks carry non-default attrs.
-pub const Block = struct {
-    kind: Kind,
-    attrs: Attrs = .{},
+// ---- re-exports: the document model lives in strikedown/model.zig, split
+// out for size; every external caller keeps importing strikedown.Doc etc
+// unchanged. ----------------------------------------------------------------
+pub const Doc = model.Doc;
+pub const Block = model.Block;
+pub const Attrs = model.Attrs;
+pub const Group = model.Group;
+pub const TextColor = model.TextColor;
+pub const Collapse = model.Collapse;
+pub const CaptionPos = model.CaptionPos;
+pub const Heading = model.Heading;
+pub const Quote = model.Quote;
+pub const Alert = model.Alert;
+pub const Code = model.Code;
+pub const List = model.List;
+pub const Item = model.Item;
+pub const Table = model.Table;
+pub const Align = model.Align;
+pub const Inline = model.Inline;
+pub const CiteSpan = model.CiteSpan;
+pub const CiteRef = model.CiteRef;
+pub const alignAt = model.alignAt;
 
-    pub const Kind = union(enum) {
-        heading: Heading,
-        paragraph: []Inline,
-        quote: Quote,
-        list: List,
-        code: Code,
-        table: Table,
-        /// Raw display-math TeX (multi-line joined with '\n'), not escaped.
-        math: []const u8,
-        rule,
-        group: Group,
-    };
-};
+// ---- internal aliases: command vocabulary (strikedown/command.zig), the
+// citations pass (strikedown/citations.zig), and inline parsing
+// (strikedown/inline.zig) live in their own files; block-loop code and tests
+// below keep referring to them unqualified. --------------------------------
+const Command = command.Command;
+const parseCommand = command.parseCommand;
+const applyCommand = command.applyCommand;
+const CommandTag = command.CommandTag;
+const isLayout = command.isLayout;
+const isStructural = command.isStructural;
+const hasCommand = command.hasCommand;
+const clearCommand = command.clearCommand;
+const groupLabel = command.groupLabel;
+const parseSingleCommandLine = command.parseSingleCommandLine;
+const caption_default_split_pct = command.caption_default_split_pct;
+const CommandTokenizer = command.CommandTokenizer;
 
-/// Command-derived presentation attributes. Commands write these fields
-/// (`applyCommand`), emitters read them through one shared style helper —
-/// data all the way, never emitter special cases. Today group blocks
-/// (including `/cmd()` desugarings) carry non-default attrs, plus any
-/// paragraph whose first line is whitespace-indented (note 015); future
-/// element-type-specific commands (`// ###.color(accent)`) will write these
-/// same fields onto heading/paragraph/… blocks with no further model change.
-pub const Attrs = struct {
-    columns: ?usize = null, // from grid(n) (layout)
-    width_pct: ?usize = null, // from skinny(N%) or wide(N%): % of the body column
-    // width (layout). One field, two commands: ≤ 100 was written by skinny,
-    // > 100 by wide — the grammar keeps the ranges disjoint (see `Command.wide`)
-    centered: bool = false, // from center(): center-align contained text (layout)
-    text_color: ?TextColor = null, // from color(role): theme text color (non-layout)
-    collapse: ?Collapse = null, // from collapse(): fold behind the leader (layout, structural)
-    citations: bool = false, // from citations(): the group holds the document's
-    // reference list (layout, structural); one per document — the parse-end
-    // pass (`resolveCitations`) strips extras with a warning
-    indent: usize = 0, // from indent(n), or one step from a whitespace-indented
-    // paragraph (note 015): first-line indent steps,
-    // rendered as CSS text-indent — affects a block's own first line only, and on a
-    // group cascades to each child via CSS inheritance (non-layout)
-
-    /// True when any command set a field. Runs over the exhaustive
-    /// `hasCommand` switch, so a new command can never be forgotten here.
-    pub fn any(a: Attrs) bool {
-        for (std.meta.tags(CommandTag)) |t| {
-            if (hasCommand(a, t)) return true;
-        }
-        return false;
-    }
-
-    /// True when any *styling* command set a field — the emitter's "does
-    /// this block need a style attribute" check. Structural commands
-    /// (`collapse`) shape the emitted elements instead and never produce
-    /// style declarations.
-    pub fn anyStyle(a: Attrs) bool {
-        for (std.meta.tags(CommandTag)) |t| {
-            if (!isStructural(t) and hasCommand(a, t)) return true;
-        }
-        return false;
-    }
-};
-
-/// A group's structural payload: named sections of content. The group's
-/// commands land on its `Block.attrs` (data, not emitter special cases) —
-/// a group whose attrs carry a layout command *is* a layout element; one
-/// carrying only `color` is a styled container; one with no commands is a
-/// plain container. A single-command directive (`/cmd()`) produces this
-/// same node: nameless, one section holding the one element it binds to.
-pub const Group = struct {
-    name: []const u8, // "" = nameless (runs to EOF unless closed)
-    sections: [][]Block,
-};
-
-/// A theme color role (`docs/reference/design/006-color.md`). Strikedown never names
-/// concrete colors — a role resolves to whatever the reader's active theme
-/// defines for it (HTML: `var(--accent)` etc.), so colored text tracks theme
-/// switches; other backends map roles to their own palettes.
-pub const TextColor = enum {
-    accent,
-    muted,
-    fg,
-
-    pub fn parse(name: []const u8) ?TextColor {
-        return std.meta.stringToEnum(TextColor, name);
-    }
-};
-
-/// A collapsible group's initial state (`docs/reference/design/007-collapse.md`).
-/// `collapse()` folds the group closed behind its leader; `collapse(open)`
-/// starts it open. State is per page load — nothing persists.
-pub const Collapse = enum { closed, open };
-
-pub const Heading = struct {
-    level: usize, // 1..6
-    id: []const u8, // slugified anchor, deduped per document
-    inlines: []Inline,
-};
-
-/// A blockquote, optionally typed as an alert (`docs/reference/design/009-alerts.md`).
-pub const Quote = struct {
-    /// Set when the quote's first content is an `[!TYPE]` marker; unknown
-    /// types leave the quote plain (the marker stays literal text).
-    alert: ?Alert = null,
-    /// The quote's paragraphs: consecutive `>` lines merge into one,
-    /// a bare `>` line separates them.
-    paras: [][]Inline,
-};
-
-/// An alert type: the GFM five plus the strike extras. Matched
-/// case-insensitively; renderers title the quote with it.
-pub const Alert = enum { note, tip, important, warning, caution, todo, example, question };
-
-pub const Code = struct {
-    lang: []const u8, // "" if the fence had no info string
-    text: []const u8, // verbatim body, every line '\n'-terminated
-};
-
-pub const List = struct {
-    ordered: bool,
-    /// A raw list (`. ` items, `docs/reference/design/008-raw-lists.md`): unordered,
-    /// rendered with no item marker. Marker kinds don't mix at one level.
-    plain: bool = false,
-    /// The first item's written number (GFM: it sets the list start; later
-    /// item numbers are ignored). Always 1 for unordered lists.
-    start: usize,
-    items: []Item,
-};
-
-pub const Item = struct {
-    /// null = plain item; true/false = checked/unchecked task box.
-    task: ?bool = null,
-    /// The marker line's inline content.
-    text: []Inline,
-    /// Continuation segments in source order: soft-wrapped lines and nested lists.
-    tail: []Tail = &.{},
-    /// Set by the citations pass on the entry list's items (016-citations):
-    /// this item's 1-based entry number — its anchor identity. 0 = not an entry.
-    cite_entry: u32 = 0,
-    /// Mark sites (`CiteSpan.site`) citing this entry, in document order —
-    /// the entry's backlink targets.
-    cite_sites: []const u32 = &.{},
-
-    pub const Tail = union(enum) {
-        line: []Inline,
-        list: List,
-    };
-};
-
-pub const Table = struct {
-    /// Per-column alignment from the separator row (may be shorter/longer than
-    /// the header; index with `alignAt`).
-    aligns: []Align,
-    header: [][]Inline,
-    /// Body rows, each already padded/truncated to `header.len` cells.
-    rows: [][][]Inline,
-};
-
-pub const Align = enum { none, left, center, right };
-
-pub const Inline = union(enum) {
-    /// Literal text (backslash escapes already unwrapped). Emitters escape it.
-    text: []const u8,
-    code: []const u8,
-    /// Raw inline-math TeX.
-    math: []const u8,
-    image: struct { src: []const u8, alt: []const u8 },
-    link: struct { url: []const u8, children: []Inline },
-    /// A URL that is both target and label (`<http…>` or a bare URL).
-    autolink: []const u8,
-    strong: []Inline,
-    em: []Inline,
-    strong_em: []Inline,
-    strike: []Inline,
-    /// `[text].color(role)` — a colored span (`docs/reference/design/006-color.md`).
-    color_span: struct { color: TextColor, children: []Inline },
-    /// `[text].cite(refs)` — a citation mark binding the span to entries in
-    /// the document's `citations()` group (`docs/reference/design/016-citations.md`).
-    cite_span: CiteSpan,
-};
-
-/// A citation mark's payload. The inline parser writes `refs` (a digit ref
-/// carries its number immediately; a key ref waits); `site`, final ref
-/// resolution, and `preview` are written by the parse-end citations pass
-/// (`resolveCitations`), so every backend walks an already-resolved tree.
-pub const CiteSpan = struct {
-    refs: []CiteRef,
-    /// 1-based document-order index of this mark — the anchor identity entry
-    /// backlinks point at. 0 until the resolution pass runs.
-    site: u32 = 0,
-    /// Plain-text rendering of the resolved entries ("1. …\n4. …") for
-    /// renderers that want a hover affordance; empty when nothing resolved.
-    preview: []const u8 = "",
-    children: []Inline,
-};
-
-/// One reference inside a citation mark: `raw` exactly as written; `num` the
-/// 1-based entry position it resolves to, or 0 while unresolved (a key ref
-/// before the pass — or permanently: unknown key, out of range, no citations
-/// group — and the mark renders an unresolved ref inert, as its raw text).
-pub const CiteRef = struct {
-    raw: []const u8,
-    num: u32 = 0,
-};
-
-pub fn alignAt(aligns: []const Align, i: usize) Align {
-    return if (i < aligns.len) aligns[i] else .none;
-}
+const parseInlines = inlines.parseInlines;
+const splitCells = inlines.splitCells;
+const parseAligns = inlines.parseAligns;
+const stripBoundaryPipes = inlines.stripBoundaryPipes;
+const hasUrlBody = inlines.hasUrlBody;
 
 // ---- parsing -----------------------------------------------------------------
 
 /// Parse strikedown/markdown source into a `Doc`. `base` is the document's
-/// base typography sheet (the site/project `.sxh` header, or `.empty`) —
-/// inert while the directive namespace is reserved, kept so the header
-/// plumbing stays wired. Everything in the returned tree is owned by `arena`
-/// (or points into `src`) — free the arena as a whole, never nodes piecemeal.
+/// base typography sheet (the site/project `.sxh` header, already layered by
+/// `project.zig`'s `loadHeader`, or `.empty`) — its aliases are in scope for
+/// the whole document, under any `:name command()*` lines the document
+/// defines itself (`docs/reference/design/010-aliases.md`). Everything in
+/// the returned tree is owned by `arena` (or points into `src`) — free the
+/// arena as a whole, never nodes piecemeal.
 pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Error!Doc {
-    _ = base;
     // Collect the document into lines so block parsers can look ahead.
     var lines: std.ArrayList([]const u8) = .empty;
     {
@@ -301,19 +130,19 @@ pub fn parse(arena: Allocator, src: []const u8, base: sheet.Sheet) Allocator.Err
         }
     }
 
-    var p: Parser = .{ .arena = arena, .lines = lines.items };
+    var p: Parser = .{ .arena = arena, .lines = lines.items, .base_sheet = base };
     var blocks: std.ArrayList(Block) = .empty;
     while (p.idx < p.lines.len) {
         if (isBlank(p.lines[p.idx])) {
             p.idx += 1;
             continue;
         }
-        if (try p.next()) |block| try blocks.append(arena, block);
+        if (try p.next()) |block| try appendSibling(&blocks, arena, block, &p.warnings, "document");
     }
     const block_slice = try blocks.toOwnedSlice(arena);
     // The citations pass (016-citations) — the one whole-tree step after the
     // block loop: entries and marks can only meet once both exist.
-    try resolveCitations(&p, block_slice);
+    try citations.resolveCitations(arena, &p.warnings, block_slice);
     // The nesting-cap warning lands here, not where the cap was hit: a
     // reverted `/cmd()` chain shrinks the warning list, and this one must
     // survive that (and appear once however many times the cap was hit).
@@ -359,6 +188,14 @@ const Parser = struct {
     layout_depth: std.enums.EnumArray(CommandTag, usize) = .initFill(0),
     /// Diagnostics collected while parsing (handed to `Doc.warnings`).
     warnings: std.ArrayList([]const u8) = .empty,
+    /// The document's header sheet — site `.sxh` layered under project
+    /// `.sxh` (`project.zig`'s `loadHeader`, concatenated before `parse` is
+    /// called). Alias lookups check this after in-document definitions.
+    base_sheet: sheet.Sheet = .empty,
+    /// Aliases defined so far by `:name command()*` lines in this document,
+    /// in source order — a use before its definition sees a plain name/prose
+    /// (the parser is single-pass), matching `docs/reference/design/010-aliases.md`.
+    doc_aliases: std.ArrayList(sheet.NamedAlias) = .empty,
 
     /// Parse the block starting at `idx` (which is non-blank), advancing past
     /// it. Returns null for lines consumed without producing a block
@@ -366,15 +203,62 @@ const Parser = struct {
     fn next(p: *Parser) Allocator.Error!?Block {
         const t = trimIndent(p.lines[p.idx]);
 
-        // Typography directive (`:` line): consumed, emits nothing. The `:`
-        // namespace is reserved — `sheet.parseLine` recognizes nothing today
-        // — so this arm is dormant until typography directives return.
-        if (sheet.parseLine(t) != null) {
+        // Typography directive (`:` line): a clean `:name command()*` line
+        // defines an alias (added to this document's sheet) and emits
+        // nothing; anything else is not a directive at all (stays prose,
+        // handled by `parseBlock`/`parseParagraph`).
+        if (sheet.parseLine(t)) |d| {
+            switch (d) {
+                .alias => |a| try p.doc_aliases.append(p.arena, a),
+            }
             p.idx += 1;
             return null;
         }
 
         return try p.parseBlock(t);
+    }
+
+    /// Resolve one `word(args)` token to `Attrs`: a real command via
+    /// `parseCommand`, else — args empty, word alias-shaped — an alias this
+    /// document knows (`docs/reference/design/010-aliases.md`, candidate B: a
+    /// `name()` use looks exactly like a command, so it enters through this
+    /// same lookup with no separate grammar). Null means neither — the token
+    /// stays what it always meant: unrecognized, deactivating the directive.
+    fn resolveCommandToken(p: *Parser, tok: []const u8) ?Attrs {
+        if (parseCommand(tok)) |cmd| {
+            var attrs: Attrs = .{};
+            applyCommand(&attrs, cmd);
+            return attrs;
+        }
+        if (tok.len < 3 or tok[tok.len - 1] != ')') return null;
+        const paren = std.mem.indexOfScalar(u8, tok, '(') orelse return null;
+        const word = tok[0..paren];
+        if (tok[paren + 1 .. tok.len - 1].len != 0) return null; // aliases take no arguments
+        if (!sheet.isAliasName(word)) return null;
+        return p.lookupAlias(word);
+    }
+
+    /// Classify a (left-trimmed) line as a single-command directive
+    /// (`docs/reference/design/002-single-command.md`) and resolve it: `/`
+    /// immediately followed by exactly one command-or-alias token and
+    /// nothing else. The char after the slash keeps the two directive
+    /// families apart (`//` is a group line), and `resolveCommandToken`'s
+    /// strictness is the degradation story — `/usr/bin/env`, `/skinny (50%)`,
+    /// or trailing words all return null and stay prose.
+    fn resolveSingleCommandLine(p: *Parser, t: []const u8) ?Attrs {
+        if (t.len < 2 or t[0] != '/' or t[1] == '/') return null;
+        return p.resolveCommandToken(std.mem.trimEnd(u8, t[1..], " "));
+    }
+
+    /// Search in-document aliases (most recent definition wins), then the
+    /// header sheet.
+    fn lookupAlias(p: *Parser, name: []const u8) ?Attrs {
+        var i = p.doc_aliases.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, p.doc_aliases.items[i].name, name)) return p.doc_aliases.items[i].attrs;
+        }
+        return p.base_sheet.get(name);
     }
 
     /// The block classification chain: `t` is the current line, left-trimmed
@@ -387,20 +271,20 @@ const Parser = struct {
         // reaching this chain is outside any group (or mismatched) and falls
         // through to prose — the degradation rule. Past the nesting cap an
         // opener degrades the same way.
-        if (parseGroupLine(t)) |gl| {
+        if (parseGroupLine(p, t)) |gl| {
             if (gl == .open) {
                 if (p.depth < max_nest_depth) return try p.parseGroup(gl.open);
                 p.warnDepth();
             }
         }
 
-        // Single-command directive: `/cmd(args)` applies one command to the
-        // very next content element by wrapping it in an anonymous group.
-        // With nothing to bind to (EOF, or a directive next), it falls
-        // through to prose — the same context-liveness rule that keeps
-        // separators/closers outside a group inert.
-        if (parseSingleCommandLine(t)) |cmd| {
-            if (try p.parseSingleCommand(cmd)) |block| return block;
+        // Single-command directive: `/cmd(args)` (or `/alias()`) applies one
+        // command to the very next content element by wrapping it in an
+        // anonymous group. With nothing to bind to (EOF, or a directive
+        // next), it falls through to prose — the same context-liveness rule
+        // that keeps separators/closers outside a group inert.
+        if (p.resolveSingleCommandLine(t)) |attrs| {
+            if (try p.parseSingleCommand(attrs)) |block| return block;
         }
 
         if (std.mem.startsWith(u8, t, "```")) return p.parseCodeFence(t);
@@ -710,7 +594,7 @@ const Parser = struct {
                 continue;
             }
             const t = trimIndent(p.lines[p.idx]);
-            if (parseGroupLine(t)) |gl| switch (gl) {
+            if (parseGroupLine(p, t)) |gl| switch (gl) {
                 .sep => {
                     p.idx += 1;
                     try sections.append(arena, try cur.toOwnedSlice(arena));
@@ -736,7 +620,7 @@ const Parser = struct {
                 },
                 .open => {}, // a nested group; `next()` below recurses into it
             };
-            if (try p.next()) |block| try cur.append(arena, block);
+            if (try p.next()) |block| try appendSibling(&cur, arena, block, &p.warnings, groupLabel(open.name));
         }
         try sections.append(arena, try cur.toOwnedSlice(arena));
         if (attrs.columns) |n| if (sections.items.len != n) {
@@ -757,14 +641,23 @@ const Parser = struct {
 
     /// Apply a single-command directive: wrap the very next content element
     /// in an anonymous one-section group — the same tree node and emitter
-    /// path as `//` groups. Returns null (the line stays prose) when there is
-    /// nothing to bind to: EOF, or a `:`/`//` directive next. A chain of
+    /// path as `//` groups. `attrs_in` is the resolved command (or alias,
+    /// `docs/reference/design/010-aliases.md`) — a whole precomputed `Attrs`,
+    /// not a `Command`, so an alias that bundles several commands applies
+    /// them all in one bind. Returns null (the line stays prose) when there
+    /// is nothing to bind to: EOF, or a `:`/`//` directive next. A chain of
     /// `/command()` lines recurses — each wraps the next, down to the
     /// eventual content element — so `/skinny() /color(accent) text` nests
     /// exactly as the equivalent nested groups would (layout-level rule and
     /// all: a repeated layout command in the chain still strips and warns).
-    fn parseSingleCommand(p: *Parser, cmd: Command) Allocator.Error!?Block {
+    fn parseSingleCommand(p: *Parser, attrs_in: Attrs) Allocator.Error!?Block {
         const arena = p.arena;
+        // caption is `//`-opener-only: a `/cmd()` directive wraps forward,
+        // but a caption backward-attaches to its preceding sibling — there is
+        // no "next element" for it to bind to here. Degrade to prose. (An
+        // alias that happens to bundle a caption position degrades the same
+        // way — the restriction is on the shape, not the spelling.)
+        if (attrs_in.caption_pos != null) return null;
         if (p.depth >= max_nest_depth) {
             p.warnDepth();
             return null; // the line stays prose, like any unbound command
@@ -779,8 +672,7 @@ const Parser = struct {
         const nt = trimIndent(p.lines[j]);
         if (p.isGroupInterrupt(nt) or sheet.parseLine(nt) != null) return null;
 
-        var attrs: Attrs = .{};
-        applyCommand(&attrs, cmd);
+        var attrs = attrs_in;
         // The layout-level rule, exactly as in `parseGroup`.
         try p.stripNestedLayout(&attrs, null);
         if (attrs.columns) |n| if (n != 1) {
@@ -798,8 +690,8 @@ const Parser = struct {
         // reaches a content element (EOF/directive at its end), the whole
         // thing reverts to prose — restore `idx` so the caller re-parses
         // this line as such, rather than resuming mid-chain.
-        const inner = if (parseSingleCommandLine(nt)) |next_cmd|
-            (try p.parseSingleCommand(next_cmd)) orelse {
+        const inner = if (p.resolveSingleCommandLine(nt)) |next_attrs|
+            (try p.parseSingleCommand(next_attrs)) orelse {
                 p.idx = saved_idx;
                 // The whole chain reverts to prose — drop any warnings
                 // appended above on the assumption that it would bind.
@@ -885,7 +777,7 @@ const Parser = struct {
     /// anywhere; separator/closer forms only while a group is open. Inert `//`
     /// prose lines keep soft-wrapping into paragraphs as in plain markdown.
     fn isGroupInterrupt(p: *Parser, t: []const u8) bool {
-        const gl = parseGroupLine(t) orelse return false;
+        const gl = parseGroupLine(p, t) orelse return false;
         return switch (gl) {
             .open => true,
             .sep, .end, .bare => p.group_depth > 0,
@@ -1194,16 +1086,18 @@ const GroupLine = union(enum) {
 /// prose). An opener is `// [name] <command>*` where the name is a bare
 /// alias-safe token (`end` and `--` are reserved) and every command is
 /// `word(args)` — parens required, so future command keywords can never
-/// collide with names. Whether a separator/closer is *live* is the parser's
-/// call (they need an open group); this function only classifies.
-fn parseGroupLine(t: []const u8) ?GroupLine {
+/// collide with names; a `word()` token that isn't a real command but names
+/// an alias in scope resolves the same way (`docs/reference/design/010-aliases.md`,
+/// `Parser.resolveCommandToken`). Whether a separator/closer is *live* is the
+/// parser's call (they need an open group); this function only classifies.
+fn parseGroupLine(p: *Parser, t: []const u8) ?GroupLine {
     if (!std.mem.startsWith(u8, t, "//")) return null;
     if (t.len > 2 and t[2] != ' ') return null;
     const rest = std.mem.trim(u8, t[2..], " ");
     if (rest.len == 0) return .bare;
     if (std.mem.eql(u8, rest, "--")) return .sep;
 
-    var it = std.mem.tokenizeScalar(u8, rest, ' ');
+    var it: CommandTokenizer = .{ .rest = rest };
     const first = it.next().?; // rest is non-empty, so at least one token
     if (std.mem.eql(u8, first, "end")) {
         const name = it.next() orelse return .{ .end = null };
@@ -1213,483 +1107,58 @@ fn parseGroupLine(t: []const u8) ?GroupLine {
     }
 
     var open: GroupLine.Open = .{};
-    if (parseCommand(first)) |cmd| {
-        applyCommand(&open.attrs, cmd);
+    if (p.resolveCommandToken(first)) |attrs| {
+        command.mergeAttrs(&open.attrs, attrs);
     } else {
         if (!sheet.isAliasName(first) or std.mem.eql(u8, first, "--")) return null;
         open.name = first;
     }
     while (it.next()) |tok| {
-        applyCommand(&open.attrs, parseCommand(tok) orelse return null);
+        const attrs = p.resolveCommandToken(tok) orelse return null;
+        command.mergeAttrs(&open.attrs, attrs);
     }
     return .{ .open = open };
 }
 
-/// The recognized commands. A new command is a variant here, a
-/// `parseCommand` arm, an `Attrs` field written by an `applyCommand` arm,
-/// its `isLayout`/`isStructural`/`hasCommand`/`clearCommand` arms
-/// (exhaustive switches — the compiler finds them for you), and the emitter
-/// reading the field (the style helper for styling commands, the element
-/// shape for structural ones) — data all the way, per the extension recipe. The depth
-/// machinery, `//`-opener and `/cmd()` support, and `Attrs.any` come free.
-/// A *layout* command creates a layout element, and its tag keys a
-/// `Parser.layout_depth` counter for the per-command layout-level rule
-/// (`stripNestedLayout`/`enterLayout`); a non-layout command (`color`)
-/// simply never touches a counter, so it nests freely.
-const Command = union(enum) {
-    grid: usize,
-    /// skinny(N%): render at N% of the body column width, centered.
-    /// Writes `width_pct` — see `wide` for the shared-field invariant.
-    skinny: usize,
-    /// wide(N%): render at N% of the body column width, centered — the
-    /// mirror of `skinny`, bleeding evenly into both margins. Both commands
-    /// write the one `Attrs.width_pct` field and the grammar keeps their
-    /// ranges disjoint: a value ≤ 100 was written by `skinny`, > 100 by
-    /// `wide`. That invariant is what `hasCommand`/`clearCommand` read.
-    wide: usize,
-    /// center(): center-align text within the surrounding layout element.
-    center,
-    /// color(role): set the contained text's theme color. Non-layout —
-    /// nested colors are meaningful (inner wins by cascade).
-    color: TextColor,
-    /// collapse(): fold the group behind its leader, closed by default;
-    /// collapse(open) starts open. Layout and *structural* — it shapes the
-    /// emitted elements rather than adding style declarations.
-    collapse: Collapse,
-    /// citations(): declare the group's numbered list as the document's
-    /// reference list (016-citations) — entries become anchor targets and
-    /// `[text].cite(refs)` marks resolve to them. Layout and *structural*,
-    /// like `collapse`: it shapes the emitted elements. One per document —
-    /// the layout-level rule covers nesting, `resolveCitations` covers
-    /// siblings.
-    citations,
-    /// indent(n): a first-line typographic tab indent, n steps; a
-    /// whitespace-indented paragraph writes one step of the same data
-    /// (011-indent, 015-paragraph-indent).
-    /// Non-layout — nesting scopes, it doesn't stack: an inner indent(n)
-    /// overrides the inherited value for its own subtree (plain CSS
-    /// text-indent semantics), the same as color's inner-wins cascade.
-    indent: usize,
-};
-
-/// The width the bare forms mean, and the range bounds that keep the two
-/// commands' shared field tellable-apart (`skinny_max_pct` is the divide:
-/// skinny ≤ 100 < wide — the disjoint-range invariant `hasCommand` reads).
-const skinny_default_pct = 75;
-const wide_default_pct = 125;
-const skinny_max_pct = 100;
-const wide_max_pct = 200;
-
-/// Argument caps for the unbounded-looking commands (provisional defaults,
-/// like skinny's 75). Anything past them is no real layout, and the caps keep
-/// emitter arithmetic (`indent * 2`) far from overflow.
-const max_grid_cols = 12;
-const max_indent_steps = 8;
-
-/// Parse one `word(args)` token, null if it isn't a recognized command with
-/// valid args (which deactivates the whole line — strict, so typos are seen).
-fn parseCommand(tok: []const u8) ?Command {
-    if (tok.len < 3 or tok[tok.len - 1] != ')') return null;
-    const paren = std.mem.indexOfScalar(u8, tok, '(') orelse return null;
-    const word = tok[0..paren];
-    const args = tok[paren + 1 .. tok.len - 1];
-    if (std.mem.eql(u8, word, "grid")) {
-        const n = std.fmt.parseInt(usize, args, 10) catch return null;
-        if (n == 0 or n > max_grid_cols) return null;
-        return .{ .grid = n };
-    }
-    if (std.mem.eql(u8, word, "skinny")) {
-        if (args.len == 0) return .{ .skinny = skinny_default_pct }; // bare skinny(): the default width
-        if (args[args.len - 1] != '%') return null;
-        const n = std.fmt.parseInt(usize, args[0 .. args.len - 1], 10) catch return null;
-        if (n == 0 or n > skinny_max_pct) return null;
-        return .{ .skinny = n };
-    }
-    if (std.mem.eql(u8, word, "wide")) {
-        if (args.len == 0) return .{ .wide = wide_default_pct }; // bare wide(): the default width
-        if (args[args.len - 1] != '%') return null;
-        const n = std.fmt.parseInt(usize, args[0 .. args.len - 1], 10) catch return null;
-        if (n <= skinny_max_pct or n > wide_max_pct) return null; // 100% and below is skinny's range
-        return .{ .wide = n };
-    }
-    if (std.mem.eql(u8, word, "center")) {
-        if (args.len != 0) return null; // center() takes no arguments
-        return .center;
-    }
-    if (std.mem.eql(u8, word, "color")) {
-        const role = TextColor.parse(args) orelse return null;
-        return .{ .color = role };
-    }
-    if (std.mem.eql(u8, word, "collapse")) {
-        if (args.len == 0) return .{ .collapse = .closed }; // collapse(): closed by default
-        if (std.mem.eql(u8, args, "open")) return .{ .collapse = .open };
-        return null;
-    }
-    if (std.mem.eql(u8, word, "citations")) {
-        if (args.len != 0) return null; // citations() takes no arguments
-        return .citations;
-    }
-    if (std.mem.eql(u8, word, "indent")) {
-        if (args.len == 0) return .{ .indent = 1 }; // bare indent(): one step
-        const n = std.fmt.parseInt(usize, args, 10) catch return null;
-        if (n == 0 or n > max_indent_steps) return null;
-        return .{ .indent = n };
-    }
-    return null;
-}
-
-fn applyCommand(attrs: *Attrs, cmd: Command) void {
-    switch (cmd) {
-        .grid => |n| attrs.columns = n,
-        .skinny, .wide => |n| attrs.width_pct = n,
-        .center => attrs.centered = true,
-        .color => |role| attrs.text_color = role,
-        .collapse => |c| attrs.collapse = c,
-        .citations => attrs.citations = true,
-        .indent => |n| attrs.indent = n,
-    }
-}
-
-const CommandTag = std.meta.Tag(Command);
-
-/// Layout commands create layout elements and count under the per-command
-/// layout-level rule; non-layout commands (`color`) style without creating
-/// one and nest freely. Exhaustive: a new `Command` variant is a compile
-/// error here until classified.
-fn isLayout(tag: CommandTag) bool {
-    return switch (tag) {
-        .grid, .skinny, .wide, .center, .collapse, .citations => true,
-        .color, .indent => false,
-    };
-}
-
-/// Structural commands are expressed by the emitter's *element* choice
-/// (collapse -> a disclosure element), never as style declarations —
-/// `Attrs.anyStyle` skips them so they don't produce empty style attributes.
-/// Exhaustive, like `isLayout`.
-fn isStructural(tag: CommandTag) bool {
-    return switch (tag) {
-        .collapse, .citations => true,
-        .grid, .skinny, .wide, .center, .color, .indent => false,
-    };
-}
-
-/// Does `attrs` carry `tag`'s command — is the field it writes set?
-fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
-    return switch (tag) {
-        .grid => attrs.columns != null,
-        // The disjoint-range invariant (see `Command.wide`): one field, and
-        // which side of 100 the value sits on names the command that wrote it.
-        .skinny => attrs.width_pct != null and attrs.width_pct.? <= skinny_max_pct,
-        .wide => attrs.width_pct != null and attrs.width_pct.? > skinny_max_pct,
-        .center => attrs.centered,
-        .color => attrs.text_color != null,
-        .collapse => attrs.collapse != null,
-        .citations => attrs.citations,
-        .indent => attrs.indent != 0,
-    };
-}
-
-/// Unset the field `tag`'s command writes (the layout-level rule strips
-/// colliding commands with this).
-fn clearCommand(attrs: *Attrs, tag: CommandTag) void {
-    switch (tag) {
-        .grid => attrs.columns = null,
-        // Each clears the shared width field only when the value is on its
-        // own side of 100 (the disjoint-range invariant).
-        .skinny, .wide => if (hasCommand(attrs.*, tag)) {
-            attrs.width_pct = null;
-        },
-        .center => attrs.centered = false,
-        .color => attrs.text_color = null,
-        .collapse => attrs.collapse = null,
-        .citations => attrs.citations = false,
-        .indent => attrs.indent = 0,
-    }
-}
-
-fn groupLabel(name: []const u8) []const u8 {
-    return if (name.len > 0) name else "(nameless)";
-}
-
-/// Classify a (left-trimmed) line as a single-command directive
-/// (`docs/reference/design/002-single-command.md`): `/` immediately followed by exactly
-/// one command token and nothing else. The char after the slash keeps the two
-/// directive families apart (`//` is a group line), and `parseCommand`'s
-/// strictness is the degradation story — `/usr/bin/env`, `/skinny (50%)`, or
-/// trailing words all return null and stay prose.
-fn parseSingleCommandLine(t: []const u8) ?Command {
-    if (t.len < 2 or t[0] != '/' or t[1] == '/') return null;
-    return parseCommand(std.mem.trimEnd(u8, t[1..], " "));
-}
-
-// ---- citations resolution ----------------------------------------------------
-
-/// The parse-end citations pass (`docs/reference/design/016-citations.md`): adopt the
-/// document's one citations() group (later ones degrade to plain groups with
-/// a warning — the layout-level rule covers nesting, this covers siblings),
-/// find its entry list (the first top-level numbered list in the group), lift
-/// `[key]` entry prefixes, then resolve every citation mark's refs to entry
-/// positions — writing mark sites, entry numbers, and backlinks as data on
-/// the tree. Runs inside `parse` (pure, arena-owned), so every backend walks
-/// the same resolved tree.
-fn resolveCitations(p: *Parser, blocks: []Block) Allocator.Error!void {
-    var r: CiteResolver = .{ .p = p };
-    try r.scanGroups(blocks);
-    try r.scanBlocks(blocks);
-    try r.finish();
-}
-
-const CiteResolver = struct {
-    p: *Parser,
-    /// The adopted group's entry items (the numbered list), or empty.
-    entries: []Item = &.{},
-    /// The first entry's number — the entry list's `start`, so marks,
-    /// anchors, and previews all agree with the numbers the reader sees.
-    first: u32 = 1,
-    have_group: bool = false,
-    /// Keys lifted from entries, in entry order (linear scan — entry lists
-    /// are small).
-    keys: std.ArrayList(struct { key: []const u8, num: u32 }) = .empty,
-    /// Per-entry backlink site lists (index = entry number - 1).
-    back: []std.ArrayList(u32) = &.{},
-    site_count: u32 = 0,
-    /// Marks seen with no citations group anywhere — warned once at the end.
-    orphan_marks: usize = 0,
-
-    fn scanGroups(r: *CiteResolver, blocks: []Block) Allocator.Error!void {
-        for (blocks) |*b| {
-            if (b.kind != .group) continue;
-            if (b.attrs.citations) {
-                if (r.have_group) {
-                    clearCommand(&b.attrs, .citations);
-                    try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
-                        r.p.arena,
-                        "group '{s}': citations ignored (the document already has a citations group)",
-                        .{groupLabel(b.kind.group.name)},
-                    ));
-                } else {
-                    try r.adoptGroup(b);
-                }
-            }
-            for (b.kind.group.sections) |section| try r.scanGroups(section);
-        }
-    }
-
-    /// Take `b` as the document's citations group: locate the entry list and
-    /// register its entries. No numbered list means the command degrades (the
-    /// group renders plain) with a warning.
-    fn adoptGroup(r: *CiteResolver, b: *Block) Allocator.Error!void {
-        const arena = r.p.arena;
-        const g = b.kind.group;
-        var list: ?List = null;
-        outer: for (g.sections) |section| for (section) |inner| {
-            if (inner.kind == .list and inner.kind.list.ordered) {
-                list = inner.kind.list;
-                break :outer;
-            }
-        };
-        const l = list orelse {
-            clearCommand(&b.attrs, .citations);
-            try r.p.warnings.append(arena, try std.fmt.allocPrint(
-                arena,
-                "group '{s}': citations ignored (no numbered list in the group)",
-                .{groupLabel(g.name)},
-            ));
-            return;
-        };
-        r.have_group = true;
-        r.entries = l.items;
-        r.first = @intCast(l.start);
-        // `collapse()` on the same opener would swallow the bibliography the
-        // marks link into — the citations element wins, the collapse drops.
-        if (b.attrs.collapse != null) {
-            clearCommand(&b.attrs, .collapse);
-            try r.p.warnings.append(arena, try std.fmt.allocPrint(
-                arena,
-                "group '{s}': collapse ignored on the citations group",
-                .{groupLabel(g.name)},
-            ));
-        }
-        r.back = try arena.alloc(std.ArrayList(u32), l.items.len);
-        for (r.back) |*sites| sites.* = .empty;
-        for (l.items, 0..) |*item, i| {
-            const num: u32 = @intCast(l.start + i);
-            item.cite_entry = num;
-            try r.liftKey(item, num);
-        }
-    }
-
-    /// Lift a leading `[key] ` off an entry's text, registering key → entry
-    /// number. Only a clean key shape followed by a space (or nothing) lifts
-    /// — an all-digit or otherwise non-key bracket stays literal prose, and a
-    /// leading link/task box already owns the `[` and never reaches here.
-    fn liftKey(r: *CiteResolver, item: *Item, num: u32) Allocator.Error!void {
-        if (item.text.len == 0 or item.text[0] != .text) return;
-        const s = item.text[0].text;
-        if (s.len < 2 or s[0] != '[') return;
-        const close = std.mem.indexOfScalar(u8, s, ']') orelse return;
-        const ref = parseCiteRef(s[1..close]) orelse return;
-        if (ref.num != 0) return; // all digits — not a key
-        if (close + 1 < s.len and s[close + 1] != ' ') return;
-        const rest = std.mem.trimStart(u8, s[close + 1 ..], " ");
-        if (rest.len == 0) {
-            // Nothing left of the node — drop it rather than keeping an
-            // empty `.text` in the item.
-            item.text = item.text[1..];
-        } else {
-            item.text[0] = .{ .text = rest };
-        }
-        for (r.keys.items) |k| {
-            if (std.mem.eql(u8, k.key, ref.raw)) {
-                try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
-                    r.p.arena,
-                    "citations: duplicate key [{s}] (the first entry wins)",
-                    .{ref.raw},
-                ));
-                return;
-            }
-        }
-        try r.keys.append(r.p.arena, .{ .key = ref.raw, .num = num });
-    }
-
-    fn scanBlocks(r: *CiteResolver, blocks: []Block) Allocator.Error!void {
-        for (blocks) |*b| switch (b.kind) {
-            .heading => |h| try r.scanInlines(h.inlines),
-            .paragraph => |inls| try r.scanInlines(inls),
-            .quote => |q| for (q.paras) |inls| try r.scanInlines(inls),
-            .list => |l| try r.scanList(l),
-            .table => |t| {
-                for (t.header) |cell| try r.scanInlines(cell);
-                for (t.rows) |row| for (row) |cell| try r.scanInlines(cell);
-            },
-            .group => |g| for (g.sections) |section| try r.scanBlocks(section),
-            .code, .math, .rule => {},
-        };
-    }
-
-    fn scanList(r: *CiteResolver, l: List) Allocator.Error!void {
-        for (l.items) |item| {
-            try r.scanInlines(item.text);
-            for (item.tail) |tail| switch (tail) {
-                .line => |inls| try r.scanInlines(inls),
-                .list => |sub| try r.scanList(sub),
-            };
-        }
-    }
-
-    fn scanInlines(r: *CiteResolver, inls: []Inline) Allocator.Error!void {
-        for (inls) |*inl| switch (inl.*) {
-            .cite_span => |*span| {
-                try r.resolveMark(span);
-                try r.scanInlines(span.children);
-            },
-            .link => |l| try r.scanInlines(l.children),
-            .color_span => |cs| try r.scanInlines(cs.children),
-            .strong, .em, .strong_em, .strike => |c| try r.scanInlines(c),
-            .text, .code, .math, .image, .autolink => {},
-        };
-    }
-
-    /// Number the mark's site, resolve each ref to an entry, record
-    /// backlinks, and build the plain-text preview. Failed refs zero out and
-    /// warn — the mark still renders, its dead refs inert.
-    fn resolveMark(r: *CiteResolver, span: *CiteSpan) Allocator.Error!void {
-        const arena = r.p.arena;
-        r.site_count += 1;
-        span.site = r.site_count;
-        if (!r.have_group) {
-            for (span.refs) |*ref| ref.num = 0;
-            r.orphan_marks += 1;
+/// Append `block` to a sibling-block list being accumulated by the top-level
+/// parse loop or a group section — the two places that know "what came
+/// immediately before" a given block; `parseGroup` itself only sees its own
+/// contents, never its surroundings. A caption group (`attrs.caption_pos`
+/// set) backward-attaches here: it pops the immediately-preceding sibling out
+/// of `list` and becomes its partner as section 0, with the caption's own
+/// section(s) following. No preceding sibling (list empty — the caption group
+/// opens the document, or immediately follows another group's close) degrades
+/// gracefully: the caption group is appended as-is (its own section(s) only,
+/// no partner) and a warning is recorded — the emitter then renders it as a
+/// plain group, no `<figure>`/`<figcaption>`.
+fn appendSibling(
+    list: *std.ArrayList(Block),
+    arena: Allocator,
+    block: Block,
+    warnings: *std.ArrayList([]const u8),
+    label: []const u8,
+) Allocator.Error!void {
+    if (block.kind == .group and block.attrs.caption_pos != null) {
+        if (list.pop()) |prev| {
+            const g = block.kind.group;
+            const new_sections = try arena.alloc([]Block, g.sections.len + 1);
+            const leader = try arena.alloc(Block, 1);
+            leader[0] = prev;
+            new_sections[0] = leader;
+            for (g.sections, 0..) |s, i| new_sections[i + 1] = s;
+            var b2 = block;
+            b2.kind.group.sections = new_sections;
+            try list.append(arena, b2);
             return;
         }
-        var preview: std.ArrayList(u8) = .empty;
-        for (span.refs, 0..) |*ref, ri| {
-            if (ref.num == 0) {
-                // A key ref, or a number no u32 holds (`parseCiteRef` left
-                // it unresolved) — both miss the same way.
-                ref.num = r.lookupKey(ref.raw) orelse {
-                    try r.warnNoEntry(ref.raw);
-                    continue;
-                };
-            } else if (ref.num < r.first or ref.num - r.first >= r.entries.len) {
-                try r.warnNoEntry(ref.raw);
-                ref.num = 0;
-                continue;
-            }
-            // A mark citing the same entry twice keeps one backlink and one
-            // preview line; the sup still shows what the author wrote.
-            const dup = for (span.refs[0..ri]) |prev| {
-                if (prev.num == ref.num) break true;
-            } else false;
-            if (dup) continue;
-            try r.back[ref.num - r.first].append(arena, span.site);
-            if (preview.items.len > 0) try preview.append(arena, '\n');
-            try preview.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}. ", .{ref.num}));
-            try previewEntry(arena, &preview, r.entries[ref.num - r.first]);
-        }
-        span.preview = try preview.toOwnedSlice(arena);
-    }
-
-    /// The one degradation message for every unresolvable ref — unknown key,
-    /// out-of-range number, overflowed number — so same-looking mistakes
-    /// degrade the same way.
-    fn warnNoEntry(r: *CiteResolver, raw: []const u8) Allocator.Error!void {
-        try r.p.warnings.append(r.p.arena, try std.fmt.allocPrint(
-            r.p.arena,
-            "cite({s}): no matching entry",
-            .{raw},
+        try warnings.append(arena, try std.fmt.allocPrint(
+            arena,
+            "caption in '{s}': no preceding element to attach to — rendered as plain content, no figure",
+            .{label},
         ));
     }
-
-    fn lookupKey(r: *CiteResolver, key: []const u8) ?u32 {
-        for (r.keys.items) |k| {
-            if (std.mem.eql(u8, k.key, key)) return k.num;
-        }
-        return null;
-    }
-
-    /// Hand each entry its backlink sites, and warn once about marks in a
-    /// document with no citations group.
-    fn finish(r: *CiteResolver) Allocator.Error!void {
-        const arena = r.p.arena;
-        for (r.entries, r.back) |*item, *sites| {
-            item.cite_sites = try sites.toOwnedSlice(arena);
-        }
-        if (r.orphan_marks > 0) {
-            try r.p.warnings.append(arena, try std.fmt.allocPrint(
-                arena,
-                "{d} citation mark(s) but no citations group",
-                .{r.orphan_marks},
-            ));
-        }
-    }
-};
-
-/// An entry's text as plain text (marker line plus soft-wrapped continuation
-/// lines; nested lists skipped) — the mark's hover preview.
-fn previewEntry(arena: Allocator, out: *std.ArrayList(u8), item: Item) Allocator.Error!void {
-    try previewInlines(arena, out, item.text);
-    for (item.tail) |tail| switch (tail) {
-        .line => |inls| {
-            try out.append(arena, ' ');
-            try previewInlines(arena, out, inls);
-        },
-        .list => {},
-    };
+    try list.append(arena, block);
 }
-
-fn previewInlines(arena: Allocator, out: *std.ArrayList(u8), inls: []const Inline) Allocator.Error!void {
-    for (inls) |inl| switch (inl) {
-        .text, .code, .math, .autolink => |s| try out.appendSlice(arena, s),
-        .image => |img| try out.appendSlice(arena, img.alt),
-        .link => |l| try previewInlines(arena, out, l.children),
-        .color_span => |cs| try previewInlines(arena, out, cs.children),
-        .cite_span => |span| try previewInlines(arena, out, span.children),
-        .strong, .em, .strong_em, .strike => |c| try previewInlines(arena, out, c),
-    };
-}
-
 // ---- table helpers -----------------------------------------------------------
 
 /// Two-line lookahead: a non-block line containing a `|`, followed by a
@@ -1716,536 +1185,6 @@ fn isTableSeparator(t: []const u8) bool {
         for (cell) |ch| if (ch != '-') return false;
     }
     return true;
-}
-
-/// Strip at most one leading and one trailing boundary pipe. Separator rows
-/// only — they can hold nothing but `-`, `:`, `|` and spaces, so there are no
-/// escapes to worry about here; `splitCells` handles its own boundaries.
-fn stripBoundaryPipes(s: []const u8) []const u8 {
-    var r = s;
-    if (r.len > 0 and r[0] == '|') r = r[1..];
-    if (r.len > 0 and r[r.len - 1] == '|') r = r[0 .. r.len - 1];
-    return r;
-}
-
-/// Split a table row into trimmed cells at every unescaped `|`.
-///
-/// GFM splits cells *before* parsing inlines, so a pipe that is part of a
-/// cell's content must be written `\|` — including inside a code span, whose
-/// body is never inline-parsed afterwards. That makes this the only place the
-/// escape can be undone, so `\|` becomes a literal `|` here while every other
-/// backslash escape is left for `parseInlines`. A backslash consumes the byte
-/// after it outright, so `\\|` is an escaped backslash followed by a real
-/// delimiter.
-///
-/// A cell that carried no `\|` is a slice of `row`; one that did is rebuilt in
-/// `gpa` (the parse arena).
-fn splitCells(gpa: Allocator, cells: *std.ArrayList([]const u8), row: []const u8) Allocator.Error!void {
-    const trimmed = std.mem.trim(u8, row, " ");
-    const s = if (trimmed.len > 0 and trimmed[0] == '|') trimmed[1..] else trimmed;
-    var start: usize = 0;
-    var escaped_pipes: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == '\\' and i + 1 < s.len) {
-            if (s[i + 1] == '|') escaped_pipes += 1;
-            i += 2;
-            continue;
-        }
-        if (s[i] == '|') {
-            try appendCell(gpa, cells, s[start..i], escaped_pipes);
-            escaped_pipes = 0;
-            start = i + 1;
-        }
-        i += 1;
-    }
-    // A row's single trailing boundary pipe leaves `start` at the end with
-    // cells already collected; a row that genuinely ends in an empty cell
-    // (`| a | |`) reached the end through its own delimiter and keeps it.
-    if (start < s.len or cells.items.len == 0)
-        try appendCell(gpa, cells, s[start..], escaped_pipes);
-}
-
-/// Trim one cell and append it, unescaping its `escaped_pipes` `\|` sequences.
-/// Allocates only when there is at least one — trimming removes spaces, and a
-/// `\|` pair holds none, so the count still applies after the trim.
-fn appendCell(gpa: Allocator, cells: *std.ArrayList([]const u8), raw: []const u8, escaped_pipes: usize) Allocator.Error!void {
-    const cell = std.mem.trim(u8, raw, " ");
-    if (escaped_pipes == 0) return cells.append(gpa, cell);
-
-    const out = try gpa.alloc(u8, cell.len - escaped_pipes);
-    var w: usize = 0;
-    var i: usize = 0;
-    while (i < cell.len) {
-        if (cell[i] == '\\' and i + 1 < cell.len) {
-            if (cell[i + 1] == '|') {
-                out[w] = '|';
-                w += 1;
-            } else {
-                out[w] = cell[i];
-                out[w + 1] = cell[i + 1];
-                w += 2;
-            }
-            i += 2;
-            continue;
-        }
-        out[w] = cell[i];
-        w += 1;
-        i += 1;
-    }
-    try cells.append(gpa, out[0..w]);
-}
-
-/// Read per-column alignment from the separator row (`:--`, `:-:`, `--:`).
-/// The row already passed `isTableStart`'s separator check, and separators
-/// can hold no escaped pipes — the simple boundary strip + split is the
-/// whole job (body rows need `splitCells`' escape handling; this row can't).
-fn parseAligns(arena: Allocator, aligns: *std.ArrayList(Align), sep: []const u8) Allocator.Error!void {
-    var it = std.mem.splitScalar(u8, stripBoundaryPipes(std.mem.trim(u8, sep, " ")), '|');
-    while (it.next()) |raw| {
-        const cell = std.mem.trim(u8, raw, " ");
-        const left = cell.len > 0 and cell[0] == ':';
-        const right = cell.len > 0 and cell[cell.len - 1] == ':';
-        try aligns.append(arena, if (left and right) .center else if (right) .right else if (left) .left else .none);
-    }
-}
-
-// ---- inline parsing ----------------------------------------------------------
-
-const Link = struct { text: []const u8, url: []const u8, consumed: usize };
-
-/// Parse `[text](url)` starting at the leading `[`.
-fn parseLink(s: []const u8) ?Link {
-    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
-    if (close_bracket + 1 >= s.len or s[close_bracket + 1] != '(') return null;
-    const close_paren = std.mem.indexOfScalarPos(u8, s, close_bracket + 2, ')') orelse return null;
-    return .{
-        .text = s[1..close_bracket],
-        .url = s[close_bracket + 2 .. close_paren],
-        .consumed = close_paren + 1,
-    };
-}
-
-const PostfixSpan = struct { text: []const u8, args: []const u8, consumed: usize };
-
-/// The shared mechanics of a `[text].word(args)` postfix span (`.color`,
-/// `.cite`): the same first-`]` scan as `parseLink` — which is the
-/// restriction story: a link's `[label](url)` wins the `[` first, so a
-/// postfix span never attaches to a link, and spans don't nest (the earliest
-/// `].word(` closes the span; the rest stays literal). The caller validates
-/// `args`; any failure there deactivates the whole span back to prose.
-fn parsePostfixSpan(s: []const u8, comptime word: []const u8) ?PostfixSpan {
-    const marker = "." ++ word ++ "(";
-    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
-    if (!std.mem.startsWith(u8, s[close_bracket + 1 ..], marker)) return null;
-    const args_start = close_bracket + 1 + marker.len;
-    const close_paren = std.mem.indexOfScalarPos(u8, s, args_start, ')') orelse return null;
-    return .{
-        .text = s[1..close_bracket],
-        .args = s[args_start..close_paren],
-        .consumed = close_paren + 1,
-    };
-}
-
-const ColorSpan = struct { text: []const u8, color: TextColor, consumed: usize };
-
-/// Parse `[text].color(role)` starting at the leading `[`
-/// (`docs/reference/design/006-color.md`). Unknown roles fail the parse and
-/// stay literal prose; empty span text is rejected, matching `.cite`.
-fn parseColorSpan(s: []const u8) ?ColorSpan {
-    const span = parsePostfixSpan(s, "color") orelse return null;
-    if (span.text.len == 0) return null;
-    const role = TextColor.parse(span.args) orelse return null;
-    return .{ .text = span.text, .color = role, .consumed = span.consumed };
-}
-
-const CiteSpanParse = struct { text: []const u8, refs: []CiteRef, consumed: usize };
-
-/// Parse `[text].cite(refs)` starting at the leading `[` — the citation mark
-/// (`docs/reference/design/016-citations.md`). `refs` is one or more
-/// comma-separated refs, spaces allowed around commas; any malformed ref
-/// fails the whole parse so the text stays literal prose. Empty span text
-/// (`[].cite(…)`) is rejected — reserved for a possible future
-/// point-citation form.
-fn parseCiteSpan(arena: Allocator, s: []const u8) Allocator.Error!?CiteSpanParse {
-    const span = parsePostfixSpan(s, "cite") orelse return null;
-    if (span.text.len == 0) return null;
-    var refs: std.ArrayList(CiteRef) = .empty;
-    var it = std.mem.splitScalar(u8, span.args, ',');
-    while (it.next()) |part| {
-        const ref = parseCiteRef(std.mem.trim(u8, part, " ")) orelse return null;
-        try refs.append(arena, ref);
-    }
-    return .{
-        .text = span.text,
-        .refs = try refs.toOwnedSlice(arena),
-        .consumed = span.consumed,
-    };
-}
-
-/// One `.cite` ref token: all digits is a positional entry number (1-based,
-/// resolved on the spot); a key is letters/digits/`-`/`_` with at least one
-/// letter. The two shapes are disjoint by grammar — the `skinny`/`wide`
-/// trick — so a key can never be mistaken for a position. Anything else
-/// fails, deactivating the whole mark.
-fn parseCiteRef(tok: []const u8) ?CiteRef {
-    if (tok.len == 0) return null;
-    var has_letter = false;
-    var all_digits = true;
-    for (tok) |c| {
-        if (std.ascii.isAlphabetic(c)) {
-            has_letter = true;
-            all_digits = false;
-        } else if (c == '-' or c == '_') {
-            all_digits = false;
-        } else if (!std.ascii.isDigit(c)) {
-            return null;
-        }
-    }
-    if (all_digits) {
-        // `0` is grammar-invalid (entry numbers are 1-based) and fails the
-        // mark; a number too big for u32 is grammatically fine but can match
-        // nothing — keep that ref unresolved (num 0) so it degrades like an
-        // out-of-range number instead of deactivating the whole mark.
-        const n = std.fmt.parseInt(u32, tok, 10) catch return .{ .raw = tok };
-        if (n == 0) return null;
-        return .{ .raw = tok, .num = n };
-    }
-    if (!has_letter) return null; // `-`/`_` runs alone are not keys
-    return .{ .raw = tok };
-}
-
-/// GFM punctuation a backslash escapes, plus `$` (math) and `|` (tables).
-fn isEscapablePunct(c: u8) bool {
-    return switch (c) {
-        '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|', '~', '<', '>', '$' => true,
-        else => false,
-    };
-}
-
-fn startsWithUrlScheme(s: []const u8) bool {
-    return std.mem.startsWith(u8, s, "http://") or std.mem.startsWith(u8, s, "https://");
-}
-
-/// True if `url` has anything beyond the bare scheme (`https://` alone is prose).
-fn hasUrlBody(url: []const u8) bool {
-    if (std.mem.startsWith(u8, url, "https://")) return url.len > "https://".len;
-    if (std.mem.startsWith(u8, url, "http://")) return url.len > "http://".len;
-    return false;
-}
-
-/// Punctuation excluded from the tail of a bare URL: in `see https://z.dev.`
-/// the final period is prose, not part of the link.
-fn isTrailingPunct(c: u8) bool {
-    return switch (c) {
-        '.', ',', ';', ':', '!', '?', ')' => true,
-        else => false,
-    };
-}
-
-/// Parse `<http…>` starting at the `<`: the URL between the brackets, or null
-/// if this isn't an autolink (wrong scheme, no `>`, whitespace inside).
-fn parseAngleAutolink(s: []const u8) ?[]const u8 {
-    if (s.len < 2 or !startsWithUrlScheme(s[1..])) return null;
-    const end = std.mem.indexOfScalar(u8, s, '>') orelse return null;
-    const url = s[1..end];
-    if (std.mem.indexOfAny(u8, url, " \t") != null) return null;
-    return url;
-}
-
-// ---- delimiter flanking (docs/reference/design/014-flanking.md) ------------------------
-// Emphasis delimiters are context-sensitive: `a * b * c` is asterisks in prose,
-// not emphasis around a space. CommonMark decides this with left/right-flanking
-// delimiter runs, and these three helpers are that definition, applied by every
-// emphasis arm below. `text` is the *joined* text of a flowing element, so its
-// start and end count as whitespace (a span can't open on nothing).
-
-/// ASCII punctuation, per CommonMark's definition (the flanking clauses treat
-/// punctuation as a weaker boundary than whitespace).
-fn isAsciiPunct(c: u8) bool {
-    return switch (c) {
-        '!'...'/', ':'...'@', '['...'`', '{'...'~' => true,
-        else => false,
-    };
-}
-
-fn isSpaceChar(c: u8) bool {
-    return c == ' ' or c == '\t';
-}
-
-/// The character before a run, or null at the start of the text (= whitespace).
-fn charBefore(text: []const u8, start: usize) ?u8 {
-    return if (start == 0) null else text[start - 1];
-}
-
-/// The character after a run, or null at the end of the text (= whitespace).
-fn charAfter(text: []const u8, start: usize, len: usize) ?u8 {
-    const at = start + len;
-    return if (at >= text.len) null else text[at];
-}
-
-/// May the delimiter run at `start` (of `len` chars) *open* a span?
-/// CommonMark: not followed by whitespace, and either not followed by
-/// punctuation, or followed by punctuation and preceded by whitespace or
-/// punctuation.
-fn isLeftFlanking(text: []const u8, start: usize, len: usize) bool {
-    const after = charAfter(text, start, len) orelse return false;
-    if (isSpaceChar(after)) return false;
-    if (!isAsciiPunct(after)) return true;
-    const before = charBefore(text, start) orelse return true;
-    return isSpaceChar(before) or isAsciiPunct(before);
-}
-
-/// May the delimiter run at `start` (of `len` chars) *close* a span?
-/// The mirror of `isLeftFlanking`.
-fn isRightFlanking(text: []const u8, start: usize, len: usize) bool {
-    const before = charBefore(text, start) orelse return false;
-    if (isSpaceChar(before)) return false;
-    if (!isAsciiPunct(before)) return true;
-    const after = charAfter(text, start, len) orelse return true;
-    return isSpaceChar(after) or isAsciiPunct(after);
-}
-
-/// The next occurrence of `marker` at or after `from` that can close a span —
-/// non-qualifying candidates are skipped, not fatal, so `*a * b*` is one
-/// emphasis containing a lone asterisk.
-fn findClosingRun(text: []const u8, from: usize, marker: []const u8) ?usize {
-    var at = from;
-    while (std.mem.indexOfPos(u8, text, at, marker)) |found| {
-        if (isRightFlanking(text, found, marker.len)) return found;
-        at = found + 1;
-    }
-    return null;
-}
-
-/// The length of the run of `ch` starting at `at`.
-fn runLen(text: []const u8, at: usize, ch: u8) usize {
-    var n: usize = 0;
-    while (at + n < text.len and text[at + n] == ch) n += 1;
-    return n;
-}
-
-/// The start of the next run of *exactly* `len` backticks at or after `from`
-/// (GFM code-span closer matching — longer/shorter runs are skipped whole).
-fn findBacktickClose(text: []const u8, from: usize, len: usize) ?usize {
-    var at = from;
-    while (at < text.len) {
-        if (text[at] == '`') {
-            const n = runLen(text, at, '`');
-            if (n == len) return at;
-            at += n;
-        } else at += 1;
-    }
-    return null;
-}
-
-/// The closing `$` of an inline-math span opened at `open`, or null if this `$`
-/// doesn't open one (docs/reference/design/014-flanking.md): the opener must be followed
-/// by a non-space character, the closer preceded by one and not followed by a
-/// digit, and the body must be non-empty. Non-qualifying candidates are skipped.
-fn findMathClose(text: []const u8, open: usize) ?usize {
-    const first = charAfter(text, open, 1) orelse return null;
-    if (isSpaceChar(first)) return null;
-    var at = open + 1;
-    while (std.mem.indexOfScalarPos(u8, text, at, '$')) |found| {
-        if (found == open + 1) return null; // empty body: `$$` is not inline math
-        const before = text[found - 1];
-        const after = charAfter(text, found, 1);
-        const digit_follows = if (after) |a| std.ascii.isDigit(a) else false;
-        if (!isSpaceChar(before) and !digit_follows) return found;
-        at = found + 1;
-    }
-    return null;
-}
-
-/// Parse one line's inline markdown into a run of `Inline` nodes. Literal
-/// characters (and unwrapped backslash escapes) accumulate into `.text` runs;
-/// structured forms flush the run and append their own node. Recurses for
-/// nestable content (link text, emphasis bodies).
-fn parseInlines(arena: Allocator, text: []const u8) Allocator.Error![]Inline {
-    var out: std.ArrayList(Inline) = .empty;
-    var pending: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i < text.len) {
-        const c = text[i];
-
-        // Backslash escape: the punctuation after `\` becomes literal text,
-        // defeating any inline meaning it would otherwise have. Checked first
-        // so `` \` `` and `\$` also work.
-        if (c == '\\' and i + 1 < text.len and isEscapablePunct(text[i + 1])) {
-            try pending.append(arena, text[i + 1]);
-            i += 2;
-            continue;
-        }
-
-        // `inline code` — highest precedence, no nested parsing. GFM run
-        // matching: an opener run of N backticks closes at the next run of
-        // exactly N, so ``a`b`` embeds a backtick; a run with no matching
-        // closer stays literal. One space strips from each end when both
-        // are present and the body isn't all spaces (the `` ` `` idiom).
-        if (c == '`') {
-            const open_len = runLen(text, i, '`');
-            if (findBacktickClose(text, i + open_len, open_len)) |close| {
-                try flushText(arena, &out, &pending);
-                var body = text[i + open_len .. close];
-                if (body.len >= 2 and body[0] == ' ' and body[body.len - 1] == ' ' and
-                    std.mem.trim(u8, body, " ").len > 0)
-                {
-                    body = body[1 .. body.len - 1];
-                }
-                try out.append(arena, .{ .code = body });
-                i = close + open_len;
-                continue;
-            }
-        }
-
-        // $inline math$ — raw TeX; no markdown applies inside. The delimiter
-        // rules (014-flanking) keep prose dollars — `costs $5 and $10`,
-        // `$HOME and $PATH` — out of the math parser.
-        if (c == '$') {
-            if (findMathClose(text, i)) |end| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .math = text[i + 1 .. end] });
-                i = end + 1;
-                continue;
-            }
-        }
-
-        // ![alt](src) — image. The alt text is plain (not recursed into).
-        if (c == '!' and i + 1 < text.len and text[i + 1] == '[') {
-            if (parseLink(text[i + 1 ..])) |link| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .image = .{ .src = link.url, .alt = link.text } });
-                i += 1 + link.consumed;
-                continue;
-            }
-        }
-
-        // [text](url)
-        if (c == '[') {
-            if (parseLink(text[i..])) |link| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .link = .{
-                    .url = link.url,
-                    .children = try parseInlines(arena, link.text),
-                } });
-                i += link.consumed;
-                continue;
-            }
-            // [text].color(role) — checked after the link form so a link
-            // always wins its `[`.
-            if (parseColorSpan(text[i..])) |span| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .color_span = .{
-                    .color = span.color,
-                    .children = try parseInlines(arena, span.text),
-                } });
-                i += span.consumed;
-                continue;
-            }
-            // [text].cite(refs) — the citation mark (016-citations), likewise
-            // behind the link form.
-            if (try parseCiteSpan(arena, text[i..])) |span| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .cite_span = .{
-                    .refs = span.refs,
-                    .children = try parseInlines(arena, span.text),
-                } });
-                i += span.consumed;
-                continue;
-            }
-        }
-
-        // <https://…> — explicit autolink.
-        if (c == '<') {
-            if (parseAngleAutolink(text[i..])) |url| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .autolink = url });
-                i += url.len + 2;
-                continue;
-            }
-        }
-
-        // Bare http(s):// URL at a word boundary. Conservative: only these two
-        // schemes, and trailing punctuation stays outside the link.
-        if (c == 'h' and (i == 0 or text[i - 1] == ' ' or text[i - 1] == '(') and
-            startsWithUrlScheme(text[i..]))
-        {
-            var end = i;
-            while (end < text.len and text[end] != ' ' and text[end] != '<') end += 1;
-            while (end > i and isTrailingPunct(text[end - 1])) end -= 1;
-            const url = text[i..end];
-            if (hasUrlBody(url)) {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .autolink = url });
-                i = end;
-                continue;
-            }
-        }
-
-        // Emphasis and strikethrough. Every arm gates on flanking
-        // (014-flanking): the opening run must be left-flanking and the
-        // closing run right-flanking, so `a * b * c` and `5 * 4 * 3` stay
-        // literal asterisks the way they do in every other renderer.
-
-        // ***bold italic*** — checked before **bold** so the third star isn't
-        // left over as a literal character.
-        if (c == '*' and i + 2 < text.len and text[i + 1] == '*' and text[i + 2] == '*' and
-            isLeftFlanking(text, i, 3))
-        {
-            if (findClosingRun(text, i + 3, "***")) |end| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .strong_em = try parseInlines(arena, text[i + 3 .. end]) });
-                i = end + 3;
-                continue;
-            }
-        }
-
-        // **bold**
-        if (c == '*' and i + 1 < text.len and text[i + 1] == '*' and isLeftFlanking(text, i, 2)) {
-            if (findClosingRun(text, i + 2, "**")) |end| {
-                try flushText(arena, &out, &pending);
-                try out.append(arena, .{ .strong = try parseInlines(arena, text[i + 2 .. end]) });
-                i = end + 2;
-                continue;
-            }
-        }
-
-        // *italic*
-        if (c == '*' and isLeftFlanking(text, i, 1)) {
-            if (findClosingRun(text, i + 1, "*")) |end| {
-                if (end > i + 1) {
-                    try flushText(arena, &out, &pending);
-                    try out.append(arena, .{ .em = try parseInlines(arena, text[i + 1 .. end]) });
-                    i = end + 1;
-                    continue;
-                }
-            }
-        }
-
-        // ~~strikethrough~~
-        if (c == '~' and i + 1 < text.len and text[i + 1] == '~' and isLeftFlanking(text, i, 2)) {
-            if (findClosingRun(text, i + 2, "~~")) |end| {
-                if (end > i + 2) {
-                    try flushText(arena, &out, &pending);
-                    try out.append(arena, .{ .strike = try parseInlines(arena, text[i + 2 .. end]) });
-                    i = end + 2;
-                    continue;
-                }
-            }
-        }
-
-        try pending.append(arena, c);
-        i += 1;
-    }
-    try flushText(arena, &out, &pending);
-    return out.toOwnedSlice(arena);
-}
-
-/// Move any accumulated literal characters into a `.text` node.
-fn flushText(arena: Allocator, out: *std.ArrayList(Inline), pending: *std.ArrayList(u8)) Allocator.Error!void {
-    if (pending.items.len == 0) return;
-    try out.append(arena, .{ .text = try pending.toOwnedSlice(arena) });
 }
 
 // ---- tests -------------------------------------------------------------------
@@ -2464,7 +1403,7 @@ test "table cells: `\\|` unescapes at split time, `\\\\|` still delimits" {
     try testing.expectEqual(@as(usize, 2), raw.header.len);
 }
 
-test "reserved `:` directive lines are prose" {
+test "a malformed `:` line (reserved word, bad args) is prose" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const doc = try parse(arena_state.allocator(), ":color brand #7c3aed", .empty);
@@ -3879,6 +2818,110 @@ test "grid and indent arguments are range-capped" {
     try testing.expect(parseCommand("grid(99999999999999999999)") == null);
 }
 
+test "caption: position/split grammar, and malformed combos degrade" {
+    // bare caption(): bottom, no split
+    const bare = parseCommand("caption()").?.caption;
+    try testing.expectEqual(CaptionPos.bottom, bare.pos);
+    try testing.expect(bare.split_pct == null);
+    // each position keyword; left/right get the default split, top/bottom none
+    try testing.expectEqual(CaptionPos.top, parseCommand("caption(top)").?.caption.pos);
+    try testing.expect(parseCommand("caption(top)").?.caption.split_pct == null);
+    try testing.expectEqual(CaptionPos.bottom, parseCommand("caption(bottom)").?.caption.pos);
+    const left = parseCommand("caption(left)").?.caption;
+    try testing.expectEqual(CaptionPos.left, left.pos);
+    try testing.expectEqual(@as(?usize, caption_default_split_pct), left.split_pct);
+    const right = parseCommand("caption(right)").?.caption;
+    try testing.expectEqual(CaptionPos.right, right.pos);
+    try testing.expectEqual(@as(?usize, caption_default_split_pct), right.split_pct);
+    // explicit split percent, with the spec's own spacing
+    const explicit = parseCommand("caption(left, 45%)").?.caption;
+    try testing.expectEqual(CaptionPos.left, explicit.pos);
+    try testing.expectEqual(@as(?usize, 45), explicit.split_pct);
+    try testing.expectEqual(@as(?usize, 45), parseCommand("caption(right,45%)").?.caption.split_pct);
+    // malformed combos: whole directive degrades (parseCommand returns null)
+    try testing.expect(parseCommand("caption(sideways)") == null);
+    try testing.expect(parseCommand("caption(top, 30%)") == null);
+    try testing.expect(parseCommand("caption(bottom, 30%)") == null);
+    try testing.expect(parseCommand("caption(30%)") == null);
+    try testing.expect(parseCommand("caption(left, 0%)") == null);
+    try testing.expect(parseCommand("caption(left, 100%)") == null);
+    try testing.expect(parseCommand("caption(left,)") == null);
+    try testing.expect(parseCommand("caption(left, 30)") == null); // missing %
+}
+
+test "caption: opener-line tokenizer respects parens around a split's comma-space" {
+    var p: Parser = .{ .arena = testing.allocator, .lines = &.{} };
+    const gl = parseGroupLine(&p, "// caption(left, 30%) center()").?;
+    try testing.expect(gl.open.attrs.caption_pos == .left);
+    try testing.expectEqual(@as(?usize, 30), gl.open.attrs.caption_split_pct);
+    try testing.expect(gl.open.attrs.centered);
+}
+
+test "caption: /caption(...) single-command form degrades to prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "/caption(bottom)\n\n![c](cat.png)", .empty);
+    try testing.expect(d.blocks[0].kind == .paragraph); // "/caption(bottom)" stayed literal text
+    try testing.expect(d.blocks[1].kind == .paragraph);
+    try testing.expect(d.blocks[1].attrs.caption_pos == null);
+}
+
+test "caption: backward-attaches to its preceding sibling as section 0" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "![a panda](p.jpg)\n\n// caption()\nA panda, **2024**.\n// end", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 2), g.sections.len);
+    try testing.expect(g.sections[0][0].kind == .paragraph); // popped partner (the image)
+    try testing.expect(g.sections[1][0].kind == .paragraph); // caption body
+    try testing.expect(d.blocks[0].attrs.caption_pos == .bottom);
+}
+
+test "caption: no preceding sibling warns and degrades to a plain group" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "// caption()\ntext\n// end", .empty);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "no preceding element") != null);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 1), g.sections.len); // caption body only, no partner
+}
+
+test "caption: attaches within an enclosing group, not the top level" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// outer\n![a](a.jpg)\n\n// caption()\ncap\n// end\n// end outer", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    const outer_sections = d.blocks[0].kind.group.sections;
+    try testing.expectEqual(@as(usize, 1), outer_sections[0].len); // just the caption group
+    const inner = outer_sections[0][0].kind.group;
+    try testing.expectEqual(@as(usize, 2), inner.sections.len);
+}
+
+test "caption: rich multi-block caption body" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "![a](a.jpg)\n\n// caption()\nfirst **bold**\n\nsecond\n// end", .empty);
+    const body = d.blocks[0].kind.group.sections[1];
+    try testing.expectEqual(@as(usize, 2), body.len);
+}
+
+test "caption: chains with a sibling styling directive on the same opener" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "![a](a.jpg)\n\n// skinny(50%) caption(left, 40%)\ncap\n// end", .empty);
+    const attrs = d.blocks[0].attrs;
+    try testing.expectEqual(@as(?usize, 50), attrs.width_pct);
+    try testing.expect(attrs.caption_pos == .left);
+    try testing.expectEqual(@as(?usize, 40), attrs.caption_split_pct);
+}
+
 test "empty postfix spans stay literal for color and cite alike" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -4017,4 +3060,88 @@ test "key refs resolve regardless of document order" {
         "Claim [x].cite(smith).\n\n// refs citations()\n\n1. [smith] Smith 2024.\n\n//", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     try testing.expectEqual(@as(u32, 1), d.blocks[0].kind.paragraph[1].cite_span.refs[0].num);
+}
+
+// ---- aliases (docs/reference/design/010-aliases.md, candidate B) -------------
+
+test "alias: an in-document definition applies through a group opener" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        ":thin-grid grid(2) skinny(80%)\n\n// figs thin-grid()\n\na\n\n// --\n\nb\n\n// end figs", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqualStrings("figs", g.name);
+    try testing.expectEqual(@as(usize, 2), d.blocks[0].attrs.columns.?);
+    try testing.expectEqual(@as(usize, 80), d.blocks[0].attrs.width_pct.?);
+    try testing.expectEqual(@as(usize, 2), g.sections.len);
+}
+
+test "alias: bundles several commands and composes with the opener's own" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        ":muted-box color(muted) collapse()\n\n// muted-box() center()\n\na\n\n//", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    const attrs = d.blocks[0].attrs;
+    try testing.expectEqual(TextColor.muted, attrs.text_color.?);
+    try testing.expectEqual(Collapse.closed, attrs.collapse.?);
+    try testing.expect(attrs.centered);
+}
+
+test "alias: usable as a bare first token with no separate group name" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), ":wide-box wide()\n\n// wide-box()\n\na\n\n//", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqualStrings("", d.blocks[0].kind.group.name);
+    try testing.expect(d.blocks[0].attrs.width_pct.? > 100);
+}
+
+test "alias: usable as a /alias() single-command directive, chains like a real command" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), ":acc color(accent)\n\n/acc()\n/skinny(50%)\npara", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(TextColor.accent, d.blocks[0].attrs.text_color.?);
+    const inner = d.blocks[0].kind.group.sections[0][0];
+    try testing.expectEqual(@as(usize, 50), inner.attrs.width_pct.?);
+}
+
+test "alias: a use before its definition sees a plain name, not the alias" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // `thin-grid()` isn't defined yet at this point in the single-pass
+    // parse — unrecognized, so the whole opener line degrades to prose.
+    const d = try parse(arena_state.allocator(),
+        "// figs thin-grid()\n\na\n\n// end figs\n\n:thin-grid grid(2)", .empty);
+    try testing.expect(d.blocks[0].kind == .paragraph);
+}
+
+test "alias: the header sheet is in scope for the whole document" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const base = try sheet.fromSource(arena, ":thin-grid grid(2) skinny(80%)");
+    const d = try parse(arena, "// figs thin-grid()\n\na\n\n// --\n\nb\n\n// end figs", base);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(usize, 2), d.blocks[0].attrs.columns.?);
+}
+
+test "alias: an in-document definition overrides the header sheet's same name" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const base = try sheet.fromSource(arena, ":thin-grid grid(2)");
+    const d = try parse(arena, ":thin-grid grid(3)\n\n// thin-grid()\n\na\n\n//", base);
+    try testing.expectEqual(@as(usize, 3), d.blocks[0].attrs.columns.?);
+}
+
+test "alias: caption-bundling degrades a /alias() single-command use to prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        ":cap caption(top)\n\n/cap()\n\n![c](cat.png)", .empty);
+    try testing.expect(d.blocks[0].kind == .paragraph); // "/cap()" stayed literal text
 }

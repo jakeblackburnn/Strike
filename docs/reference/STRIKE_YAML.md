@@ -36,6 +36,10 @@ projects:           # project order on the picker + nav; unlisted ones sort alph
 serve:              # default options for `strike serve <this dir>` (see below)
   watch: true
   open: true
+pdf:                # reserved for the planned PDF backend — parsed, but no
+                    # renderer reads it yet (roadmap item 2)
+  page_size: a4
+  margin: 2cm
 ```
 
 #### `serve` — default reader options
@@ -130,17 +134,18 @@ becomes the page at its containing folder's route:
 
 `main.sx` beats `main.md` when both exist in one directory.
 
-### Typography headers — `.sxh` (reserved)
+### Typography headers — `.sxh`
 
 `strike.yaml` configures the *reader* (nav, ordering, mounting); typography belongs to
-strikedown itself, as **`:` directive lines**. A `.sxh` header file is a shared
-collection of such directives that `header:` attaches to a whole scope. The directive
-namespace is currently **reserved** — no `:` directive is defined, so `.sxh` contents
-are inert and every in-document `:` line is ordinary prose (see `docs/reference/STRIKEDOWN.md`).
-The plumbing works and stays: `header:` paths are relative to the file's own directory
-(content root for the site scope, the project folder for a project); a project header
-layers over the site header. `.sxh` files are never documents — they don't appear in
-nav or routes. A missing/unreadable header prints a warning and is ignored.
+strikedown itself, as **`:` directive lines** — today, command-alias definitions
+(`:thin-grid grid(2) skinny(80%)`, `docs/reference/design/010-aliases.md`). A `.sxh`
+header file is a shared collection of such directives that `header:` attaches to a whole
+scope, so a project can name its own layout vocabulary once and use it across every
+document (see `docs/reference/STRIKEDOWN.md`). `header:` paths are relative to the
+file's own directory (content root for the site scope, the project folder for a
+project); a project header layers over the site header — an alias the project redefines
+overrides the site's same-named one. `.sxh` files are never documents — they don't
+appear in nav or routes. A missing/unreadable header prints a warning and is ignored.
 
 ## Key reference
 
@@ -152,6 +157,7 @@ nav or routes. A missing/unreadable header prints a warning and is ignored.
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
 | `projects` | site | Explicit project order on the picker + nav |
 | `serve` | served dir | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win; not re-read by `--watch` |
+| `pdf` | site | Reserved for the planned PDF backend (`page_size`, `margin`); parsed, no effect until `render_pdf.zig` exists |
 | `description` | project | Generated project-home subtitle |
 | `home` | project | Project-relative doc served at `/<project>` (else the project's `main.*`, else a generated index) |
 | `header` | site / project | Typography header (`.sxh`) seeding every document in the scope; project layers over site |

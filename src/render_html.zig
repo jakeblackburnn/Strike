@@ -138,12 +138,20 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
     if (!attrs.anyStyle()) return;
     try w.writeAll(" style=\"");
     var sep = false;
+    try writeStyleDecls(w, attrs, mode, &sep);
+    try w.writeByte('"');
+}
+
+/// The style declarations `writeStyleAttr` wraps in `style="..."` — split out
+/// so `emitCaption` can splice in its own `--sx-caption-split` declaration
+/// (structural, so it never counts toward `anyStyle` and needs its own gate).
+fn writeStyleDecls(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode, sep: *bool) Writer.Error!void {
     if (attrs.columns) |n| {
-        try styleSep(w, &sep);
+        try styleSep(w, sep);
         try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:" ++ grid_gap, .{n});
     }
     if (attrs.width_pct) |pct| {
-        try styleSep(w, &sep);
+        try styleSep(w, sep);
         // skinny (≤ 100%) centers with auto margins; wide (> 100%) overflows
         // its container, where `auto` computes to 0 and would push the box
         // off to one side — the explicit negative calc bleeds it evenly.
@@ -154,15 +162,15 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
         }
     }
     if (attrs.centered) {
-        try styleSep(w, &sep);
+        try styleSep(w, sep);
         try w.writeAll("text-align:center");
     }
     if (attrs.text_color) |role| {
-        try styleSep(w, &sep);
+        try styleSep(w, sep);
         try w.print("color:var(--{t})", .{role});
     }
     if (attrs.indent != 0) {
-        try styleSep(w, &sep);
+        try styleSep(w, sep);
         switch (mode) {
             .first_line => try w.print("text-indent:{d}rem", .{attrs.indent * 2}),
             // The reset stops an ancestor group's inherited `text-indent`
@@ -170,7 +178,6 @@ fn writeStyleAttr(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode) Writer.
             .box => try w.print("margin-left:{d}rem;text-indent:0", .{attrs.indent * 2}),
         }
     }
-    try w.writeByte('"');
 }
 
 /// Joins style declarations: a `;` before every one but the first.
@@ -275,6 +282,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?LinkCtx, inherited
         .group => |g| {
             if (block.attrs.citations) return emitCitations(w, g, block.attrs, link_base, indent);
             if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base, indent);
+            if (block.attrs.caption_pos) |pos| return emitCaption(w, g, pos, block.attrs, link_base, indent);
             // Styles are inline (not shell CSS) so fragments and static
             // exports are self-contained; the classes are hooks for future
             // reader styling.
@@ -324,6 +332,47 @@ fn emitCollapse(w: *Writer, g: strikedown.Group, c: strikedown.Collapse, attrs: 
     try w.writeAll(">\n");
     try emitSections(w, g.sections, link_base, indent, leader != null);
     try w.writeAll("</div>\n</details>\n");
+}
+
+/// A caption group (`docs/reference/design/018-image-captions-v2.md`):
+/// backward-attaches to its immediately-preceding sibling at parse time
+/// (`strikedown.appendSibling`), landing here as a two-section group —
+/// section 0 the partner, section 1 the caption body (rich content, not a
+/// string). No partner (parse found nothing to pop, and warned) degrades to
+/// a plain `sx-group` div, no `<figure>`/`<figcaption>` at all.
+///
+/// Position is a static class (`sx-figure-{top,bottom,left,right}`) so
+/// `shell.zig`'s CSS carries the per-position layout (flex direction/order);
+/// only the left/right split percent needs an inline custom property.
+/// Styling attrs (e.g. a `/skinny()` sibling on the same opener) land on the
+/// `<figure>` itself — unlike collapse's body-only placement, there's no
+/// separate leader element to keep them off of.
+fn emitCaption(w: *Writer, g: strikedown.Group, pos: strikedown.CaptionPos, attrs: strikedown.Attrs, link_base: ?LinkCtx, indent: usize) Writer.Error!void {
+    if (g.sections.len != 2) {
+        try w.writeAll("<div class=\"sx-group\"");
+        try writeStyleAttr(w, attrs, .first_line);
+        try w.writeAll(">\n");
+        try emitSections(w, g.sections, link_base, indent, false);
+        try w.writeAll("</div>\n");
+        return;
+    }
+    try w.print("<figure class=\"sx-group sx-figure sx-figure-{t}\"", .{pos});
+    const has_split = pos == .left or pos == .right;
+    if (attrs.anyStyle() or has_split) {
+        try w.writeAll(" style=\"");
+        var sep = false;
+        try writeStyleDecls(w, attrs, .first_line, &sep);
+        if (has_split) {
+            try styleSep(w, &sep);
+            try w.print("--sx-caption-split:{d}%", .{attrs.caption_split_pct.?});
+        }
+        try w.writeByte('"');
+    }
+    try w.writeAll(">\n<div class=\"sx-group-sec sx-figure-body\">\n");
+    for (g.sections[0]) |b| try emitBlock(w, b, link_base, indent);
+    try w.writeAll("</div>\n<figcaption>\n");
+    for (g.sections[1]) |b| try emitBlock(w, b, link_base, indent);
+    try w.writeAll("</figcaption>\n</figure>\n");
 }
 
 /// Walk a group's sections into `sx-group-sec` wrappers — the one section
@@ -457,7 +506,15 @@ fn emitInlines(w: *Writer, inls: []const strikedown.Inline, link_base: ?LinkCtx)
             // prose (same inert degradation as an unsafe link).
             if (!safeHref(img.src)) return escapeInto(w, img.alt);
             try w.writeAll("<img src=\"");
-            try escapeAttrInto(w, img.src);
+            if (link_base) |ctx| {
+                if (assetPath(img.src)) |path| {
+                    try writeAssetHref(w, ctx, path);
+                } else {
+                    try escapeAttrInto(w, img.src);
+                }
+            } else {
+                try escapeAttrInto(w, img.src);
+            }
             try w.writeAll("\" alt=\"");
             try escapeAttrInto(w, img.alt);
             try w.writeAll("\">");
@@ -617,6 +674,26 @@ fn writeDocHref(w: *Writer, ctx: LinkCtx, path: []const u8, suffix: []const u8) 
         try escapeAttrInto(w, t.stem);
     }
     try escapeAttrInto(w, suffix);
+}
+
+/// A relative, scheme-less image `src` (`docLinkPath`'s counterpart for
+/// assets): unlike a doc link, any extension qualifies — an image keeps its
+/// extension, it isn't a document. Absolute paths, `#fragments`, and schemed
+/// URLs (`https:`, `data:`, …) pass through verbatim instead.
+fn assetPath(url: []const u8) ?[]const u8 {
+    if (url.len == 0 or url[0] == '/' or url[0] == '#') return null;
+    if (std.mem.indexOfScalar(u8, url, ':') != null) return null; // a scheme
+    return url;
+}
+
+/// Emit the path a doc-relative image `src` resolves to
+/// (`routes.resolveAssetTarget` owns the path rules — pops clamped at the
+/// mount floor, extension and any `main` segment kept as-is).
+fn writeAssetHref(w: *Writer, ctx: LinkCtx, path: []const u8) Writer.Error!void {
+    const t = routes.resolveAssetTarget(ctx.dir, path, ctx.floor);
+    try escapeAttrInto(w, t.base);
+    try w.writeByte('/');
+    try escapeAttrInto(w, t.path);
 }
 
 fn expectRender(expected: []const u8, md: []const u8) !void {
@@ -952,6 +1029,20 @@ test "images" {
     try expectRender("<p>hey!</p>\n", "hey!");
 }
 
+test "doc-relative images resolve like links, but keep their extension" {
+    // no link_base ("strike render" with no site): src passes through as-is
+    try expectRenderAt(null, "<p><img src=\"cat.png\" alt=\"c\"></p>\n", "![c](cat.png)");
+    // same-directory image resolves against the doc's containing route
+    try expectRenderAt("/p/a", "<p><img src=\"/p/a/cat.png\" alt=\"c\"></p>\n", "![c](cat.png)");
+    try expectRenderAt("/p/a", "<p><img src=\"/p/a/img/cat.png\" alt=\"c\"></p>\n", "![c](./img/cat.png)");
+    // ../ pops a segment off the doc's directory, clamped at the site root
+    try expectRenderAt("/p/a", "<p><img src=\"/p/cat.png\" alt=\"c\"></p>\n", "![c](../cat.png)");
+    try expectRenderAt("", "<p><img src=\"/cat.png\" alt=\"c\"></p>\n", "![c](../../cat.png)");
+    // absolute paths and schemed URLs pass through untouched
+    try expectRenderAt("/p", "<p><img src=\"/abs/cat.png\" alt=\"c\"></p>\n", "![c](/abs/cat.png)");
+    try expectRenderAt("/p", "<p><img src=\"https://z.dev/cat.png\" alt=\"c\"></p>\n", "![c](https://z.dev/cat.png)");
+}
+
 test "angle autolinks" {
     try expectRender(
         "<p>see <a href=\"https://z.dev\">https://z.dev</a></p>\n",
@@ -1222,6 +1313,70 @@ test "collapse: other command styles land on the body, never the details" {
 
 test "collapse: bad args degrade the line to prose" {
     try expectRender("<p>/collapse(true)</p>\n", "/collapse(true)");
+}
+
+test "caption: backward-attaches to the image, one figure per position" {
+    try expectRender(
+        "<figure class=\"sx-group sx-figure sx-figure-bottom\">\n" ++
+            "<div class=\"sx-group-sec sx-figure-body\">\n<p><img src=\"cat.png\" alt=\"c\"></p>\n</div>\n" ++
+            "<figcaption>\n<p>A caption.</p>\n</figcaption>\n</figure>\n",
+        "![c](cat.png)\n\n// caption()\nA caption.\n// end",
+    );
+    try expectRender(
+        "<figure class=\"sx-group sx-figure sx-figure-top\">\n" ++
+            "<div class=\"sx-group-sec sx-figure-body\">\n<p><img src=\"cat.png\" alt=\"c\"></p>\n</div>\n" ++
+            "<figcaption>\n<p>A caption.</p>\n</figcaption>\n</figure>\n",
+        "![c](cat.png)\n\n// caption(top)\nA caption.\n// end",
+    );
+}
+
+test "caption: left/right positions carry the split percent as a style var" {
+    try expectRender(
+        "<figure class=\"sx-group sx-figure sx-figure-left\" style=\"--sx-caption-split:30%\">\n" ++
+            "<div class=\"sx-group-sec sx-figure-body\">\n<p><img src=\"cat.png\" alt=\"c\"></p>\n</div>\n" ++
+            "<figcaption>\n<p>A caption.</p>\n</figcaption>\n</figure>\n",
+        "![c](cat.png)\n\n// caption(left)\nA caption.\n// end",
+    );
+    try expectRender(
+        "<figure class=\"sx-group sx-figure sx-figure-right\" style=\"--sx-caption-split:45%\">\n" ++
+            "<div class=\"sx-group-sec sx-figure-body\">\n<p><img src=\"cat.png\" alt=\"c\"></p>\n</div>\n" ++
+            "<figcaption>\n<p>A caption.</p>\n</figcaption>\n</figure>\n",
+        "![c](cat.png)\n\n// caption(right, 45%)\nA caption.\n// end",
+    );
+}
+
+test "caption: no preceding element degrades to a plain group, no figure" {
+    try expectRenderWarn(
+        "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>text</p>\n</div>\n</div>\n",
+        "// caption()\ntext\n// end",
+        "no preceding element",
+    );
+}
+
+test "caption: chains with a sibling directive, styling lands on the figure" {
+    try expectRender(
+        "<figure class=\"sx-group sx-figure sx-figure-bottom\" style=\"width:50%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec sx-figure-body\">\n<p><img src=\"cat.png\" alt=\"c\"></p>\n</div>\n" ++
+            "<figcaption>\n<p>Cap.</p>\n</figcaption>\n</figure>\n",
+        "![c](cat.png)\n\n// skinny(50%) caption()\nCap.\n// end",
+    );
+}
+
+test "caption: rich multi-block caption content renders as blocks, not escaped text" {
+    try expectRender(
+        "<figure class=\"sx-group sx-figure sx-figure-bottom\">\n" ++
+            "<div class=\"sx-group-sec sx-figure-body\">\n<p><img src=\"cat.png\" alt=\"c\"></p>\n</div>\n" ++
+            "<figcaption>\n<p>first <strong>bold</strong></p>\n<p>second</p>\n</figcaption>\n</figure>\n",
+        "![c](cat.png)\n\n// caption()\nfirst **bold**\n\nsecond\n// end",
+    );
+}
+
+test "caption: bad args degrade the line to prose" {
+    try expectRender("<p>/caption(nope)</p>\n<p>text</p>\n", "/caption(nope)\n\ntext");
+    try expectRender(
+        "<p>// caption(sideways)</p>\n<p>text</p>\n<p>// end</p>\n",
+        "// caption(sideways)\n\ntext\n\n// end",
+    );
 }
 
 test "citations: the canonical example — mark links, entry anchors, backlink" {

@@ -18,6 +18,7 @@ const render_html = @import("render_html.zig");
 const sheet = @import("sheet.zig");
 const server = @import("server.zig");
 const yaml = @import("yaml.zig");
+const assets = @import("assets.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -290,13 +291,15 @@ fn cmdBuild(arena: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterat
     var out = try std.Io.Dir.cwd().createDirPathOpen(io, parsed.out_dir, .{});
     defer out.close(io);
 
-    const count = try exportSite(arena, io, content, out);
-    std.debug.print("strike build: rendered {d} page(s) to {s}/\n", .{ count, parsed.out_dir });
+    const result = try exportSite(arena, io, content, out);
+    std.debug.print("strike build: rendered {d} page(s), copied {d} asset(s) to {s}/\n", .{ result.pages, result.assets, parsed.out_dir });
 }
 
 /// The dir-to-dir middle of `cmdBuild`: load `content`, render every page,
-/// write the export tree into `out`. Returns the page count.
-fn exportSite(arena: std.mem.Allocator, io: std.Io, content: std.Io.Dir, out: std.Io.Dir) !usize {
+/// write the export tree into `out`, then copy every static asset alongside
+/// it (mirroring what the dev server already serves — any known-extension
+/// file under content root, referenced or not).
+fn exportSite(arena: std.mem.Allocator, io: std.Io, content: std.Io.Dir, out: std.Io.Dir) !struct { pages: usize, assets: usize } {
     const loaded = try project.load(io, arena, content);
     const pages = try site.renderAll(arena, loaded);
     for (pages) |p| {
@@ -304,7 +307,44 @@ fn exportSite(arena: std.mem.Allocator, io: std.Io, content: std.Io.Dir, out: st
         if (std.fs.path.dirname(rel)) |d| try out.createDirPath(io, d);
         try out.writeFile(io, .{ .sub_path = rel, .data = p.html });
     }
-    return pages.len;
+    const copied = try copyAssets(arena, io, content, "", out);
+    return .{ .pages = pages.len, .assets = copied };
+}
+
+/// Recursively copy every static-asset file (`assets.mimeFor` whitelist)
+/// under `dir` into `out`, mirroring its relative path (`rel_prefix` is that
+/// path so far, "" at the root). Skips dotfiles/dot-dirs; `.md`/`.sx`
+/// documents, `strike.yaml`, and `.sxh` headers are already excluded by the
+/// whitelist. A file that fails to copy is skipped, not fatal — mirrors
+/// `serveAsset`'s best-effort read.
+fn copyAssets(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rel_prefix: []const u8, out: std.Io.Dir) !usize {
+    var count: usize = 0;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.name.len == 0 or entry.name[0] == '.') continue;
+        switch (entry.kind) {
+            .directory => {
+                var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+                defer sub.close(io);
+                const rel = if (rel_prefix.len == 0)
+                    try gpa.dupe(u8, entry.name)
+                else
+                    try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+                count += try copyAssets(gpa, io, sub, rel, out);
+            },
+            .file => {
+                if (assets.mimeFor(entry.name) == null) continue;
+                const rel = if (rel_prefix.len == 0)
+                    entry.name
+                else
+                    try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+                dir.copyFile(entry.name, out, rel, io, .{ .make_path = true }) catch continue;
+                count += 1;
+            },
+            else => {},
+        }
+    }
+    return count;
 }
 
 // ---- init -------------------------------------------------------------------
@@ -598,8 +638,8 @@ test "exportSite writes the same tree serve routes" {
     var out = try tmp.dir.openDir(testing.io, "out", .{});
     defer out.close(testing.io);
 
-    const count = try exportSite(arena.allocator(), testing.io, content, out);
-    try testing.expectEqual(@as(usize, 3), count); // picker + project home + doc
+    const result = try exportSite(arena.allocator(), testing.io, content, out);
+    try testing.expectEqual(@as(usize, 3), result.pages); // picker + project home + doc
     const picker = try tmp.dir.readFileAlloc(testing.io, "out/index.html", testing.allocator, .limited(1 << 20));
     defer testing.allocator.free(picker);
     try testing.expect(std.mem.indexOf(u8, picker, "href=\"/blog\"") != null);
@@ -609,4 +649,31 @@ test "exportSite writes the same tree serve routes" {
     const doc = try tmp.dir.readFileAlloc(testing.io, "out/blog/post.html", testing.allocator, .limited(1 << 20));
     defer testing.allocator.free(doc);
     try testing.expect(std.mem.indexOf(u8, doc, "<h1 id=\"post\">Post</h1>") != null);
+}
+
+test "exportSite copies static assets alongside rendered pages" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "content/blog/img");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "content/blog/post.md", .data = "# Post\n![c](img/cat.png)" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "content/blog/img/cat.png", .data = "fake-png-bytes" });
+    // non-asset and dotfile noise should not be copied
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "content/blog/notes.txt.bak", .data = "skip me" });
+    try tmp.dir.createDirPath(testing.io, "out");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var content = try tmp.dir.openDir(testing.io, "content", .{ .iterate = true });
+    defer content.close(testing.io);
+    var out = try tmp.dir.openDir(testing.io, "out", .{});
+    defer out.close(testing.io);
+
+    const result = try exportSite(arena.allocator(), testing.io, content, out);
+    try testing.expectEqual(@as(usize, 1), result.assets);
+    const copied = try tmp.dir.readFileAlloc(testing.io, "out/blog/img/cat.png", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(copied);
+    try testing.expectEqualStrings("fake-png-bytes", copied);
+    const doc = try tmp.dir.readFileAlloc(testing.io, "out/blog/post.html", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(doc);
+    try testing.expect(std.mem.indexOf(u8, doc, "<img src=\"/blog/img/cat.png\"") != null);
 }

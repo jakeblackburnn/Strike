@@ -1,6 +1,6 @@
 # 010 — Alias directives (`:name command()*`)
 
-**Status: draft**
+**Status: shipped** (2026-09-01; decision dictated by Jack the same day).
 
 ## Problem
 
@@ -112,12 +112,32 @@ Corpus check (2026-07-20): zero `^:` directive-shaped lines in
 
 ## Decision
 
-*(empty — draft; the choice among A/B/C and every pinned semantic above is
-Jack's)*
+**B — marked use.** A `name()` use looks exactly like a command, entering
+through the same lookup `parseCommand` already offers — no name/alias
+collision is possible (parens separate the vocabularies), and `/thin-grid()`
+single-command lines come free with zero extra grammar, exactly as
+predicted. Every semantic pinned above shipped as written: one-level
+expansion, expansion before the layout-level rule, single-pass definition
+order (a use before its definition is a plain name/prose), `Sheet.concat`
+layering (site header, then project header, then in-document — later wins),
+last-written-wins on a duplicate command inside one expansion, resolve at
+definition time into `Attrs` (a bad definition degrades right there, a use
+just merges the precomputed snapshot — `command.mergeAttrs`), and command
+words reserved against aliasing (`command.isCommandWord`).
+
+One addition beyond the draft: `caption`'s backward-attach restriction
+(`/cmd()` can't bind it — see note 018) applies uniformly to an alias that
+happens to bundle `caption()`, not just the literal command — the check is on
+the resolved `Attrs.caption_pos`, not on which spelling produced it.
+
+Implementation: `sheet.zig` (`Sheet`, `Directive`, `parseLine`, `concat`);
+`strikedown/command.zig` (`CommandTokenizer`, `mergeAttrs`, `isCommandWord`,
+shared by both the alias-definition parser and the `//`-opener parser);
+`strikedown.zig`'s `Parser.resolveCommandToken`/`resolveSingleCommandLine`/
+`lookupAlias` (the one lookup path both the group-opener and `/cmd()`
+directive parsers now share).
 
 ## Canonical examples
-
-*(to be written with the decision; B's would be)*
 
 ```
 :thin-grid grid(2) skinny(80%)
@@ -133,11 +153,15 @@ b
 // end figs
 ```
 
-→ the group renders exactly as `// figs grid(2) skinny(80%)` would.
+→ the group renders exactly as `// figs grid(2) skinny(80%)` would. The same
+alias also works bare (`// thin-grid()`, no separate group name) and as a
+single-command directive (`/thin-grid()`).
 
 Degradation: `:thin-grid grid(2) skinny(80%)` in a document rendered by an
-older strike is a visible prose line (never broken layout); `:note` alone
-stays prose everywhere.
+older strike (or before its own definition line, in a single-pass parse) is
+a visible prose line (never broken layout); `:note` alone (no commands)
+stays prose everywhere, as does any command word used as a name (`:grid
+grid(2)` — reserved).
 
 ## Future direction
 

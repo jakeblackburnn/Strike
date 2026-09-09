@@ -56,11 +56,13 @@ directives (`isGroupInterrupt`, needs the open-group count). The one shared
 the paragraph loop, quote lazy continuation, and list item continuation.
 
 Directive lines are classified before content: a `:` line is offered to
-`sheet.parseLine` (reserved namespace, recognizes nothing today — the arm is
-dormant and self-reactivating), a `//` line to `parseGroupLine` (a directive
-iff it parses cleanly, otherwise prose), a `/cmd()` line to
-`parseSingleCommandLine` (desugars to a nameless one-section group around the
-next content element).
+`sheet.parseLine` (a clean `:name command()*` line defines an alias —
+`docs/reference/design/010-aliases.md`, added to the document's `Sheet` as
+parsing proceeds; anything else is prose), a `//` line to `parseGroupLine`
+(a directive iff it parses cleanly, otherwise prose — a `name()` token that
+isn't a real command may resolve as an alias via `Parser.resolveCommandToken`),
+a `/cmd()` line to `Parser.resolveSingleCommandLine` (same resolution;
+desugars to a nameless one-section group around the next content element).
 
 After the block loop, `parse` runs one **whole-tree pass** —
 `resolveCitations` (note 016), the first and so far only one: forms whose
@@ -115,8 +117,14 @@ Attrs                            ← every command writes exactly one field
 ├── text_color: ?TextColor       ← color(role)  (non-layout)
 ├── collapse:   ?Collapse        ← collapse()   (layout, structural)
 ├── citations:  bool             ← citations()  (layout, structural)
-└── indent:     usize            ← indent(n), or one step from a whitespace-
-                                   indented paragraph  (non-layout)
+├── indent:     usize            ← indent(n), or one step from a whitespace-
+│                                  indented paragraph  (non-layout)
+├── caption_pos: ?CaptionPos     ← caption()/caption(pos)  (non-layout, structural)
+│                                  bare caption() is .bottom; written on the
+│                                  group backward-attach produced (018)
+└── caption_split_pct: ?usize    ← caption(left|right, N%)  (non-layout, structural)
+                                   only meaningful when caption_pos is left/right;
+                                   defaulted (30) at parse time when omitted
 
 Inline: text · code · math · image · link · autolink ·
         strong · em · strong_em · strike · color_span(color, children) ·
@@ -173,9 +181,10 @@ are *types* and which are *roles* — the distinction resolves every fuzzy edge.
 | styled container             | *a role*: a group whose attrs carry only non-layout commands (e.g. `color`) |
 | plain container              | *a role*: a group with empty attrs                |
 | section                      | one `[]Block` in `Group.sections`                 |
-| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, citations, indent) |
+| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, citations, indent, caption) |
 | directive (group / single-command / alias) | `GroupLine` / `parseSingleCommandLine` / `sheet` namespace — transient parse classifications; directives never appear in the tree |
 | color role                   | `TextColor` (accent, muted, fg)                   |
+| caption position             | `CaptionPos` (top, bottom, left, right)           |
 
 The tree types above (`Doc`, `Block`, `Attrs`, `Inline`, `TextColor`, …) are public;
 the parsing machinery named in the last two rows — `Command`, `GroupLine`,
@@ -207,6 +216,7 @@ does with it. Style declarations come from one place,
 | `collapse()` / `collapse(open)` | yes | `<details class="sx-group sx-collapse">`/`<summary>` + a body wrapper carrying the group's other attrs — element shape, not style |
 | `indent(n)`  | no      | depends on the element type — see below |
 | `citations()`| yes     | a `<section class="sx-group sx-citations">` wrapper; entry `<li>`s get `id` anchors + backlinks, marks become links + a `<sup>` — element shape, not style |
+| `caption()`/`caption(pos)`/`caption(left\|right,N%)` | no | backward-attaches to the preceding sibling (`strikedown.appendSibling`) into a two-section group; `<figure class="sx-group sx-figure sx-figure-{pos}">` with the partner in a `sx-figure-body` div, the caption's own (rich) content in `<figcaption>` — element shape, not style. `left`/`right` carry the split as an inline `--sx-caption-split:N%` custom property; a sibling command's style still lands on the `<figure>` itself. No partner to attach to: renders as a plain `sx-group` div instead, with a parse warning |
 
 The leader a `collapse` group folds behind is the first block of its **first
 section**, and only when the group holds ≥ 2 blocks in total; anything else
@@ -289,7 +299,9 @@ end-to-end test in `src/render_html.zig`.
   (`Block.attrs`) and uniform emission already exist; what remains is the
   targeting syntax — a selector grammar needs its design note, then a parser
   path that writes attrs onto matched content elements.
-- **Alias directives** (future, `:` namespace): aliases resolve to command
-  tokens and ride the existing `parseCommand`/`applyCommand` → `Attrs` path
-  (`sheet.zig` holds the name → tokens map); they add vocabulary, never a
-  second attribute pipeline.
+- **Alias directives** (shipped, `docs/reference/design/010-aliases.md`):
+  aliases resolve to `Attrs` at definition time by feeding their tokens
+  through `parseCommand`/`applyCommand` (`sheet.zig` holds a name → `Attrs`
+  list, later-wins); a use just merges that precomputed snapshot
+  (`command.mergeAttrs`) — they add vocabulary, never a second attribute
+  pipeline.

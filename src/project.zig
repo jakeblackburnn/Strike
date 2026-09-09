@@ -107,7 +107,31 @@ pub const Site = struct {
     /// The site-level typography sheet (yaml `header:` at the content root);
     /// used for the picker intro. Projects carry their own layered copy.
     sheet: sheet.Sheet = .empty,
+    /// Reserved for the planned PDF backend (roadmap item 2; no renderer
+    /// consumes this yet — see `PdfConfig`).
+    pdf: PdfConfig = .{},
 };
+
+/// Site-scope `pdf:` settings, parsed from `strike.yaml` ahead of the PDF
+/// backend that will read them — inert config today, exactly like an unused
+/// yaml key, until `render_pdf.zig` exists. Mirrors `main.zig`'s
+/// `ServeConfig`/`resolveServe` pattern: a struct with yaml-or-default
+/// fields, populated by one `cfg.get("pdf")` lookup. Kept deliberately
+/// minimal (just enough to prove the shape parses) rather than guessing a
+/// full print-settings schema no renderer has validated yet — that's the
+/// PDF backend's own design note's job.
+pub const PdfConfig = struct {
+    page_size: []const u8 = "letter",
+    margin: []const u8 = "",
+};
+
+fn resolvePdfConfig(site_cfg: yaml.Value) PdfConfig {
+    const pdf_cfg = site_cfg.get("pdf") orelse return .{};
+    return .{
+        .page_size = pdf_cfg.getScalar("page_size") orelse "letter",
+        .margin = pdf_cfg.getScalar("margin") orelse "",
+    };
+}
 
 /// Per-project parsed config + the accumulating document list, threaded through
 /// the recursive scan.
@@ -204,6 +228,7 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
         .projects = project_slice,
         .main = site_main,
         .sheet = site_sheet,
+        .pdf = resolvePdfConfig(site_cfg),
     };
 }
 
@@ -684,6 +709,43 @@ test "load resolves labels, order, and hidden from strike.yaml, and finds home" 
     try testing.expectEqualStrings("b.md", p.home.?.rel_path);
     try testing.expectEqualStrings("/docs/b", p.tree[0].doc.route); // order: b before a
     try testing.expectEqualStrings("First", p.tree[1].doc.label); // labels: a.md -> First
+}
+
+test "load resolves pdf: page_size and margin from strike.yaml" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "strike.yaml",
+        .data =
+        \\pdf:
+        \\  page_size: a4
+        \\  margin: 2cm
+        \\
+        ,
+    });
+    try tmp.dir.createDirPath(testing.io, "docs");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/a.md", .data = "body" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    try testing.expectEqualStrings("a4", site.pdf.page_size);
+    try testing.expectEqualStrings("2cm", site.pdf.margin);
+}
+
+test "load defaults pdf: page_size to letter with no strike.yaml pdf: block" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "docs");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/a.md", .data = "body" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    try testing.expectEqualStrings("letter", site.pdf.page_size);
+    try testing.expectEqualStrings("", site.pdf.margin);
 }
 
 test "picker mode gives every project the site title; root-project mode does not" {

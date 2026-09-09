@@ -112,12 +112,42 @@ element**, as if that one element were a nameless one-section group.
   across a chain, so `/skinny() /skinny() text` strips and warns on the
   inner one exactly as two nested `// skinny()` groups would.
 
-### Alias directives — `:` (reserved)
+### Alias directives — `:name command()*`
 
-The `:` namespace is reserved for **alias definitions** — naming a command or
-command-set for reuse, in-document and in shared `.sxh` header files
-(`docs/reference/design/010-aliases.md`). **Nothing is defined yet**: every `:`
-line is ordinary prose and `.sxh` contents are inert.
+A `:` line names a command or command-set for reuse, in-document and in
+shared `.sxh` header files (`docs/reference/design/010-aliases.md`):
+
+```
+:thin-grid grid(2) skinny(80%)
+
+// figs thin-grid()
+
+a
+
+// --
+
+b
+
+// end figs
+```
+
+`// figs thin-grid()` renders exactly as `// figs grid(2) skinny(80%)`
+would — a `name()` use resolves through the same lookup as a real command
+(`word(args)`, parens required), so it works anywhere a command does: bare as
+a group's only token (`// thin-grid()`, no separate name), composed with
+other commands or a name, or as a single-command directive (`/thin-grid()`,
+chains like any other). A definition must precede its first use — the parser
+is single-pass, so a use before its `:` line sees a plain unrecognized name
+(prose, same as any undefined name). Later definitions win: an in-document
+`:` line overrides a project header's alias of the same name, which overrides
+the site header's.
+
+Degradation: a `:name command()*` line that doesn't parse cleanly — no
+commands (`:only-a-name`), a bad command (`:x grid(0)`), or a name that is
+itself a command word (`:grid grid(2)` — reserved, so `name()` is never
+ambiguous between "alias" and "real command") — stays ordinary prose, never
+an error. A `name()` use that names nothing this document knows degrades the
+same way an unrecognized command does.
 
 ## Commands
 
@@ -138,11 +168,12 @@ element, so they nest freely and inner wins.
 | `collapse()` / `collapse(open)` | the group folds behind its leader, closed (or open) on arrival. See "Collapsible groups". (`docs/reference/design/007-collapse.md`) |
 | `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). n is 1–8. Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
 | `citations()` | the group's numbered list is the document's reference list: entries become anchor targets and `[text].cite(refs)` marks bind to them. One per document. No arguments. See "Citations". (`docs/reference/design/016-citations.md`) |
+| `caption()` / `caption(top\|bottom\|left\|right)` / `caption(left\|right, N%)` | backward-attaches to the immediately preceding sibling block, wrapping the pair in a `<figure>` with this group's own content as its `<figcaption>`. Bare `caption()` is `bottom`. `left`/`right` take an optional split percent (the caption column's share of the figure's width, default 30%) — meaningless with `top`/`bottom`. Non-layout, structural — shapes the emitted elements rather than styling them. `//`-opener only; never valid as `/caption(...)`. See "Captions". (`docs/reference/design/018-image-captions-v2.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
 `center(5)`, `color(red)`, `collapse(true)`, `indent(x)`, `citations(2)`,
-`glow(5)` all leave their line as prose. Numeric arguments are read as plain
+`caption(sideways)`, `glow(5)` all leave their line as prose. Numeric arguments are read as plain
 decimal integers; write them plainly, and treat anything a stricter reading
 would reject (`grid(+2)`, `skinny(5_0%)`) as unspecified rather than as
 syntax.
@@ -205,6 +236,47 @@ an indented paragraph must be preceded by a blank line.
 Being non-layout, `indent` *scopes* rather than stacks — an inner `indent(n)`
 overrides the inherited value for its own subtree, the same inner-wins cascade
 `color` uses.
+
+### Captions
+
+A `caption` group **backward-attaches**: it binds to the block immediately
+*preceding* it in the source, the opposite of every other group (which wraps
+what follows). Write the captioned element, then the caption as its own
+group right after:
+
+```
+![a red panda](img.jpg)
+
+// caption()
+A red panda spotted at the sanctuary, **2024**.
+// end
+```
+
+This wraps the pair in a `<figure>`, with the group's own content as its
+`<figcaption>` (`docs/reference/design/018-image-captions-v2.md`) — a real
+caption coupled to its element, unlike a plain paragraph placed after an
+image, which is unrelated prose that happens to sit nearby. Because the
+caption body is ordinary group content, it can hold anything a group can:
+multiple paragraphs, bold, links.
+
+`caption()` bare defaults to `bottom`; `caption(top)`, `caption(left)`,
+`caption(right)` place it elsewhere. `left`/`right` take an optional split
+percent — `caption(left, 40%)` gives the caption column 40% of the figure's
+width, the image the rest; omitted, it defaults to 30%. A percent combined
+with `top`/`bottom`, or given alone with no position, is malformed like any
+other bad argument and deactivates the whole line. A caption group combines
+with a sibling command on the same opener the way any group does —
+`// skinny(50%) caption(left, 40%)` narrows the whole figure, caption
+included.
+
+A caption group with nothing preceding it to attach to (it opens the
+document, or immediately follows another group's close) can't wrap anything
+— it renders as its own plain content, no `<figure>`/`<figcaption>`, and a
+parse warning names what happened.
+
+There is no single-command `/caption(...)` form — backward-attach needs a
+full group (a `/cmd()` directive only ever wraps what follows), so a
+`/caption(...)` line is always malformed and stays prose.
 
 ### Color roles and the inline color span
 
@@ -469,10 +541,14 @@ Degradation — every line below is an ordinary paragraph:
 /color(red)                 (unknown color role)
 /collapse(true)             (unknown collapse argument)
 /indent(x)                  (unknown indent argument)
+/caption(bottom)            (never valid single-command — backward-attach needs a group)
+// caption(sideways)        (unknown position keyword)
+// caption(top, 30%)        (split percent only valid with left/right)
 [x].color(bright)           (inline near-miss: unknown role → literal text)
 [z](https://z.dev).color(muted)   (the link wins its `[`; postfix is prose)
 [].cite(1)                  (empty brackets: not a citation mark)
-:thin-grid grid(2) skinny(80%)   (reserved namespace, nothing defined yet)
+:only-a-name                 (no commands: defines nothing, stays prose)
+:grid grid(2)                (command word reserved against aliasing)
 (name)# not a heading       (retired prefix: plain prose)
 .item                       (no space after the dot: not a raw-list marker)
 a * b * c                   (space-flanked delimiters: literal asterisks)

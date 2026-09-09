@@ -16,6 +16,7 @@ const builtin = @import("builtin");
 const project = @import("project.zig");
 const site = @import("site.zig");
 const shell = @import("shell.zig");
+const static_assets = @import("assets.zig");
 const escapeAttrInto = @import("html.zig").escapeAttrInto;
 const net = std.Io.net;
 const Allocator = std.mem.Allocator;
@@ -487,27 +488,6 @@ fn headersOnly(response: []const u8) []const u8 {
 
 // ---- static assets ----------------------------------------------------------
 
-const mime_types = [_]struct { ext: []const u8, mime: []const u8 }{
-    .{ .ext = ".png", .mime = "image/png" },
-    .{ .ext = ".jpg", .mime = "image/jpeg" },
-    .{ .ext = ".jpeg", .mime = "image/jpeg" },
-    .{ .ext = ".gif", .mime = "image/gif" },
-    .{ .ext = ".svg", .mime = "image/svg+xml" },
-    .{ .ext = ".webp", .mime = "image/webp" },
-    .{ .ext = ".ico", .mime = "image/x-icon" },
-    .{ .ext = ".css", .mime = "text/css" },
-    .{ .ext = ".js", .mime = "text/javascript" },
-    .{ .ext = ".txt", .mime = "text/plain; charset=utf-8" },
-    .{ .ext = ".pdf", .mime = "application/pdf" },
-};
-
-fn mimeFor(path: []const u8) ?[]const u8 {
-    for (mime_types) |m| {
-        if (std.ascii.endsWithIgnoreCase(path, m.ext)) return m.mime;
-    }
-    return null;
-}
-
 const max_asset_bytes = 64 << 20;
 
 /// Serve a static file from the content dir on a route miss. Only known
@@ -515,7 +495,7 @@ const max_asset_bytes = 64 << 20;
 /// server serves fresh bytes, uncached by design. Returns a full HTTP
 /// response (caller frees), or null to fall through to 404.
 fn serveAsset(gpa: Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !?[]u8 {
-    const mime = mimeFor(path) orelse return null;
+    const mime = static_assets.mimeFor(path) orelse return null;
     if (path.len < 2 or path[0] != '/') return null;
     const rel = path[1..];
     var it = std.mem.splitScalar(u8, rel, '/');
@@ -572,13 +552,6 @@ test "normalizePath strips query strings and trailing slashes and decodes" {
 test "headersOnly cuts a response after the header block" {
     const resp = "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nhi";
     try testing.expectEqualStrings("HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n", headersOnly(resp));
-}
-
-test "mimeFor knows asset extensions and rejects others" {
-    try testing.expectEqualStrings("image/png", mimeFor("/img/cat.PNG").?);
-    try testing.expectEqualStrings("text/css", mimeFor("/style.css").?);
-    try testing.expect(mimeFor("/doc.md") == null);
-    try testing.expect(mimeFor("/no-extension") == null);
 }
 
 test "spliceReload injects the script before </body>" {

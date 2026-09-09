@@ -348,6 +348,23 @@ const head_post_a =
     \\  .sx-citations li::marker { color: var(--muted); }
     \\  a.sx-cite-back { color: var(--muted); text-decoration: none; }
     \\  a.sx-cite-back:hover { color: var(--accent); }
+    \\  /* Captions (018-image-captions-v2): the figcaption reads smaller and
+    \\     muted by default, in every position. top/bottom stack the figure as
+    \\     a column and reorder visually via CSS `order` (DOM order stays
+    \\     body-then-caption regardless of position). left/right split the
+    \\     figure into a row — `--sx-caption-split` (an inline custom property,
+    \\     the emitter's only per-instance style here) sizes the caption
+    \\     column, and its own flex column with `justify-content: flex-end`
+    \\     anchors short caption text to the bottom of the image's height. */
+    \\  .sx-figure figcaption { font-size: .9em; color: var(--muted); }
+    \\  .sx-figure.sx-figure-top, .sx-figure.sx-figure-bottom { display: flex; flex-direction: column; }
+    \\  .sx-figure-top .sx-figure-body { order: 2; }
+    \\  .sx-figure-top figcaption { order: 1; }
+    \\  .sx-figure.sx-figure-left, .sx-figure.sx-figure-right { display: flex; }
+    \\  .sx-figure-left { flex-direction: row-reverse; }
+    \\  .sx-figure-right { flex-direction: row; }
+    \\  .sx-figure-left .sx-figure-body, .sx-figure-right .sx-figure-body { flex: 1 1 auto; min-width: 0; }
+    \\  .sx-figure-left figcaption, .sx-figure-right figcaption { flex: 0 0 var(--sx-caption-split, 30%); display: flex; flex-direction: column; justify-content: flex-end; }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     \\  .sidebar {
     \\    position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 100vh;
@@ -694,6 +711,17 @@ test "collapse summary resets text-indent so an ancestor indent() never reaches 
     // the summary rule must reset it back to 0 so the disclosure arrow
     // never shifts into the leader text.
     try std.testing.expect(std.mem.indexOf(u8, page, ".sx-collapse > summary { cursor: pointer; list-style: none; margin: -.35rem -.75rem; padding: .35rem .75rem; border-radius: 8px; transition: background .15s ease; text-indent: 0; }") != null);
+}
+
+test "caption CSS: default figcaption style, position flex/order rules, and the split-percent var" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure figcaption { font-size: .9em; color: var(--muted); }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure-top .sx-figure-body { order: 2; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure-left { flex-direction: row-reverse; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "flex: 0 0 var(--sx-caption-split, 30%)") != null);
 }
 
 test "standalone shell has no nav and no project root to link to" {
