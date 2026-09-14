@@ -75,6 +75,18 @@ pub const Command = union(enum) {
     /// Never valid as a `/cmd()` single-command directive (`parseSingleCommand`
     /// rejects it) — backward-attach needs a full group, not a forward wrap.
     caption: struct { pos: CaptionPos, split_pct: ?usize },
+    /// snug(): a second backward-attach command (019-snug), alongside
+    /// `caption`. Like caption it pops its immediately preceding sibling
+    /// block via `appendSibling`, but its only job is removing the vertical
+    /// seam between the two — no figure/figcaption semantics, no
+    /// positional argument. Non-layout, structural, like `caption`: it
+    /// shapes the emitted elements (a plain `<div class="sx-snug">`
+    /// wrapper), the seam-tightening itself is a `shell.zig` CSS rule.
+    /// Never valid as a `/cmd()` single-command directive, for the same
+    /// reason as `caption`. Mutually exclusive with `caption` on the same
+    /// opener — both want the one popped-partner slot, so the combination
+    /// degrades the whole line to prose (`parseGroupLine`).
+    snug,
 };
 
 /// The width the bare forms mean, and the range bounds that keep the two
@@ -159,6 +171,10 @@ pub fn parseCommand(tok: []const u8) ?Command {
         const split: ?usize = if (pos == .left or pos == .right) caption_default_split_pct else null;
         return .{ .caption = .{ .pos = pos, .split_pct = split } };
     }
+    if (std.mem.eql(u8, word, "snug")) {
+        if (args.len != 0) return null; // snug() takes no arguments
+        return .snug;
+    }
     return null;
 }
 
@@ -175,6 +191,7 @@ pub fn applyCommand(attrs: *Attrs, cmd: Command) void {
             attrs.caption_pos = c.pos;
             attrs.caption_split_pct = c.split_pct;
         },
+        .snug => attrs.snug = true,
     }
 }
 
@@ -187,7 +204,7 @@ pub const CommandTag = std.meta.Tag(Command);
 pub fn isLayout(tag: CommandTag) bool {
     return switch (tag) {
         .grid, .skinny, .wide, .center, .collapse, .citations => true,
-        .color, .indent, .caption => false,
+        .color, .indent, .caption, .snug => false,
     };
 }
 
@@ -197,8 +214,23 @@ pub fn isLayout(tag: CommandTag) bool {
 /// Exhaustive, like `isLayout`.
 pub fn isStructural(tag: CommandTag) bool {
     return switch (tag) {
-        .collapse, .citations, .caption => true,
+        .collapse, .citations, .caption, .snug => true,
         .grid, .skinny, .wide, .center, .color, .indent => false,
+    };
+}
+
+/// Backward-attach commands (`caption`, `snug`) pop their immediately
+/// preceding sibling block instead of wrapping what follows
+/// (`strikedown.appendSibling`) — the opposite of every other command's
+/// forward binding, and never valid as a `/cmd()` single-command directive
+/// (`parseSingleCommand`). Exhaustive, like `isLayout`/`isStructural`, so a
+/// third backward-attach command can't be added without being classified
+/// here (`docs/reference/design/018-image-captions-v2.md`'s "Future
+/// direction" named this switch as the intended extension point).
+pub fn isBackwardAttach(tag: CommandTag) bool {
+    return switch (tag) {
+        .caption, .snug => true,
+        .grid, .skinny, .wide, .center, .color, .collapse, .citations, .indent => false,
     };
 }
 
@@ -216,6 +248,7 @@ pub fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
         .citations => attrs.citations,
         .indent => attrs.indent != 0,
         .caption => attrs.caption_pos != null,
+        .snug => attrs.snug,
     };
 }
 
@@ -238,6 +271,7 @@ pub fn clearCommand(attrs: *Attrs, tag: CommandTag) void {
             attrs.caption_pos = null;
             attrs.caption_split_pct = null;
         },
+        .snug => attrs.snug = false,
     }
 }
 
@@ -267,6 +301,7 @@ pub fn mergeAttrs(dst: *Attrs, src: Attrs) void {
     if (src.indent != 0) dst.indent = src.indent;
     if (src.caption_pos) |v| dst.caption_pos = v;
     if (src.caption_split_pct) |v| dst.caption_split_pct = v;
+    if (src.snug) dst.snug = true;
 }
 
 /// Splits an opener line's `<command>*` tail on spaces like

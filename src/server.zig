@@ -144,7 +144,12 @@ fn openBrowser(io: std.Io, arena: Allocator, opts: Options, base: []const u8) vo
         .windows => &.{ "cmd", "/c", "start", "", url },
         else => &.{ "xdg-open", url },
     };
-    var child = std.process.spawn(io, .{
+    // Deliberately not reaped: some openers (e.g. `xdg-open` execing straight
+    // into a not-yet-running browser) don't return until the browser itself
+    // exits, which would block `server.accept()` from ever being reached.
+    // Left as (at most) one zombie for this process's lifetime — reaped by
+    // init when `strike` exits.
+    _ = std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
         .stdout = .ignore,
@@ -153,9 +158,6 @@ fn openBrowser(io: std.Io, arena: Allocator, opts: Options, base: []const u8) vo
         std.debug.print("strike: warning: could not open browser: {s}\n", .{@errorName(err)});
         return;
     };
-    // The opener hands the URL to the browser and exits immediately; reap it
-    // so it doesn't sit as a zombie for the server's whole lifetime.
-    _ = child.wait(io) catch {};
 }
 
 /// Load a serve target into a `Site` (a fresh directory handle per load, so

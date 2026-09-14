@@ -1,12 +1,13 @@
 # Commands
 
-Nine commands, one vocabulary. Every one of them works in a `//` group opener
+Ten commands, one vocabulary. Every one of them works in a `//` group opener
 and on a `/cmd()` line, and they combine on the same opener — except
-`caption`, which only ever means something on a `//` group: it
-**backward-attaches**, binding to the block immediately *before* it rather
+`caption` and `snug`, which only ever mean something on a `//` group: both
+**backward-attach**, binding to the block immediately *before* them rather
 than wrapping what follows, so a `/cmd()` directive (which only ever wraps
-forward) can never mean it. [Groups](groups.sx) covers the grammar those
-lines are written in; this page is what you can put in them.
+forward) can never mean either one — and, wanting the same preceding block,
+they can't combine with *each other* either. [Groups](groups.sx) covers the
+grammar those lines are written in; this page is what you can put in them.
 
 | Command | Argument | Bare form |
 | --- | --- | --- |
@@ -20,6 +21,7 @@ lines are written in; this page is what you can put in them.
 | `citations()` | none | — |
 | `caption()` / `caption(pos)` | `top`, `bottom`, `left`, `right` | bottom |
 | `caption(left\|right, N%)` | split percent, 1–99 | 30% |
+| `snug()` | none | — |
 
 ## grid
 
@@ -264,6 +266,30 @@ percent:
 // caption(left, 35%)
 A left-side caption, sitting at the bottom of the column when it's shorter
 than the image.
+// end
+
+## snug
+
+`snug()` is the other backward-attach command: same binding as `caption`,
+but with no figure, no position, no argument — its only job is closing the
+gap between a block and the one right after it, for pairs that read as one
+unit split in two.
+
+### A heading with a tightly bound subtitle
+
+// snug()
+The subtitle sits close to the heading above it, instead of at ordinary
+paragraph distance.
+// end
+
+Because it wants the same preceding block a caption would pop, `snug()`
+can't combine with `caption()` on one opener — that combination degrades
+the whole line to prose, same as any other malformed argument:
+
+// snug() caption()
+
+This line and its group never form — see the raw source, not a figure.
+
 // end
 
 ## Combining

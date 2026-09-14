@@ -298,6 +298,7 @@ const head_post_a =
     \\    font-size: .75rem; text-transform: uppercase; letter-spacing: .08em;
     \\    font-weight: 600; color: var(--muted); margin: 0 0 .15rem;
     \\  }
+    \\  .sx-alert-title + p { margin-top: 0; }
     \\  .sx-alert-warning, .sx-alert-caution, .sx-alert-todo { border-left-color: var(--warn); }
     \\  .sx-alert-warning .sx-alert-title, .sx-alert-caution .sx-alert-title, .sx-alert-todo .sx-alert-title { color: var(--warn); }
     \\  .sx-alert-important { border-left-color: var(--fg); }
@@ -357,14 +358,24 @@ const head_post_a =
     \\     column, and its own flex column with `justify-content: flex-end`
     \\     anchors short caption text to the bottom of the image's height. */
     \\  .sx-figure figcaption { font-size: .9em; color: var(--muted); }
-    \\  .sx-figure.sx-figure-top, .sx-figure.sx-figure-bottom { display: flex; flex-direction: column; }
+    \\  .sx-figure-body p, .sx-figure figcaption p { margin: 0; }
+    \\  .sx-figure.sx-figure-top, .sx-figure.sx-figure-bottom { display: flex; flex-direction: column; gap: .5rem; }
     \\  .sx-figure-top .sx-figure-body { order: 2; }
     \\  .sx-figure-top figcaption { order: 1; }
-    \\  .sx-figure.sx-figure-left, .sx-figure.sx-figure-right { display: flex; }
+    \\  .sx-figure.sx-figure-left, .sx-figure.sx-figure-right { display: flex; gap: 1.5rem; }
     \\  .sx-figure-left { flex-direction: row-reverse; }
     \\  .sx-figure-right { flex-direction: row; }
     \\  .sx-figure-left .sx-figure-body, .sx-figure-right .sx-figure-body { flex: 1 1 auto; min-width: 0; }
     \\  .sx-figure-left figcaption, .sx-figure-right figcaption { flex: 0 0 var(--sx-caption-split, 30%); display: flex; flex-direction: column; justify-content: flex-end; }
+    \\  /* Snug (019-snug): a backward-attach group whose only job is to remove
+    \\     the vertical gap between the popped partner and its own content — no
+    \\     figure semantics. Targets only the seam (first section's last child,
+    \\     second section's first child); zeroing the trailing margin rather
+    \\     than also zeroing the leading one keeps the result deterministic
+    \\     regardless of what tag each side is (a <p> and an <h2> have
+    \\     different default margins). */
+    \\  .sx-snug > .sx-group-sec:first-child > :last-child { margin-bottom: 0; }
+    \\  .sx-snug > .sx-group-sec:last-child > :first-child { margin-top: .15rem; }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     \\  .sidebar {
     \\    position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 100vh;
@@ -722,6 +733,35 @@ test "caption CSS: default figcaption style, position flex/order rules, and the 
     try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure-top .sx-figure-body { order: 2; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure-left { flex-direction: row-reverse; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "flex: 0 0 var(--sx-caption-split, 30%)") != null);
+}
+
+test "figure/caption spacing: inner paragraph margins reset, deliberate flex gap replaces them" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    // Without this, the image's and figcaption's own <p> margins don't
+    // collapse across the flex-item boundary — they sum to ~2em instead.
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure-body p, .sx-figure figcaption p { margin: 0; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure.sx-figure-top, .sx-figure.sx-figure-bottom { display: flex; flex-direction: column; gap: .5rem; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-figure.sx-figure-left, .sx-figure.sx-figure-right { display: flex; gap: 1.5rem; }") != null);
+}
+
+test "alert CSS: title's tight bottom margin isn't lost to the following paragraph's default margin" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-alert-title + p { margin-top: 0; }") != null);
+}
+
+test "snug CSS: seam between the popped partner and the attached content is tightened" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-snug > .sx-group-sec:first-child > :last-child { margin-bottom: 0; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-snug > .sx-group-sec:last-child > :first-child { margin-top: .15rem; }") != null);
 }
 
 test "standalone shell has no nav and no project root to link to" {

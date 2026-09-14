@@ -68,6 +68,12 @@ pub const Attrs = struct {
     caption_split_pct: ?usize = null, // from caption(left|right, N%): the
     // caption column's % share of figure width; only meaningful when
     // caption_pos is .left or .right (defaulted at parse time otherwise null)
+    snug: bool = false, // from snug(): backward-attaches like caption, but
+    // purely to remove the vertical seam between the popped partner and
+    // this group's own content — no figure semantics, no positional data
+    // (structural, non-layout, note 019). Mutually exclusive with caption
+    // on the same opener: combining them degrades the whole line to prose
+    // (both want the one popped-partner slot).
 
     /// True when any command set a field. Runs over the exhaustive
     /// `hasCommand` switch, so a new command can never be forgotten here.
@@ -85,6 +91,19 @@ pub const Attrs = struct {
     pub fn anyStyle(a: Attrs) bool {
         for (std.meta.tags(command.CommandTag)) |t| {
             if (!command.isStructural(t) and command.hasCommand(a, t)) return true;
+        }
+        return false;
+    }
+
+    /// True when a *backward-attach* command set a field (`caption`,
+    /// `snug`) — the parser's "does this group pop its preceding sibling"
+    /// check (`strikedown.appendSibling`) and its mirror, "can this ever
+    /// bind forward as a `/cmd()` directive" (never — `parseSingleCommand`
+    /// rejects it outright). Runs over the exhaustive `isBackwardAttach`
+    /// switch, so a third backward-attach command can never be forgotten.
+    pub fn backwardAttach(a: Attrs) bool {
+        for (std.meta.tags(command.CommandTag)) |t| {
+            if (command.isBackwardAttach(t) and command.hasCommand(a, t)) return true;
         }
         return false;
     }

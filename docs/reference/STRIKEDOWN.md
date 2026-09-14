@@ -169,11 +169,12 @@ element, so they nest freely and inner wins.
 | `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). n is 1–8. Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
 | `citations()` | the group's numbered list is the document's reference list: entries become anchor targets and `[text].cite(refs)` marks bind to them. One per document. No arguments. See "Citations". (`docs/reference/design/016-citations.md`) |
 | `caption()` / `caption(top\|bottom\|left\|right)` / `caption(left\|right, N%)` | backward-attaches to the immediately preceding sibling block, wrapping the pair in a `<figure>` with this group's own content as its `<figcaption>`. Bare `caption()` is `bottom`. `left`/`right` take an optional split percent (the caption column's share of the figure's width, default 30%) — meaningless with `top`/`bottom`. Non-layout, structural — shapes the emitted elements rather than styling them. `//`-opener only; never valid as `/caption(...)`. See "Captions". (`docs/reference/design/018-image-captions-v2.md`) |
+| `snug()` | backward-attaches to the immediately preceding sibling block, purely to remove the vertical seam between the two — no figure semantics, no arguments. Non-layout, structural. `//`-opener only; never valid as `/snug()`; combined with `caption()` on the same opener, the whole line degrades to prose. See "Snug". (`docs/reference/design/019-snug.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
 `center(5)`, `color(red)`, `collapse(true)`, `indent(x)`, `citations(2)`,
-`caption(sideways)`, `glow(5)` all leave their line as prose. Numeric arguments are read as plain
+`caption(sideways)`, `snug(x)`, `glow(5)` all leave their line as prose. Numeric arguments are read as plain
 decimal integers; write them plainly, and treat anything a stricter reading
 would reject (`grid(+2)`, `skinny(5_0%)`) as unspecified rather than as
 syntax.
@@ -277,6 +278,40 @@ parse warning names what happened.
 There is no single-command `/caption(...)` form — backward-attach needs a
 full group (a `/cmd()` directive only ever wraps what follows), so a
 `/caption(...)` line is always malformed and stays prose.
+
+### Snug
+
+`snug()` is the other backward-attach command — same binding as `caption`,
+but with no figure semantics and no arguments. Its only job is removing the
+vertical seam between a block and the one right after it, for pairs that
+read as one unit split across two elements (a title and its subtitle, a
+label and the value under it):
+
+```
+The main heading
+
+// snug()
+A subtitle bound tightly to the heading above it.
+// end
+```
+
+This wraps the pair in a plain `<div class="sx-group sx-snug">` — no
+`<figure>`, no positional argument — and tightens only the boundary between
+the two: the reader-CSS default gives it a small, deliberate gap rather
+than the ordinary inter-block spacing every other pair of blocks gets.
+
+`snug()` and `caption()` can't combine on the same opener — both are
+backward-attach commands wanting the one immediately-preceding block to pop,
+so `// snug() caption()` (either order) is a malformed combination and
+degrades the whole line to prose, the same rule that already governs
+`caption(top, 30%)`.
+
+A snug group with nothing preceding it to attach to degrades exactly like
+caption's own no-partner case: it renders as its own plain content, no
+`sx-snug` wrapper, and a parse warning names what happened. There is no
+single-command `/snug()` form, for the same reason `/caption(...)` has none.
+
+(`docs/reference/design/019-snug.md`)
 
 ### Color roles and the inline color span
 
@@ -487,6 +522,7 @@ line literally asked for, and says so — layout mistakes are visible, not fatal
 | `n citation mark(s) but no citations group` | marks with nothing to bind to, reported once |
 | `group '<name>': mismatched closer '// end <other>' treated as prose` | a closer naming a group that isn't the innermost open one |
 | `group '<name>': collapse ignored on the citations group` | `citations() collapse()` on one opener; the bibliography can't fold |
+| `backward-attach group in '<name>': no preceding element to attach to — rendered as plain content` | a `caption()` or `snug()` group with nothing before it to pop; renders as an ordinary group instead |
 | `nesting deeper than 64 levels; deeper structure flattens to prose` | the recursion cap, reported once per document |
 
 ## Canonical examples
@@ -544,6 +580,8 @@ Degradation — every line below is an ordinary paragraph:
 /caption(bottom)            (never valid single-command — backward-attach needs a group)
 // caption(sideways)        (unknown position keyword)
 // caption(top, 30%)        (split percent only valid with left/right)
+/snug(nope)                 (never valid single-command — backward-attach needs a group)
+// snug() caption()         (two backward-attach commands, one popped-partner slot)
 [x].color(bright)           (inline near-miss: unknown role → literal text)
 [z](https://z.dev).color(muted)   (the link wins its `[`; postfix is prose)
 [].cite(1)                  (empty brackets: not a citation mark)

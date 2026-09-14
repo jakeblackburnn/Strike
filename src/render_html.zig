@@ -283,6 +283,7 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?LinkCtx, inherited
             if (block.attrs.citations) return emitCitations(w, g, block.attrs, link_base, indent);
             if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base, indent);
             if (block.attrs.caption_pos) |pos| return emitCaption(w, g, pos, block.attrs, link_base, indent);
+            if (block.attrs.snug) return emitSnug(w, g, block.attrs, link_base, indent);
             // Styles are inline (not shell CSS) so fragments and static
             // exports are self-contained; the classes are hooks for future
             // reader styling.
@@ -373,6 +374,22 @@ fn emitCaption(w: *Writer, g: strikedown.Group, pos: strikedown.CaptionPos, attr
     try w.writeAll("</div>\n<figcaption>\n");
     for (g.sections[1]) |b| try emitBlock(w, b, link_base, indent);
     try w.writeAll("</figcaption>\n</figure>\n");
+}
+
+/// A snug group (`docs/reference/design/019-snug.md`): backward-attaches
+/// like caption, but purely to remove the vertical seam between the two
+/// blocks — no figure/figcaption semantics, no placement argument.
+/// Two-section group: section 0 the popped partner, section 1 the snug
+/// group's own content; the seam-tightening is a `shell.zig` CSS rule keyed
+/// on `.sx-snug`, nothing emitted here. No partner (`g.sections.len != 2`)
+/// degrades to the same plain `sx-group` fallback caption uses.
+fn emitSnug(w: *Writer, g: strikedown.Group, attrs: strikedown.Attrs, link_base: ?LinkCtx, indent: usize) Writer.Error!void {
+    const attached = g.sections.len == 2;
+    try w.writeAll(if (attached) "<div class=\"sx-group sx-snug\"" else "<div class=\"sx-group\"");
+    try writeStyleAttr(w, attrs, .first_line);
+    try w.writeAll(">\n");
+    try emitSections(w, g.sections, link_base, indent, false);
+    try w.writeAll("</div>\n");
 }
 
 /// Walk a group's sections into `sx-group-sec` wrappers — the one section
@@ -1376,6 +1393,60 @@ test "caption: bad args degrade the line to prose" {
     try expectRender(
         "<p>// caption(sideways)</p>\n<p>text</p>\n<p>// end</p>\n",
         "// caption(sideways)\n\ntext\n\n// end",
+    );
+}
+
+test "snug: backward-attaches, tight-seam wrapper" {
+    try expectRender(
+        "<div class=\"sx-group sx-snug\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>A subtitle.</p>\n</div>\n</div>\n",
+        "Title\n\n// snug()\nA subtitle.\n// end",
+    );
+}
+
+test "snug: no preceding element degrades to a plain group" {
+    try expectRenderWarn(
+        "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>text</p>\n</div>\n</div>\n",
+        "// snug()\ntext\n// end",
+        "no preceding element",
+    );
+}
+
+test "snug: chains with a sibling directive, styling lands on the div" {
+    try expectRender(
+        "<div class=\"sx-group sx-snug\" style=\"width:50%;margin-inline:auto\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>sub</p>\n</div>\n</div>\n",
+        "Title\n\n// skinny(50%) snug()\nsub\n// end",
+    );
+}
+
+test "snug: rich multi-block content renders as blocks, not escaped text" {
+    try expectRender(
+        "<div class=\"sx-group sx-snug\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>first <strong>bold</strong></p>\n<p>second</p>\n</div>\n</div>\n",
+        "Title\n\n// snug()\nfirst **bold**\n\nsecond\n// end",
+    );
+}
+
+test "snug: bad args degrade the line to prose" {
+    try expectRender("<p>/snug(nope)</p>\n<p>text</p>\n", "/snug(nope)\n\ntext");
+    try expectRender(
+        "<p>// snug(nope)</p>\n<p>text</p>\n<p>// end</p>\n",
+        "// snug(nope)\n\ntext\n\n// end",
+    );
+}
+
+test "snug and caption combined: whole line stays prose" {
+    try expectRender(
+        "<p><img src=\"a.jpg\" alt=\"a\"></p>\n<p>// snug() caption()</p>\n<p>text</p>\n<p>// end</p>\n",
+        "![a](a.jpg)\n\n// snug() caption()\n\ntext\n\n// end",
+    );
+    try expectRender(
+        "<p><img src=\"a.jpg\" alt=\"a\"></p>\n<p>// caption() snug()</p>\n<p>text</p>\n<p>// end</p>\n",
+        "![a](a.jpg)\n\n// caption() snug()\n\ntext\n\n// end",
     );
 }
 

@@ -122,9 +122,12 @@ Attrs                            ← every command writes exactly one field
 ├── caption_pos: ?CaptionPos     ← caption()/caption(pos)  (non-layout, structural)
 │                                  bare caption() is .bottom; written on the
 │                                  group backward-attach produced (018)
-└── caption_split_pct: ?usize    ← caption(left|right, N%)  (non-layout, structural)
-                                   only meaningful when caption_pos is left/right;
-                                   defaulted (30) at parse time when omitted
+├── caption_split_pct: ?usize    ← caption(left|right, N%)  (non-layout, structural)
+│                                  only meaningful when caption_pos is left/right;
+│                                  defaulted (30) at parse time when omitted
+└── snug:        bool            ← snug()       (non-layout, structural)
+                                   the second backward-attach command (019);
+                                   mutually exclusive with caption on one opener
 
 Inline: text · code · math · image · link · autolink ·
         strong · em · strong_em · strike · color_span(color, children) ·
@@ -181,10 +184,11 @@ are *types* and which are *roles* — the distinction resolves every fuzzy edge.
 | styled container             | *a role*: a group whose attrs carry only non-layout commands (e.g. `color`) |
 | plain container              | *a role*: a group with empty attrs                |
 | section                      | one `[]Block` in `Group.sections`                 |
-| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, citations, indent, caption) |
+| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, citations, indent, caption, snug) |
 | directive (group / single-command / alias) | `GroupLine` / `parseSingleCommandLine` / `sheet` namespace — transient parse classifications; directives never appear in the tree |
 | color role                   | `TextColor` (accent, muted, fg)                   |
 | caption position             | `CaptionPos` (top, bottom, left, right)           |
+| backward-attach command      | *a role, not a type*: a command tag where `command.isBackwardAttach` is true (`caption`, `snug`) — pops its preceding sibling via `strikedown.appendSibling` instead of wrapping what follows |
 
 The tree types above (`Doc`, `Block`, `Attrs`, `Inline`, `TextColor`, …) are public;
 the parsing machinery named in the last two rows — `Command`, `GroupLine`,
@@ -217,6 +221,7 @@ does with it. Style declarations come from one place,
 | `indent(n)`  | no      | depends on the element type — see below |
 | `citations()`| yes     | a `<section class="sx-group sx-citations">` wrapper; entry `<li>`s get `id` anchors + backlinks, marks become links + a `<sup>` — element shape, not style |
 | `caption()`/`caption(pos)`/`caption(left\|right,N%)` | no | backward-attaches to the preceding sibling (`strikedown.appendSibling`) into a two-section group; `<figure class="sx-group sx-figure sx-figure-{pos}">` with the partner in a `sx-figure-body` div, the caption's own (rich) content in `<figcaption>` — element shape, not style. `left`/`right` carry the split as an inline `--sx-caption-split:N%` custom property; a sibling command's style still lands on the `<figure>` itself. No partner to attach to: renders as a plain `sx-group` div instead, with a parse warning |
+| `snug()`     | no      | backward-attaches to the preceding sibling (`strikedown.appendSibling`, same mechanism as `caption`) into a two-section group; a plain `<div class="sx-group sx-snug">` — no figure semantics — with `shell.zig` CSS tightening only the seam between the two sections. No partner to attach to: renders as a plain `sx-group` div instead, with a parse warning. Combined with `caption()` on the same opener: the whole line degrades to prose (`parseGroupLine`) |
 
 The leader a `collapse` group folds behind is the first block of its **first
 section**, and only when the group holds ≥ 2 blocks in total; anything else

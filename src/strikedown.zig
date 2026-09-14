@@ -652,12 +652,13 @@ const Parser = struct {
     /// all: a repeated layout command in the chain still strips and warns).
     fn parseSingleCommand(p: *Parser, attrs_in: Attrs) Allocator.Error!?Block {
         const arena = p.arena;
-        // caption is `//`-opener-only: a `/cmd()` directive wraps forward,
-        // but a caption backward-attaches to its preceding sibling — there is
-        // no "next element" for it to bind to here. Degrade to prose. (An
-        // alias that happens to bundle a caption position degrades the same
-        // way — the restriction is on the shape, not the spelling.)
-        if (attrs_in.caption_pos != null) return null;
+        // Backward-attach commands (caption, snug) are `//`-opener-only: a
+        // `/cmd()` directive wraps forward, but these bind to their
+        // preceding sibling — there is no "next element" for them to bind
+        // to here. Degrade to prose. (An alias that happens to bundle one
+        // degrades the same way — the restriction is on the shape, not the
+        // spelling.)
+        if (attrs_in.backwardAttach()) return null;
         if (p.depth >= max_nest_depth) {
             p.warnDepth();
             return null; // the line stays prose, like any unbound command
@@ -1117,20 +1118,26 @@ fn parseGroupLine(p: *Parser, t: []const u8) ?GroupLine {
         const attrs = p.resolveCommandToken(tok) orelse return null;
         command.mergeAttrs(&open.attrs, attrs);
     }
+    // Two backward-attach commands on one opener both want the same popped
+    // partner slot — a malformed combination, same rule as caption's own
+    // split-percent-without-left/right rejection: degrade the whole line to
+    // prose, silently (no warning — this is syntax-level, not runtime).
+    if (open.attrs.caption_pos != null and open.attrs.snug) return null;
     return .{ .open = open };
 }
 
 /// Append `block` to a sibling-block list being accumulated by the top-level
 /// parse loop or a group section — the two places that know "what came
 /// immediately before" a given block; `parseGroup` itself only sees its own
-/// contents, never its surroundings. A caption group (`attrs.caption_pos`
-/// set) backward-attaches here: it pops the immediately-preceding sibling out
-/// of `list` and becomes its partner as section 0, with the caption's own
-/// section(s) following. No preceding sibling (list empty — the caption group
-/// opens the document, or immediately follows another group's close) degrades
-/// gracefully: the caption group is appended as-is (its own section(s) only,
-/// no partner) and a warning is recorded — the emitter then renders it as a
-/// plain group, no `<figure>`/`<figcaption>`.
+/// contents, never its surroundings. A backward-attach group
+/// (`attrs.backwardAttach()` — `caption` or `snug`) binds here: it pops the
+/// immediately-preceding sibling out of `list` and becomes its partner as
+/// section 0, with the group's own section(s) following. No preceding
+/// sibling (list empty — the group opens the document, or immediately
+/// follows another group's close) degrades gracefully: the group is
+/// appended as-is (its own section(s) only, no partner) and a warning is
+/// recorded — the emitter then renders it as a plain group (no `<figure>`/
+/// `<figcaption>` for caption, no `sx-snug` seam-tightening for snug).
 fn appendSibling(
     list: *std.ArrayList(Block),
     arena: Allocator,
@@ -1138,7 +1145,7 @@ fn appendSibling(
     warnings: *std.ArrayList([]const u8),
     label: []const u8,
 ) Allocator.Error!void {
-    if (block.kind == .group and block.attrs.caption_pos != null) {
+    if (block.kind == .group and block.attrs.backwardAttach()) {
         if (list.pop()) |prev| {
             const g = block.kind.group;
             const new_sections = try arena.alloc([]Block, g.sections.len + 1);
@@ -1153,7 +1160,7 @@ fn appendSibling(
         }
         try warnings.append(arena, try std.fmt.allocPrint(
             arena,
-            "caption in '{s}': no preceding element to attach to — rendered as plain content, no figure",
+            "backward-attach group in '{s}': no preceding element to attach to — rendered as plain content",
             .{label},
         ));
     }
@@ -2920,6 +2927,82 @@ test "caption: chains with a sibling styling directive on the same opener" {
     try testing.expectEqual(@as(?usize, 50), attrs.width_pct);
     try testing.expect(attrs.caption_pos == .left);
     try testing.expectEqual(@as(?usize, 40), attrs.caption_split_pct);
+}
+
+test "snug: bare grammar, args rejected" {
+    try testing.expect(parseCommand("snug()").? == .snug);
+    try testing.expect(parseCommand("snug(x)") == null);
+    try testing.expect(parseCommand("snug(top)") == null);
+}
+
+test "snug: /snug() single-command form degrades to prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "/snug()\n\n# Title", .empty);
+    try testing.expect(d.blocks[0].kind == .paragraph); // "/snug()" stayed literal text
+    try testing.expect(d.blocks[1].kind == .heading);
+    try testing.expect(!d.blocks[1].attrs.snug);
+}
+
+test "snug: backward-attaches to its preceding sibling as section 0" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "# Title\n\n// snug()\nA subtitle.\n// end", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 2), g.sections.len);
+    try testing.expect(g.sections[0][0].kind == .heading); // popped partner (the title)
+    try testing.expect(g.sections[1][0].kind == .paragraph); // snug body
+    try testing.expect(d.blocks[0].attrs.snug);
+}
+
+test "snug: no preceding sibling warns and degrades to a plain group" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "// snug()\ntext\n// end", .empty);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "no preceding element") != null);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 1), g.sections.len); // snug body only, no partner
+}
+
+test "snug: attaches within an enclosing group, not the top level" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "// outer\n# Title\n\n// snug()\nsub\n// end\n// end outer", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    const outer_sections = d.blocks[0].kind.group.sections;
+    try testing.expectEqual(@as(usize, 1), outer_sections[0].len); // just the snug group
+    const inner = outer_sections[0][0].kind.group;
+    try testing.expectEqual(@as(usize, 2), inner.sections.len);
+}
+
+test "snug: chains with a sibling styling directive on the same opener" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(),
+        "# Title\n\n// skinny(50%) snug()\nsub\n// end", .empty);
+    const attrs = d.blocks[0].attrs;
+    try testing.expectEqual(@as(?usize, 50), attrs.width_pct);
+    try testing.expect(attrs.snug);
+}
+
+test "snug and caption together: whole opener degrades to prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d1 = try parse(arena_state.allocator(),
+        "![a](a.jpg)\n\n// snug() caption()\n\ntext\n\n// end", .empty);
+    try testing.expectEqual(@as(usize, 4), d1.blocks.len);
+    try testing.expect(d1.blocks[1].kind == .paragraph); // opener line stayed literal
+    try testing.expect(!d1.blocks[1].attrs.snug);
+    try testing.expect(d1.blocks[1].attrs.caption_pos == null);
+
+    const d2 = try parse(arena_state.allocator(),
+        "![a](a.jpg)\n\n// caption() snug()\n\ntext\n\n// end", .empty);
+    try testing.expect(d2.blocks[1].kind == .paragraph); // order-independent
 }
 
 test "empty postfix spans stay literal for color and cite alike" {
