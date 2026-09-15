@@ -367,15 +367,24 @@ const head_post_a =
     \\  .sx-figure-right { flex-direction: row; }
     \\  .sx-figure-left .sx-figure-body, .sx-figure-right .sx-figure-body { flex: 1 1 auto; min-width: 0; }
     \\  .sx-figure-left figcaption, .sx-figure-right figcaption { flex: 0 0 var(--sx-caption-split, 30%); display: flex; flex-direction: column; justify-content: flex-end; }
-    \\  /* Snug (019-snug): a backward-attach group whose only job is to remove
-    \\     the vertical gap between the popped partner and its own content — no
-    \\     figure semantics. Targets only the seam (first section's last child,
-    \\     second section's first child); zeroing the trailing margin rather
-    \\     than also zeroing the leading one keeps the result deterministic
-    \\     regardless of what tag each side is (a <p> and an <h2> have
-    \\     different default margins). */
-    \\  .sx-snug > .sx-group-sec:first-child > :last-child { margin-bottom: 0; }
-    \\  .sx-snug > .sx-group-sec:last-child > :first-child { margin-top: .15rem; }
+    \\  /* Snug (019-snug, revised 020-snug-rework): a backward-attach group
+    \\     whose only job is to remove the vertical gap between the popped
+    \\     partner and its own content — no figure semantics. Targets only the
+    \\     seam (first section's last child, second section's first child);
+    \\     zeroing the trailing margin rather than also zeroing the leading one
+    \\     keeps the result deterministic regardless of what tag each side is
+    \\     (a <p> and an <h2> have different default margins). A descendant
+    \\     combinator, not just a direct child, on purpose: a /cmd() single-
+    \\     command chain (`/snug() /color(accent) text`) puts a plain
+    \\     .sx-group wrapper div between the section and its real content, and
+    \\     that div has no margin of its own to override — the actual <p>'s
+    \\     default margin collapses straight through it. Matching every
+    \\     first/last-child down the chain (not just the immediate one) reaches
+    \\     the real content regardless of how many such wrappers sit in
+    \\     between; redundantly matching the wrapper divs on the way is
+    \\     harmless (same value, so collapsing keeps just the one seam). */
+    \\  .sx-snug > .sx-group-sec:first-child *:last-child { margin-bottom: 0; }
+    \\  .sx-snug > .sx-group-sec:last-child *:first-child { margin-top: .15rem; }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     \\  .sidebar {
     \\    position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 100vh;
@@ -760,8 +769,23 @@ test "snug CSS: seam between the popped partner and the attached content is tigh
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
-    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-snug > .sx-group-sec:first-child > :last-child { margin-bottom: 0; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-snug > .sx-group-sec:last-child > :first-child { margin-top: .15rem; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-snug > .sx-group-sec:first-child *:last-child { margin-bottom: 0; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-snug > .sx-group-sec:last-child *:first-child { margin-top: .15rem; }") != null);
+}
+
+test "snug CSS: descendant combinator, not just direct child, reaches through a /cmd() chain's wrapper div" {
+    // `/snug() /color(accent) text` puts a plain .sx-group wrapper div
+    // between the section and its real content (020-snug-rework.md) — a
+    // `>` (direct-child) selector would only reach that wrapper, which has
+    // no margin of its own, and the real element's default margin would
+    // collapse straight through it, undoing the tightened seam. `*` (any
+    // descendant) reaches every first/last-child down the chain instead.
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page, "> .sx-group-sec:first-child > :last-child") == null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "> .sx-group-sec:last-child > :first-child") == null);
 }
 
 test "standalone shell has no nav and no project root to link to" {

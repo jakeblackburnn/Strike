@@ -2,12 +2,16 @@
 
 Ten commands, one vocabulary. Every one of them works in a `//` group opener
 and on a `/cmd()` line, and they combine on the same opener — except
-`caption` and `snug`, which only ever mean something on a `//` group: both
-**backward-attach**, binding to the block immediately *before* them rather
-than wrapping what follows, so a `/cmd()` directive (which only ever wraps
-forward) can never mean either one — and, wanting the same preceding block,
-they can't combine with *each other* either. [Groups](groups.sx) covers the
-grammar those lines are written in; this page is what you can put in them.
+`caption`, which only ever means something on a `//` group. `caption` and
+`snug` both **backward-attach**, binding to the block immediately *before*
+them rather than wrapping what follows, and — wanting the same preceding
+block — can't combine with *each other* either. `caption`'s position
+argument implies deliberate figure/figcaption boundaries a `/cmd()`
+directive (which only ever wraps forward) can't express, so it's `//`-group
+only; `snug` has no such argument, so `/snug()` works too, as long as it's
+the first command in its chain (the one whose wrapped block actually reaches
+a preceding sibling to pop). [Groups](groups.sx) covers the grammar those
+lines are written in; this page is what you can put in them.
 
 | Command | Argument | Bare form |
 | --- | --- | --- |
@@ -273,7 +277,8 @@ than the image.
 `snug()` is the other backward-attach command: same binding as `caption`,
 but with no figure, no position, no argument — its only job is closing the
 gap between a block and the one right after it, for pairs that read as one
-unit split in two.
+unit split in two. It pops its partner without ever restyling it: a command
+chained alongside `snug()` describes the snug body only.
 
 ### A heading with a tightly bound subtitle
 
@@ -281,6 +286,35 @@ unit split in two.
 The subtitle sits close to the heading above it, instead of at ordinary
 paragraph distance.
 // end
+
+Unlike `caption`, `snug` also works as a `/cmd()` single-command directive —
+as long as it's the first command in its chain, so its wrapped block
+actually reaches the sibling above to pop:
+
+### Another heading
+
+/snug()
+Same result, single-command form.
+
+Chaining a style onto either form colors (or sizes, or anything else) only
+the attached content — never the heading it's attached to:
+
+### A third heading, left untouched
+
+// color(accent) snug()
+Only this subtitle takes the accent color.
+// end
+
+Chaining `/snug()` with another single-command line works the same way —
+`/snug()` has to lead the chain (it's the token that actually reaches the
+heading above to pop); what follows nests inside it, same as any other
+`/cmd()` chain:
+
+### A fourth heading, still untouched
+
+/snug()
+/color(muted)
+Same result again, chained single-command form.
 
 Because it wants the same preceding block a caption would pop, `snug()`
 can't combine with `caption()` on one opener — that combination degrades

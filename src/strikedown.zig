@@ -284,7 +284,7 @@ const Parser = struct {
         // next), it falls through to prose — the same context-liveness rule
         // that keeps separators/closers outside a group inert.
         if (p.resolveSingleCommandLine(t)) |attrs| {
-            if (try p.parseSingleCommand(attrs)) |block| return block;
+            if (try p.parseSingleCommand(attrs, true)) |block| return block;
         }
 
         if (std.mem.startsWith(u8, t, "```")) return p.parseCodeFence(t);
@@ -650,15 +650,22 @@ const Parser = struct {
     /// eventual content element — so `/skinny() /color(accent) text` nests
     /// exactly as the equivalent nested groups would (layout-level rule and
     /// all: a repeated layout command in the chain still strips and warns).
-    fn parseSingleCommand(p: *Parser, attrs_in: Attrs) Allocator.Error!?Block {
+    ///
+    /// `is_root` is true only for the outermost call, from `parseBlock` —
+    /// the one whose returned block reaches `appendSibling` in the caller's
+    /// own sibling list (the top-level loop, or a group's section loop), the
+    /// only place a preceding sibling exists to pop. `snug()` needs exactly
+    /// that, so it's allowed here as the chain's first token — `/snug()`
+    /// backward-attaches to whatever precedes it, same as `// snug() ...
+    /// // end` would. Nested deeper in a chain (`/color(accent) /snug()
+    /// text`) there is no preceding-sibling list at that frame — the chain
+    /// reverts to prose instead, same as `caption()`, which is never valid
+    /// here at all: its position argument implies deliberate figure/
+    /// figcaption boundaries a `/cmd()` line can't express.
+    fn parseSingleCommand(p: *Parser, attrs_in: Attrs, is_root: bool) Allocator.Error!?Block {
         const arena = p.arena;
-        // Backward-attach commands (caption, snug) are `//`-opener-only: a
-        // `/cmd()` directive wraps forward, but these bind to their
-        // preceding sibling — there is no "next element" for them to bind
-        // to here. Degrade to prose. (An alias that happens to bundle one
-        // degrades the same way — the restriction is on the shape, not the
-        // spelling.)
-        if (attrs_in.backwardAttach()) return null;
+        if (attrs_in.caption_pos != null) return null;
+        if (attrs_in.snug and !is_root) return null;
         if (p.depth >= max_nest_depth) {
             p.warnDepth();
             return null; // the line stays prose, like any unbound command
@@ -692,7 +699,7 @@ const Parser = struct {
         // thing reverts to prose — restore `idx` so the caller re-parses
         // this line as such, rather than resuming mid-chain.
         const inner = if (p.resolveSingleCommandLine(nt)) |next_attrs|
-            (try p.parseSingleCommand(next_attrs)) orelse {
+            (try p.parseSingleCommand(next_attrs, false)) orelse {
                 p.idx = saved_idx;
                 // The whole chain reverts to prose — drop any warnings
                 // appended above on the assumption that it would bind.
@@ -2935,13 +2942,52 @@ test "snug: bare grammar, args rejected" {
     try testing.expect(parseCommand("snug(top)") == null);
 }
 
-test "snug: /snug() single-command form degrades to prose" {
+test "snug: /snug() single-command form backward-attaches" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(), "/snug()\n\n# Title", .empty);
-    try testing.expect(d.blocks[0].kind == .paragraph); // "/snug()" stayed literal text
-    try testing.expect(d.blocks[1].kind == .heading);
-    try testing.expect(!d.blocks[1].attrs.snug);
+    const d = try parse(arena_state.allocator(), "# Title\n\n/snug()\nA subtitle.", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 2), g.sections.len);
+    try testing.expect(g.sections[0][0].kind == .heading); // popped partner (the title)
+    try testing.expect(g.sections[1][0].kind == .paragraph); // snug body
+    try testing.expect(d.blocks[0].attrs.snug);
+}
+
+test "snug: /snug() with no preceding sibling warns and degrades" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "/snug()\ntext", .empty);
+    try testing.expectEqual(@as(usize, 1), d.warnings.len);
+    try testing.expect(std.mem.indexOf(u8, d.warnings[0], "no preceding element") != null);
+    const g = d.blocks[0].kind.group;
+    try testing.expectEqual(@as(usize, 1), g.sections.len); // snug body only, no partner
+}
+
+test "snug: nested (non-root) in a /cmd() chain reverts that command to prose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // `/color(accent)` can't wrap a nested `/snug()` — backward-attach only
+    // works as a chain's outermost token — so its own chain aborts and the
+    // line stays literal, uncolored prose. The freestanding `/snug()` that
+    // follows is then parsed fresh and independently (and validly)
+    // backward-attaches to that leftover prose paragraph, same as it would
+    // to any other preceding block.
+    const d = try parse(arena_state.allocator(), "/color(accent)\n/snug()\ntext", .empty);
+    try testing.expectEqual(@as(usize, 0), d.warnings.len);
+    try testing.expectEqual(@as(usize, 1), d.blocks.len);
+    const g = d.blocks[0].kind.group;
+    const partner = g.sections[0][0];
+    try testing.expect(partner.kind == .paragraph);
+    try testing.expect(partner.attrs.text_color == null);
+}
+
+test "snug: /cmd() single-command form rejects arguments" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "# Title\n\n/snug(x)\ntext", .empty);
+    for (d.blocks) |b| try testing.expect(!b.attrs.snug);
 }
 
 test "snug: backward-attaches to its preceding sibling as section 0" {

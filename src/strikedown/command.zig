@@ -73,7 +73,9 @@ pub const Command = union(enum) {
     /// like an uncaptioned one. Structural, like `collapse`/`citations`: it
     /// shapes the emitted elements rather than adding style declarations.
     /// Never valid as a `/cmd()` single-command directive (`parseSingleCommand`
-    /// rejects it) — backward-attach needs a full group, not a forward wrap.
+    /// rejects it, root or nested) — the position argument implies
+    /// deliberate figure/figcaption boundaries only a full `// ... // end`
+    /// group states unambiguously.
     caption: struct { pos: CaptionPos, split_pct: ?usize },
     /// snug(): a second backward-attach command (019-snug), alongside
     /// `caption`. Like caption it pops its immediately preceding sibling
@@ -82,10 +84,13 @@ pub const Command = union(enum) {
     /// positional argument. Non-layout, structural, like `caption`: it
     /// shapes the emitted elements (a plain `<div class="sx-snug">`
     /// wrapper), the seam-tightening itself is a `shell.zig` CSS rule.
-    /// Never valid as a `/cmd()` single-command directive, for the same
-    /// reason as `caption`. Mutually exclusive with `caption` on the same
-    /// opener — both want the one popped-partner slot, so the combination
-    /// degrades the whole line to prose (`parseGroupLine`).
+    /// Unlike `caption`, valid as a `/cmd()` single-command directive
+    /// (`parseSingleCommand`) — but only as the chain's first/outermost
+    /// token, the one whose returned block actually reaches a sibling list
+    /// to pop from; nested deeper in a chain it still degrades, same as
+    /// `caption` everywhere. Mutually exclusive with `caption` on the same
+    /// `//` opener — both want the one popped-partner slot, so the
+    /// combination degrades the whole line to prose (`parseGroupLine`).
     snug,
 };
 
@@ -222,11 +227,13 @@ pub fn isStructural(tag: CommandTag) bool {
 /// Backward-attach commands (`caption`, `snug`) pop their immediately
 /// preceding sibling block instead of wrapping what follows
 /// (`strikedown.appendSibling`) — the opposite of every other command's
-/// forward binding, and never valid as a `/cmd()` single-command directive
-/// (`parseSingleCommand`). Exhaustive, like `isLayout`/`isStructural`, so a
-/// third backward-attach command can't be added without being classified
-/// here (`docs/reference/design/018-image-captions-v2.md`'s "Future
-/// direction" named this switch as the intended extension point).
+/// forward binding. Whether each one may additionally open as a `/cmd()`
+/// single-command directive is a separate, per-command call
+/// (`parseSingleCommand` checks each field directly — `caption` never,
+/// `snug` only as a chain's outermost token). Exhaustive, like
+/// `isLayout`/`isStructural`, so a third backward-attach command can't be
+/// added without being classified here (`docs/reference/design/018-image-captions-v2.md`'s
+/// "Future direction" named this switch as the intended extension point).
 pub fn isBackwardAttach(tag: CommandTag) bool {
     return switch (tag) {
         .caption, .snug => true,

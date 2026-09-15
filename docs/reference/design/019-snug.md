@@ -1,7 +1,11 @@
 # 019 — Snug (`// snug()` backward-attach seam-tightening)
 
 **Status: shipped** (2026-09-14; decision dictated by the user the same day,
-implemented with the mechanics below).
+implemented with the mechanics below). **Revised 2026-09-15** by
+`docs/reference/design/020-snug-rework.md`: `/snug()` is now valid (as a
+`/cmd()` chain's outermost token), and a sibling styling command no longer
+leaks onto the popped partner. The two corrected passages are marked inline
+below; everything else here still holds.
 
 ## Problem
 
@@ -54,10 +58,14 @@ A subtitle.
 
 A malformed `snug(...)` (any non-empty argument) fails `parseCommand`
 and degrades the whole line to prose, per the standing rule — no new
-degradation mode. `/snug(...)` as a single-command directive is rejected
-outright (`parseSingleCommand`, via `Attrs.backwardAttach()`) for the same
-reason `caption` is: backward-attach needs a full group, there's no "next
-element" for a `/cmd()` line to mean.
+degradation mode.
+
+*(Corrected by 020-snug-rework.md: `/snug()` as a single-command directive
+is valid after all — as long as it's the outermost/first token of its
+`/cmd()` chain, the one whose block actually reaches a preceding sibling to
+pop. Nested deeper in a chain it still degrades. `caption` keeps the
+blanket rejection described below; its position argument is what rules out
+`/cmd()`, not backward-attach in general.)*
 
 The one new case this note adds: **`snug()` and `caption()` on the same
 opener**. Both are backward-attach commands wanting the one popped-partner
@@ -94,7 +102,11 @@ Dictated by the user, 2026-09-14, via three choices:
    combination rather than a policy decision to arbitrate.
 3. **Wrapper and styling**: a plain `<div class="sx-group sx-snug">`
    (no semantic wrapper, unlike `caption`'s `<figure>`) with two
-   `sx-group-sec` sections, reusing `emitSections` unchanged. The seam
+   `sx-group-sec` sections. *(Corrected by 020-snug-rework.md: not
+   `emitSections` unchanged after all — a sibling styling command landed on
+   this shared outer div, visibly leaking onto the popped partner via CSS
+   inheritance. `emitSnug` now styles section 1's own wrapper only; the
+   partner is never restyled.)* The seam
    itself is tightened by two `shell.zig` rules keyed on `.sx-snug`,
    targeting only the boundary between the first section's last child and
    the second section's first child — `margin-bottom: 0` on the former,

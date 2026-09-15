@@ -383,13 +383,31 @@ fn emitCaption(w: *Writer, g: strikedown.Group, pos: strikedown.CaptionPos, attr
 /// group's own content; the seam-tightening is a `shell.zig` CSS rule keyed
 /// on `.sx-snug`, nothing emitted here. No partner (`g.sections.len != 2`)
 /// degrades to the same plain `sx-group` fallback caption uses.
+///
+/// The partner (section 0) is never styled from `attrs`: snug's whole
+/// premise is attaching to that element *without changing it*, so a styling
+/// command chained alongside `snug()` on the same opener (`// color(accent)
+/// snug()`, `// skinny(50%) snug()`) describes the snug body only. Putting
+/// it on the outer `.sx-snug` div instead would leak onto the partner too,
+/// by ordinary CSS inheritance — the style lands on section 1's own
+/// `sx-group-sec` wrapper instead, so this can't share the generic
+/// `emitSections` walk `emitCaption` uses.
 fn emitSnug(w: *Writer, g: strikedown.Group, attrs: strikedown.Attrs, link_base: ?LinkCtx, indent: usize) Writer.Error!void {
-    const attached = g.sections.len == 2;
-    try w.writeAll(if (attached) "<div class=\"sx-group sx-snug\"" else "<div class=\"sx-group\"");
+    if (g.sections.len != 2) {
+        try w.writeAll("<div class=\"sx-group\"");
+        try writeStyleAttr(w, attrs, .first_line);
+        try w.writeAll(">\n");
+        try emitSections(w, g.sections, link_base, indent, false);
+        try w.writeAll("</div>\n");
+        return;
+    }
+    try w.writeAll("<div class=\"sx-group sx-snug\">\n<div class=\"sx-group-sec\">\n");
+    for (g.sections[0]) |b| try emitBlock(w, b, link_base, indent);
+    try w.writeAll("</div>\n<div class=\"sx-group-sec\"");
     try writeStyleAttr(w, attrs, .first_line);
     try w.writeAll(">\n");
-    try emitSections(w, g.sections, link_base, indent, false);
-    try w.writeAll("</div>\n");
+    for (g.sections[1]) |b| try emitBlock(w, b, link_base, indent);
+    try w.writeAll("</div>\n</div>\n");
 }
 
 /// Walk a group's sections into `sx-group-sec` wrappers — the one section
@@ -1413,12 +1431,74 @@ test "snug: no preceding element degrades to a plain group" {
     );
 }
 
-test "snug: chains with a sibling directive, styling lands on the div" {
+test "snug: chains with a sibling styling directive — the style lands on the snug body only" {
     try expectRender(
-        "<div class=\"sx-group sx-snug\" style=\"width:50%;margin-inline:auto\">\n" ++
+        "<div class=\"sx-group sx-snug\">\n" ++
             "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
-            "<div class=\"sx-group-sec\">\n<p>sub</p>\n</div>\n</div>\n",
+            "<div class=\"sx-group-sec\" style=\"width:50%;margin-inline:auto\">\n<p>sub</p>\n</div>\n</div>\n",
         "Title\n\n// skinny(50%) snug()\nsub\n// end",
+    );
+}
+
+test "snug: the popped partner is never styled, even when snug carries a color" {
+    // `// color(accent) snug()` describes the snug body, not the partner it
+    // attaches to — snug's whole premise is attaching without changing the
+    // partner. Regression test for the color leaking onto "Title" via the
+    // old shared wrapper's CSS inheritance.
+    try expectRender(
+        "<div class=\"sx-group sx-snug\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\" style=\"color:var(--accent)\">\n<p>sub</p>\n</div>\n</div>\n",
+        "Title\n\n// color(accent) snug()\nsub\n// end",
+    );
+}
+
+test "snug: /snug() single-command form renders identically to // snug()" {
+    try expectRender(
+        "<div class=\"sx-group sx-snug\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>A subtitle.</p>\n</div>\n</div>\n",
+        "Title\n\n/snug()\nA subtitle.",
+    );
+}
+
+test "snug: /snug() with no preceding element degrades to a plain group" {
+    try expectRenderWarn(
+        "<div class=\"sx-group\">\n<div class=\"sx-group-sec\">\n<p>text</p>\n</div>\n</div>\n",
+        "/snug()\ntext",
+        "no preceding element",
+    );
+}
+
+test "snug: nested in a /cmd() chain can't bind — the wrapping command's line stays literal prose" {
+    // `/color(accent)` can't wrap a nested `/snug()`, so its own chain
+    // aborts (the line renders as literal, uncolored text) — but the
+    // freestanding `/snug()` line that follows is then parsed fresh and
+    // validly backward-attaches to that leftover prose paragraph.
+    try expectRender(
+        "<div class=\"sx-group sx-snug\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>/color(accent)</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n<p>text</p>\n</div>\n</div>\n",
+        "/color(accent)\n/snug()\ntext",
+    );
+}
+
+test "snug: /snug() leading a /cmd() chain wraps the rest in a nested group, partner untouched" {
+    // `/snug()` as the chain's outermost token still backward-attaches
+    // (Title is popped as section 0, untouched); what follows in the chain
+    // (`/color(muted)`) nests as its own group inside section 1, same as any
+    // other `/cmd()` chain (`/skinny() /color(accent) text` nests the same
+    // way) — the CSS seam-tightening (shell.zig) has to reach through that
+    // nested wrapper to the real content, not just the wrapper div itself
+    // (020-snug-rework.md).
+    try expectRender(
+        "<div class=\"sx-group sx-snug\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Title</p>\n</div>\n" ++
+            "<div class=\"sx-group-sec\">\n" ++
+            "<div class=\"sx-group\" style=\"color:var(--muted)\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>Subtitle.</p>\n</div>\n</div>\n" ++
+            "</div>\n</div>\n",
+        "Title\n\n/snug()\n/color(muted)\nSubtitle.",
     );
 }
 

@@ -169,7 +169,7 @@ element, so they nest freely and inner wins.
 | `indent(n)` / `indent()` | a first-line typographic tab indent, n steps (bare form is one). n is 1–8. Non-layout: nesting overrides, innermost wins. See "Indentation". (`docs/reference/design/011-indent.md`, `015-paragraph-indent.md`) |
 | `citations()` | the group's numbered list is the document's reference list: entries become anchor targets and `[text].cite(refs)` marks bind to them. One per document. No arguments. See "Citations". (`docs/reference/design/016-citations.md`) |
 | `caption()` / `caption(top\|bottom\|left\|right)` / `caption(left\|right, N%)` | backward-attaches to the immediately preceding sibling block, wrapping the pair in a `<figure>` with this group's own content as its `<figcaption>`. Bare `caption()` is `bottom`. `left`/`right` take an optional split percent (the caption column's share of the figure's width, default 30%) — meaningless with `top`/`bottom`. Non-layout, structural — shapes the emitted elements rather than styling them. `//`-opener only; never valid as `/caption(...)`. See "Captions". (`docs/reference/design/018-image-captions-v2.md`) |
-| `snug()` | backward-attaches to the immediately preceding sibling block, purely to remove the vertical seam between the two — no figure semantics, no arguments. Non-layout, structural. `//`-opener only; never valid as `/snug()`; combined with `caption()` on the same opener, the whole line degrades to prose. See "Snug". (`docs/reference/design/019-snug.md`) |
+| `snug()` | backward-attaches to the immediately preceding sibling block, purely to remove the vertical seam between the two — no figure semantics, no arguments, and the partner itself is never restyled. Non-layout, structural. Also valid as `/snug()`, unlike every other backward-attach command — but only as a `/cmd()` chain's first/outermost token. Combined with `caption()` on the same `//` opener, the whole line degrades to prose. See "Snug". (`docs/reference/design/019-snug.md`) |
 
 Commands combine (`// g grid(2) skinny(80%)` is a narrower grid). Malformed
 arguments deactivate the whole line — `skinny(50)`, `wide(100%)`, `grid(0)`,
@@ -300,6 +300,13 @@ This wraps the pair in a plain `<div class="sx-group sx-snug">` — no
 the two: the reader-CSS default gives it a small, deliberate gap rather
 than the ordinary inter-block spacing every other pair of blocks gets.
 
+The partner is popped, never restyled: a styling command chained alongside
+`snug()` on the same opener (`// color(accent) snug()`, `// skinny(50%)
+snug()`) describes the snug body only, landing on its own wrapper, not on
+the shared outer `<div>` — the heading in the example above never changes
+appearance just because its attached subtitle carries a command. Snug's
+whole premise is attaching to the preceding element *without changing it*.
+
 `snug()` and `caption()` can't combine on the same opener — both are
 backward-attach commands wanting the one immediately-preceding block to pop,
 so `// snug() caption()` (either order) is a malformed combination and
@@ -308,8 +315,25 @@ degrades the whole line to prose, the same rule that already governs
 
 A snug group with nothing preceding it to attach to degrades exactly like
 caption's own no-partner case: it renders as its own plain content, no
-`sx-snug` wrapper, and a parse warning names what happened. There is no
-single-command `/snug()` form, for the same reason `/caption(...)` has none.
+`sx-snug` wrapper, and a parse warning names what happened.
+
+Unlike `caption()`, `snug()` also works as a `/cmd()` single-command
+directive:
+
+```
+The main heading
+
+/snug()
+A subtitle bound tightly to the heading above it.
+```
+
+renders identically to the `//`-group form above. This only works as the
+chain's first (outermost) token, though — the one whose wrapped block
+actually reaches the sibling list to pop a partner from. Chained deeper
+in — `/color(accent) /snug() text` — there is no preceding-sibling list at
+that nested position, so the whole chain reverts to prose instead (that
+specific line renders as literal text; whatever precedes and follows it is
+unaffected and parsed on its own).
 
 (`docs/reference/design/019-snug.md`)
 
@@ -580,7 +604,7 @@ Degradation — every line below is an ordinary paragraph:
 /caption(bottom)            (never valid single-command — backward-attach needs a group)
 // caption(sideways)        (unknown position keyword)
 // caption(top, 30%)        (split percent only valid with left/right)
-/snug(nope)                 (never valid single-command — backward-attach needs a group)
+/snug(nope)                 (snug() takes no arguments)
 // snug() caption()         (two backward-attach commands, one popped-partner slot)
 [x].color(bright)           (inline near-miss: unknown role → literal text)
 [z](https://z.dev).color(muted)   (the link wins its `[`; postfix is prose)
