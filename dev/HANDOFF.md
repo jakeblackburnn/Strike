@@ -1,55 +1,47 @@
-# Handoff · 2026-09-18 16:05 · slopbox
+# Handoff · 2026-09-18 17:25 · slopbox
 
 ## State
-- `zig build` clean. `zig build test --summary all` → 31/31 steps, 1759/1759 tests
-  passed (stderr `failed command` lines for 4 cached test binaries are pre-existing
-  zig-test-runner noise, not real failures — reproduced 3x with different seeds).
-- No commits made this session. Last commit is `12f8432` (v0.1.3, spacer blocks).
+- Tree is committed and clean. `056d7bb` "v0.2.0 - Typography headers, theme files, flow
+  columns, PDF backend" on top of `12f8432` (v0.1.3).
+- `zig build` clean. `zig build test --summary all` → **39/39 steps succeeded, 1819/1819
+  tests passed** (stderr `failed command …--listen=-` on 4 cached test binaries is benign
+  zig-test-runner noise, not a real failure — check the summary line).
+- `docs/paper/` built and spot-checked: bootstrap JS defaults to `data-season="custom"`,
+  Paper Ink's palette is inlined and selectable, `paper.pdf` regenerated and validated with
+  `pdfinfo` (2 pages, letter).
 
 ## In flight
-- **Everything below is uncommitted** on `slopbox`: 16 modified files (677+/246-) plus
-  4 new files (`src/render_pdf.zig`, `src/theme_file.zig`, `src/themes.zig`,
-  `docs/reference/design/022-paginated-columns.md`) plus `docs/paper/` (full sample:
-  paper.sx/.sxh/.theme/.pdf/strike.yaml).
-- Two agents worked this session (Claude on `shell.zig`/reader UI, Codex on
-  `project.zig`/`sheet.zig`/language+PDF) — coordinated via a shared plan file at
-  `/home/jake/.claude/plans/read-sticky-notes-linked-indexed-chipmunk.md` (full detail
-  on what each agent did, in order, is there — read it if anything below is unclear).
-- Codex ran out of usage mid-session; its last act was landing the external
-  theme-file feature. Not deeply reviewed by Claude past build+test passing.
+Nothing uncommitted. The last session's four features (typography headers, theme files,
+`flow(n)`, native PDF backend) are done and shipped; this session closed it out — see the
+2026-09-18 17:20 devlog entry for exactly what changed in the close-out pass.
 
 ## Next
-1. **Commit this tree** — nothing has been committed yet; do this before anything else
-   touches these files. Suggested split: typography/theme/PDF/flow(2) are independent
-   features and could be separate commits, or one v0.2.0 bump — your call.
-2. Run `/decide` to formally record two design decisions made in-session but not yet in
-   `dev/DECISIONS.md` (see Pointers).
-3. Goal-5 "better menu UX" (beyond the hitbox/slider fixes already done) has no
-   concrete spec — decide if there's more wanted there or call it done.
-4. Consider reviewing `src/themes.zig` (238 lines, appeared late from Codex, not
-   reviewed in depth) and the `theme:` + `theme_file:` dual-key overlap in
-   `docs/paper/strike.yaml` for redundancy.
+1. Specify the deferred pagination policy from design note 022 (widow/orphan behavior,
+   oversize-block policy, in-flow `span()`) — needs a design note before implementation,
+   language-side, blocks on Jake per `DESIGN.md`.
+2. Close the native PDF backend's known gaps: images, math typesetting, non-ASCII glyphs,
+   fine page-break control (README states these as current limitations).
+3. No other open threads from the prior session — goal 0 (splitting `strikedown.zig`) is
+   deliberately deferred until it crosses ~2000 lines (currently ~1200); "better menu UX"
+   beyond the hitbox/slider fixes was called done, no concrete ask ever surfaced.
 
 ## Traps
 - `zig build test` prints benign `failed command: ./.zig-cache/.../test ... --listen=-`
-  lines to stderr even on full success — check the `Build Summary: N/N steps
-  succeeded; M/M tests passed` line, not the presence/absence of "failed" text.
-- `shell.zig` is large and was edited by both agents sequentially (not concurrently,
-  but back-to-back) — re-read it before editing, don't trust line numbers from any
-  memory/plan file, they've shifted repeatedly this session.
-- The nodeterm canvas messaging tools (`nodeterm.sh send`, `sticky --append`) were
-  refused every time they were tried this session — coordination between agents ended
-  up happening via the shared plan file and direct git-diff reading instead.
+  lines to stderr even on full success — read the `Build Summary: N/N steps succeeded;
+  M/M tests passed` line, not the presence/absence of "failed" text.
+- `strike render <file> --header f.sxh` on a single file does **not** read the surrounding
+  project's `strike.yaml` (`theme:`, `theme_file:`) — that's project/site config, only
+  `strike build`/`strike serve` on a directory resolves it. Don't use single-file render to
+  check theme wiring; build the directory and inspect the output instead.
 
 ## Pointers
-- `src/shell.zig:27-49` — `Shell` struct: `typography` (from `.sxh` headers) and
-  `custom_theme` (from `theme_file:`) are the two new config channels reaching the page.
-- `src/sheet.zig:44-60` — `TypeStyle`/`Sheet.typography`, later-wins layering.
-- `src/theme_file.zig` — new theme-file format, validated, build-time only.
-- `docs/reference/design/022-paginated-columns.md` — `flow(2)` design note, status
-  "shipped, pagination policy provisional". **Not yet in `dev/DECISIONS.md`.**
-- Undocumented decision #2: native Zig PDF backend chosen over a Chromium-based export
-  (Jake's call, mid-session, via Codex). **Not yet in `dev/DECISIONS.md`.**
-- `src/render_pdf.zig`, `strike pdf` CLI command in `main.zig`.
+- `dev/DECISIONS.md` — now exists (D1: `flow(n)` Candidate A, D2: native Zig PDF over
+  Chromium export). Both were made last session and were unrecorded; now recorded.
+- `docs/reference/design/022-paginated-columns.md` — `flow(n)`'s home; status "shipped,
+  pagination policy provisional" is the open thread in Next #1.
+- `build.zig:37-56` — test step now walks `src/` recursively (`Dir.walk`), so any new file
+  anywhere under `src/` becomes a test root automatically, including `src/strikedown/`.
+- `src/theme_file.zig`, `src/themes.zig`, `src/render_pdf.zig` — the three files with the
+  thinnest coverage last session now have rejection-path/invariant/geometry tests.
 
 handoff written. Safe to /clear.
