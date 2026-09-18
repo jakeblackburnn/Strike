@@ -386,6 +386,8 @@ const head_post_a =
     \\  .sx-snug > .sx-group-sec:first-child *:last-child { margin-bottom: 0; }
     \\  .sx-snug > .sx-group-sec:last-child *:first-child { margin-top: .15rem; }
     \\  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    \\  /* Spacer (021-spacer): fixed-height, no visible mark. */
+    \\  .sx-spacer { height: 3rem; }
     \\  .sidebar {
     \\    position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 100vh;
     \\    display: flex; flex-direction: column; gap: 1rem;
@@ -786,6 +788,14 @@ test "snug CSS: descendant combinator, not just direct child, reaches through a 
 
     try std.testing.expect(std.mem.indexOf(u8, page, "> .sx-group-sec:first-child > :last-child") == null);
     try std.testing.expect(std.mem.indexOf(u8, page, "> .sx-group-sec:last-child > :first-child") == null);
+}
+
+test "spacer CSS: fixed height" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page, ".sx-spacer { height: 3rem; }") != null);
 }
 
 test "standalone shell has no nav and no project root to link to" {

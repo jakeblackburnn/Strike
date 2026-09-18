@@ -71,6 +71,14 @@ Image: ![the strike logo](logo.svg)
 
 ___
 
+## Spacers
+
+Some text before a spacer.
+
+...
+
+Some text after it — no visible mark, just the extra vertical gap.
+
 ## Alerts
 
 > [!NOTE]

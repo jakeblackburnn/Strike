@@ -27,8 +27,8 @@ Every block-position construct in a document is one of:
 
 - **Content element** — something the reader reads. Today that means the
   **text elements** (heading, paragraph, blockquote, list, code block,
-  table, display math, horizontal rule); other content elements (images as
-  blocks, figures, …) are TBD. A *text element* is a piece of text on a
+  table, display math, horizontal rule, spacer); other content elements
+  (images as blocks, figures, …) are TBD. A *text element* is a piece of text on a
   line — a heading, or a normal line of prose. Consecutive normal text
   lines merge into **one** text element (this includes `>` blockquote
   lines — see "Blockquotes"); a blank line separates them.
@@ -496,6 +496,8 @@ recording the result here.
   while `$x^2$` is math.
 - **Horizontal rules** `---` / `***` / `___` — three or more of one character,
   unbroken. GFM's space-separated `- - -` is not a rule here.
+- **Spacers** `...` — three or more unbroken `.` characters, alone on a
+  line. No visible mark; adds a fixed amount of vertical space.
 - **Inlines**, in precedence order: backslash escape, `` `code` ``,
   `$math$`, `![image](src)`, `[link](url)`, `[text].color(role)` color
   spans (superset — see "Color roles"), `[text].cite(refs)` citation marks

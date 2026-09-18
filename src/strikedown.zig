@@ -309,6 +309,15 @@ const Parser = struct {
             return .{ .kind = .rule };
         }
 
+        // Spacer (021-spacer): checked before lists for the same reason as
+        // the rule above — dots are disjoint from `isPlainItem`'s `. `
+        // marker (that one requires a space right after the dot), but keep
+        // them adjacent for readability.
+        if (isSpacerLine(t)) {
+            p.idx += 1;
+            return .{ .kind = .spacer };
+        }
+
         if (std.mem.startsWith(u8, t, ">")) return p.parseQuote();
 
         // List (unordered or ordered, possibly nested by indentation).
@@ -929,6 +938,7 @@ fn isBlank(line: []const u8) bool {
 fn isBlockStart(t: []const u8) bool {
     return headingLevel(t) != null or
         isHorizontalRule(t) or
+        isSpacerLine(t) or
         std.mem.startsWith(u8, t, ">") or
         std.mem.startsWith(u8, t, "```") or
         std.mem.startsWith(u8, t, "$$") or
@@ -970,6 +980,17 @@ fn isHorizontalRule(t: []const u8) bool {
     const c = s[0];
     if (c != '-' and c != '*' and c != '_') return false;
     for (s) |ch| if (ch != c) return false;
+    return true;
+}
+
+/// Three or more of the same '.' repeated, unbroken — a spacer
+/// (`docs/reference/design/021-spacer.md`). Same shape as `isHorizontalRule`,
+/// disjoint from `isPlainItem`'s `. ` raw-list marker (that one requires a
+/// space right after the dot; this one requires none at all).
+fn isSpacerLine(t: []const u8) bool {
+    const s = std.mem.trim(u8, t, " ");
+    if (s.len < 3) return false;
+    for (s) |ch| if (ch != '.') return false;
     return true;
 }
 
@@ -1229,6 +1250,30 @@ test "parse classifies blocks" {
     try testing.expect(doc.blocks[4].kind == .rule);
 }
 
+test "spacer: three or more dots, disjoint from raw list item" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const doc = try parse(arena_state.allocator(),
+        \\a paragraph
+        \\
+        \\...
+        \\
+        \\....
+        \\
+        \\..
+        \\
+        \\. text
+    , .empty);
+    try testing.expectEqual(@as(usize, 5), doc.blocks.len);
+    try testing.expect(doc.blocks[0].kind == .paragraph);
+    try testing.expect(doc.blocks[1].kind == .spacer);
+    try testing.expect(doc.blocks[2].kind == .spacer);
+    // Too short: stays an ordinary paragraph.
+    try testing.expect(doc.blocks[3].kind == .paragraph);
+    // `. ` is the raw-list-item marker (008-raw-lists), not a spacer.
+    try testing.expect(doc.blocks[4].kind == .list);
+}
+
 test "heading slugs dedupe per document" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -1356,11 +1401,12 @@ test "raw list: interrupts an open paragraph; near-misses stay prose" {
     const d1 = try parse(arena_state.allocator(), "text\n. item", .empty);
     try testing.expectEqual(@as(usize, 2), d1.blocks.len);
     try testing.expect(d1.blocks[1].kind == .list);
-    // `.item` (no space) and `...` are ordinary prose.
+    // `.item` (no space) is ordinary prose; `...` is a spacer
+    // (021-spacer), not a near-miss of the raw-list marker.
     const d2 = try parse(arena_state.allocator(), ".item\n\n...", .empty);
     try testing.expectEqual(@as(usize, 2), d2.blocks.len);
     try testing.expect(d2.blocks[0].kind == .paragraph);
-    try testing.expect(d2.blocks[1].kind == .paragraph);
+    try testing.expect(d2.blocks[1].kind == .spacer);
 }
 
 test "flow runs: slicing inlines survive the buffer being reused" {

@@ -279,6 +279,11 @@ fn emitBlock(w: *Writer, block: strikedown.Block, link_base: ?LinkCtx, inherited
             try writeStyleAttr(w, block.attrs, .first_line);
             try w.writeAll("/>\n");
         },
+        .spacer => {
+            try w.writeAll("<div class=\"sx-spacer\" aria-hidden=\"true\"");
+            try writeStyleAttr(w, block.attrs, .first_line);
+            try w.writeAll("></div>\n");
+        },
         .group => |g| {
             if (block.attrs.citations) return emitCitations(w, g, block.attrs, link_base, indent);
             if (block.attrs.collapse) |c| return emitCollapse(w, g, c, block.attrs, link_base, indent);
@@ -1023,6 +1028,17 @@ test "blockquote" {
 test "horizontal rule vs list item" {
     try expectRender("<hr/>\n", "---");
     try expectRender("<ul>\n<li>x</li>\n</ul>\n", "- x");
+}
+
+test "spacer: three dots" {
+    try expectRender(
+        "<p>Paragraph one.</p>\n<div class=\"sx-spacer\" aria-hidden=\"true\"></div>\n<p>Paragraph two.</p>\n",
+        "Paragraph one.\n\n...\n\nParagraph two.",
+    );
+}
+
+test "spacer degradation: two dots stays a paragraph" {
+    try expectRender("<p>..</p>\n", "..");
 }
 
 test "html is escaped in paragraphs" {

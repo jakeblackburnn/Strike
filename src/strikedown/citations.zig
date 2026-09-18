@@ -159,7 +159,7 @@ const CiteResolver = struct {
                 for (t.rows) |row| for (row) |cell| try r.scanInlines(cell);
             },
             .group => |g| for (g.sections) |section| try r.scanBlocks(section),
-            .code, .math, .rule => {},
+            .code, .math, .rule, .spacer => {},
         };
     }
 

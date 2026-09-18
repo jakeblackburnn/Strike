@@ -104,7 +104,8 @@ Block
     ├── code       (lang, text)               │  ("text elements" in the spec)
     ├── table      (aligns, header, rows)     │
     ├── math       (raw TeX)                  │
-    ├── rule                                 ─┘
+    ├── rule                                  │
+    ├── spacer                               ─┘
     └── group      (Group: name, sections: [][]Block)   ← the container node
 
 Attrs                            ← every command writes exactly one field

@@ -36,6 +36,7 @@ pub const Block = struct {
         /// Raw display-math TeX (multi-line joined with '\n'), not escaped.
         math: []const u8,
         rule,
+        spacer,
         group: Group,
     };
 };
