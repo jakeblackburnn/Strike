@@ -150,6 +150,10 @@ fn writeStyleDecls(w: *Writer, attrs: strikedown.Attrs, mode: IndentMode, sep: *
         try styleSep(w, sep);
         try w.print("display:grid;grid-template-columns:repeat({d},minmax(0,1fr));gap:" ++ grid_gap, .{n});
     }
+    if (attrs.flow_columns) |n| {
+        try styleSep(w, sep);
+        try w.print("column-count:{d};column-gap:" ++ grid_gap, .{n});
+    }
     if (attrs.width_pct) |pct| {
         try styleSep(w, sep);
         // skinny (≤ 100%) centers with auto margins; wide (> 100%) overflows
@@ -1973,10 +1977,18 @@ test "citations() composes with a styling command on the same opener" {
 test "render survives allocation failure at every point" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
         fn f(alloc: Allocator) !void {
-            const r = try render(alloc,
-                "# T\n\n- a\n  - b\n\n| h |\n|---|\n| \\| |\n\n[x].cite(1) *em* `c`\n\n// refs citations()\n\n1. [k] E.\n\n//", .{});
+            const r = try render(alloc, "# T\n\n- a\n  - b\n\n| h |\n|---|\n| \\| |\n\n[x].cite(1) *em* `c`\n\n// refs citations()\n\n1. [k] E.\n\n//", .{});
             r.freeWarnings(alloc);
             alloc.free(r.html);
         }
     }.f, .{});
+}
+
+test "flow group emits sequential CSS columns" {
+    try expectRender(
+        "<h1 id=\"report\">Report</h1>\n" ++
+            "<div class=\"sx-group\" style=\"column-count:2;column-gap:1.5rem\">\n" ++
+            "<div class=\"sx-group-sec\">\n<p>First.</p>\n<p>Second.</p>\n</div>\n</div>\n",
+        "# Report\n\n// body flow(2)\n\nFirst.\n\nSecond.\n\n// end body",
+    );
 }

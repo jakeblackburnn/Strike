@@ -1,0 +1,7 @@
+title: A reusable technical report
+description: A two-column paper template with its own typography and theme.
+theme: custom
+theme_file: paper.theme
+width: 46
+header: paper.sxh
+home: paper.sx

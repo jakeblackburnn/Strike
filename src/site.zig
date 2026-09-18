@@ -166,6 +166,8 @@ pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
         .season = site.season,
         .time = site.time,
         .width = site.width,
+        .typography = site.sheet.typography,
+        .custom_theme = site.custom_theme,
     };
     return shell.wrapPage(gpa, picker_shell, body);
 }
@@ -205,6 +207,8 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
         .season = p.season,
         .time = p.time,
         .width = p.width,
+        .typography = p.sheet.typography,
+        .custom_theme = p.custom_theme,
     };
     return shell.wrapPage(gpa, home_shell, body.written());
 }
@@ -232,6 +236,8 @@ pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 
         .season = p.season,
         .time = p.time,
         .width = p.width,
+        .typography = p.sheet.typography,
+        .custom_theme = p.custom_theme,
     };
     return shell.wrapPage(gpa, doc_shell, body);
 }

@@ -3,6 +3,7 @@
 //! Subcommands (`usage()` below is the authoritative flag list):
 //!   strike serve  [dir|file]   Serve a content dir (or one .md/.sx file) over HTTP.
 //!   strike render <file>       Render a single .md/.sx file to HTML.
+//!   strike pdf    <file>       Render a single .md/.sx file to PDF.
 //!   strike build  [dir]        Export a content directory to static HTML.
 //!   strike init   [dir]        Scaffold a starter strike.yaml.
 //!
@@ -15,6 +16,7 @@ const project = @import("project.zig");
 const site = @import("site.zig");
 const shell = @import("shell.zig");
 const render_html = @import("render_html.zig");
+const render_pdf = @import("render_pdf.zig");
 const sheet = @import("sheet.zig");
 const server = @import("server.zig");
 const yaml = @import("yaml.zig");
@@ -37,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
     const cmd = args.next() orelse return usage();
     if (std.mem.eql(u8, cmd, "serve")) return cmdServe(arena, init.gpa, io, &args) catch |err| fail(cmd, err);
     if (std.mem.eql(u8, cmd, "render")) return cmdRender(arena, io, &args) catch |err| fail(cmd, err);
+    if (std.mem.eql(u8, cmd, "pdf")) return cmdPdf(arena, io, &args) catch |err| fail(cmd, err);
     if (std.mem.eql(u8, cmd, "build")) return cmdBuild(arena, io, &args) catch |err| fail(cmd, err);
     if (std.mem.eql(u8, cmd, "init")) return cmdInit(io, &args) catch |err| fail(cmd, err);
     if (std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "--help")) return usage();
@@ -76,6 +79,8 @@ fn usage() void {
         \\                                                    --open opens the front page in the default browser.
         \\  strike render <file> [-o out.html] [--fragment] [--header f.sxh]
         \\                                                    Render a single .md/.sx file to HTML.
+        \\  strike pdf    <file> [-o out.pdf] [--header f.sxh] [--page-size letter|a4] [--margin PT]
+        \\                                                    Render a single .md/.sx file to PDF.
         \\  strike build  [dir] [-o outdir]                   Export a content directory to static HTML.
         \\  strike init   [dir] [--site]                      Scaffold a starter strike.yaml.
         \\
@@ -250,7 +255,102 @@ fn renderStandalone(arena: std.mem.Allocator, md: []const u8, path: []const u8, 
     if (fragment) return body;
     const title = project.firstHeading(md) orelse
         try project.prettify(arena, project.stripExtension(std.fs.path.basename(path)));
-    return shell.wrapPage(arena, shell.standalone(title), body);
+    var page_shell = shell.standalone(title);
+    page_shell.typography = base.typography;
+    return shell.wrapPage(arena, page_shell, body);
+}
+
+const PdfArgs = struct {
+    path: ?[]const u8 = null,
+    out: ?[]const u8 = null,
+    header: ?[]const u8 = null,
+    page_size: ?render_pdf.PageSize = null,
+    margin_pt: ?f64 = null,
+};
+
+fn parsePdfArgs(args: anytype) !PdfArgs {
+    var parsed: PdfArgs = .{};
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-o")) {
+            parsed.out = try flagValue(args);
+        } else if (std.mem.eql(u8, arg, "--header")) {
+            parsed.header = try flagValue(args);
+        } else if (std.mem.eql(u8, arg, "--page-size")) {
+            parsed.page_size = std.meta.stringToEnum(render_pdf.PageSize, try flagValue(args)) orelse return error.InvalidPageSize;
+        } else if (std.mem.eql(u8, arg, "--margin")) {
+            parsed.margin_pt = parseMargin(try flagValue(args)) orelse return error.InvalidMargin;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            return error.UnknownFlag;
+        } else if (parsed.path == null) {
+            parsed.path = arg;
+        } else return error.UnexpectedArgument;
+    }
+    return parsed;
+}
+
+fn cmdPdf(arena: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
+    const parsed = try parsePdfArgs(args);
+    const path = parsed.path orelse return error.MissingFile;
+    const defaults = try pdfDefaults(arena, io, path);
+    const base: sheet.Sheet = if (parsed.header) |hp|
+        try sheet.concat(arena, defaults.header, try sheet.load(io, arena, std.Io.Dir.cwd(), hp))
+    else
+        defaults.header;
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(project.max_doc_bytes));
+    const pdf = try render_pdf.render(arena, source, .{
+        .sheet = base,
+        .page_size = parsed.page_size orelse defaults.page_size,
+        .margin_pt = parsed.margin_pt orelse defaults.margin_pt,
+    });
+    const output = parsed.out orelse try std.fmt.allocPrint(arena, "{s}.pdf", .{project.stripExtension(std.fs.path.basename(path))});
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = output, .data = pdf });
+}
+
+const PdfDefaults = struct {
+    header: sheet.Sheet = .empty,
+    page_size: render_pdf.PageSize = .letter,
+    margin_pt: f64 = 54,
+};
+
+/// Layer strike.yaml files from the content root down to the document's
+/// folder. Project values win by field; an explicit PDF flag wins last.
+fn pdfDefaults(arena: std.mem.Allocator, io: std.Io, path: []const u8) !PdfDefaults {
+    var dirs: std.ArrayList([]const u8) = .empty;
+    var dirpath = std.fs.path.dirname(path) orelse ".";
+    while (true) {
+        try dirs.append(arena, dirpath);
+        if (std.mem.eql(u8, dirpath, ".") or std.mem.eql(u8, dirpath, "/")) break;
+        dirpath = std.fs.path.dirname(dirpath) orelse ".";
+    }
+    var result: PdfDefaults = .{};
+    var i = dirs.items.len;
+    while (i > 0) {
+        i -= 1;
+        const dir = std.Io.Dir.cwd().openDir(io, dirs.items[i], .{}) catch continue;
+        defer dir.close(io);
+        const cfg = project.readConfig(io, arena, dir, "strike.yaml");
+        if (cfg.getScalar("header")) |hp| {
+            const next = sheet.load(io, arena, dir, hp) catch sheet.Sheet.empty;
+            result.header = try sheet.concat(arena, result.header, next);
+        }
+        if (cfg.get("pdf")) |pdf_cfg| {
+            if (pdf_cfg.getScalar("page_size")) |raw| {
+                result.page_size = std.meta.stringToEnum(render_pdf.PageSize, raw) orelse result.page_size;
+            }
+            if (pdf_cfg.getScalar("margin")) |raw| result.margin_pt = parseMargin(raw) orelse result.margin_pt;
+        }
+    }
+    return result;
+}
+
+/// CSS-like inches or points in yaml; bare CLI numbers are points.
+fn parseMargin(raw: []const u8) ?f64 {
+    const multiplier: f64 = if (std.mem.endsWith(u8, raw, "in")) 72 else 1;
+    const number = if (multiplier == 72) raw[0 .. raw.len - 2] else if (std.mem.endsWith(u8, raw, "pt")) raw[0 .. raw.len - 2] else raw;
+    const value = std.fmt.parseFloat(f64, number) catch return null;
+    const points = value * multiplier;
+    if (!std.math.isFinite(points) or points < 18 or points > 200) return null;
+    return points;
 }
 
 fn writeStdout(io: std.Io, bytes: []const u8) !void {
@@ -550,6 +650,18 @@ test "parseRenderArgs parses the file, -o, --fragment, and --header" {
     try testing.expect((try parseRenderArgs(&no_header)).header == null);
 }
 
+test "PDF flags and margin units resolve to points" {
+    var args: SliceArgs = .{ .items = &.{ "report.sx", "-o", "report.pdf", "--header", "paper.sxh", "--page-size", "a4", "--margin", "0.75in" } };
+    const parsed = try parsePdfArgs(&args);
+    try testing.expectEqualStrings("report.sx", parsed.path.?);
+    try testing.expectEqualStrings("report.pdf", parsed.out.?);
+    try testing.expectEqualStrings("paper.sxh", parsed.header.?);
+    try testing.expectEqual(render_pdf.PageSize.a4, parsed.page_size.?);
+    try testing.expectEqual(@as(f64, 54), parsed.margin_pt.?);
+    try testing.expectEqual(@as(?f64, 54), parseMargin("54pt"));
+    try testing.expect(parseMargin("0in") == null);
+}
+
 test "parseBuildArgs and parseInitArgs apply defaults" {
     var build_none: SliceArgs = .{ .items = &.{} };
     const b = try parseBuildArgs(&build_none);
@@ -561,9 +673,6 @@ test "parseBuildArgs and parseInitArgs apply defaults" {
     try testing.expectEqualStrings(".", i.dir);
     try testing.expect(i.site_level);
 }
-
-
-// ---- v0.1.0 fixes ------------------------------------------------------------
 
 test "yamlBool accepts the usual spellings of yes" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

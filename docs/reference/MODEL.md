@@ -27,8 +27,8 @@ Two stages, always:
 ```
 source text ──parse──▶ Doc (tree + warnings) ──emit──▶ output
                         │
-                        ├─ render_html.emit   (HTML fragment, today)
-                        └─ render_pdf         (planned)
+                        ├─ render_html.emit   (HTML fragment)
+                        └─ render_pdf.emit    (native paged PDF)
 ```
 
 `parse` runs line-based: the source splits into lines (a trailing `\r` per
@@ -161,9 +161,9 @@ backend emits as bare delimiters with no element to hang a style on, silently
 dropping any attrs it carries. That is the `*open, blocked*` column in note
 013's matrix, and it is a gap to close, not a rule.
 
-Invariant: `attrs.columns` only ever appears on a group block, because `grid`
-arranges *sections* and only groups have them. Backends may rely on this
-without a guard.
+Invariant: `attrs.columns` and `attrs.flow_columns` only ever appear on group
+blocks. `grid` arranges sections; `flow` runs one ordered stream through
+columns. Backends may rely on this without a guard.
 
 Two content-element payloads carry a *variant* of their form rather than a
 separate kind: `Quote.alert` (an `Alert` tag when the quote's first content
@@ -185,7 +185,7 @@ are *types* and which are *roles* — the distinction resolves every fuzzy edge.
 | styled container             | *a role*: a group whose attrs carry only non-layout commands (e.g. `color`) |
 | plain container              | *a role*: a group with empty attrs                |
 | section                      | one `[]Block` in `Group.sections`                 |
-| command                      | `Command` (union: grid, skinny, wide, center, color, collapse, citations, indent, caption, snug) |
+| command                      | `Command` (union: grid, flow, skinny, wide, center, color, collapse, citations, indent, caption, snug) |
 | directive (group / single-command / alias) | `GroupLine` / `parseSingleCommandLine` / `sheet` namespace — transient parse classifications; directives never appear in the tree |
 | color role                   | `TextColor` (accent, muted, fg)                   |
 | caption position             | `CaptionPos` (top, bottom, left, right)           |

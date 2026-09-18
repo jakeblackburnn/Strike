@@ -16,6 +16,7 @@ lines are written in; this page is what you can put in them.
 | Command | Argument | Bare form |
 | --- | --- | --- |
 | `grid(n)` | column count, n ≥ 1 | — |
+| `flow(n)` | 2–4 sequential columns, group only | — |
 | `skinny(N%)` | 1–100 | 75% |
 | `wide(N%)` | 101–200 | 125% |
 | `center()` | none | — |

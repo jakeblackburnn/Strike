@@ -29,6 +29,9 @@ const CaptionPos = model.CaptionPos;
 /// simply never touches a counter, so it nests freely.
 pub const Command = union(enum) {
     grid: usize,
+    /// flow(n): one source-ordered stream through n columns, then pages.
+    /// Group-only; unlike grid(n), sections do not name individual columns.
+    flow: usize,
     /// skinny(N%): render at N% of the body column width, centered.
     /// Writes `width_pct` — see `wide` for the shared-field invariant.
     skinny: usize,
@@ -106,6 +109,7 @@ const wide_max_pct = 200;
 /// like skinny's 75). Anything past them is no real layout, and the caps keep
 /// emitter arithmetic (`indent * 2`) far from overflow.
 const max_grid_cols = 12;
+const max_flow_cols = 4;
 const max_indent_steps = 8;
 
 /// caption(left|right)'s implicit split when no percent is given.
@@ -122,6 +126,11 @@ pub fn parseCommand(tok: []const u8) ?Command {
         const n = std.fmt.parseInt(usize, args, 10) catch return null;
         if (n == 0 or n > max_grid_cols) return null;
         return .{ .grid = n };
+    }
+    if (std.mem.eql(u8, word, "flow")) {
+        const n = std.fmt.parseInt(usize, args, 10) catch return null;
+        if (n < 2 or n > max_flow_cols) return null;
+        return .{ .flow = n };
     }
     if (std.mem.eql(u8, word, "skinny")) {
         if (args.len == 0) return .{ .skinny = skinny_default_pct }; // bare skinny(): the default width
@@ -186,6 +195,7 @@ pub fn parseCommand(tok: []const u8) ?Command {
 pub fn applyCommand(attrs: *Attrs, cmd: Command) void {
     switch (cmd) {
         .grid => |n| attrs.columns = n,
+        .flow => |n| attrs.flow_columns = n,
         .skinny, .wide => |n| attrs.width_pct = n,
         .center => attrs.centered = true,
         .color => |role| attrs.text_color = role,
@@ -208,7 +218,7 @@ pub const CommandTag = std.meta.Tag(Command);
 /// error here until classified.
 pub fn isLayout(tag: CommandTag) bool {
     return switch (tag) {
-        .grid, .skinny, .wide, .center, .collapse, .citations => true,
+        .grid, .flow, .skinny, .wide, .center, .collapse, .citations => true,
         .color, .indent, .caption, .snug => false,
     };
 }
@@ -220,7 +230,7 @@ pub fn isLayout(tag: CommandTag) bool {
 pub fn isStructural(tag: CommandTag) bool {
     return switch (tag) {
         .collapse, .citations, .caption, .snug => true,
-        .grid, .skinny, .wide, .center, .color, .indent => false,
+        .grid, .flow, .skinny, .wide, .center, .color, .indent => false,
     };
 }
 
@@ -237,7 +247,7 @@ pub fn isStructural(tag: CommandTag) bool {
 pub fn isBackwardAttach(tag: CommandTag) bool {
     return switch (tag) {
         .caption, .snug => true,
-        .grid, .skinny, .wide, .center, .color, .collapse, .citations, .indent => false,
+        .grid, .flow, .skinny, .wide, .center, .color, .collapse, .citations, .indent => false,
     };
 }
 
@@ -245,6 +255,7 @@ pub fn isBackwardAttach(tag: CommandTag) bool {
 pub fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
     return switch (tag) {
         .grid => attrs.columns != null,
+        .flow => attrs.flow_columns != null,
         // The disjoint-range invariant (see `Command.wide`): one field, and
         // which side of 100 the value sits on names the command that wrote it.
         .skinny => attrs.width_pct != null and attrs.width_pct.? <= skinny_max_pct,
@@ -264,6 +275,7 @@ pub fn hasCommand(attrs: Attrs, tag: CommandTag) bool {
 pub fn clearCommand(attrs: *Attrs, tag: CommandTag) void {
     switch (tag) {
         .grid => attrs.columns = null,
+        .flow => attrs.flow_columns = null,
         // Each clears the shared width field only when the value is on its
         // own side of 100 (the disjoint-range invariant).
         .skinny, .wide => if (hasCommand(attrs.*, tag)) {
@@ -300,6 +312,7 @@ pub fn isCommandWord(name: []const u8) bool {
 /// definition time, so a *use* just merges that snapshot).
 pub fn mergeAttrs(dst: *Attrs, src: Attrs) void {
     if (src.columns) |v| dst.columns = v;
+    if (src.flow_columns) |v| dst.flow_columns = v;
     if (src.width_pct) |v| dst.width_pct = v;
     if (src.centered) dst.centered = true;
     if (src.text_color) |v| dst.text_color = v;

@@ -57,7 +57,6 @@ const std = @import("std");
 const sheet = @import("sheet.zig");
 const Allocator = std.mem.Allocator;
 
-
 const model = @import("strikedown/model.zig");
 const command = @import("strikedown/command.zig");
 const citations = @import("strikedown/citations.zig");
@@ -674,6 +673,7 @@ const Parser = struct {
     fn parseSingleCommand(p: *Parser, attrs_in: Attrs, is_root: bool) Allocator.Error!?Block {
         const arena = p.arena;
         if (attrs_in.caption_pos != null) return null;
+        if (attrs_in.flow_columns != null) return null;
         if (attrs_in.snug and !is_root) return null;
         if (p.depth >= max_nest_depth) {
             p.warnDepth();
@@ -1151,6 +1151,7 @@ fn parseGroupLine(p: *Parser, t: []const u8) ?GroupLine {
     // split-percent-without-left/right rejection: degrade the whole line to
     // prose, silently (no warning — this is syntax-level, not runtime).
     if (open.attrs.caption_pos != null and open.attrs.snug) return null;
+    if (open.attrs.columns != null and open.attrs.flow_columns != null) return null;
     return .{ .open = open };
 }
 
@@ -2679,8 +2680,7 @@ test "indent command: bare indent() is one step, indent(0) deactivates" {
 test "indent is non-layout: indent-in-indent nests without stripping" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// outer indent()\n\n// inner indent(2)\n\npara\n\n// end inner\n\n// end outer", .empty);
+    const d = try parse(arena_state.allocator(), "// outer indent()\n\n// inner indent(2)\n\npara\n\n// end inner\n\n// end outer", .empty);
     try testing.expectEqual(@as(usize, 1), d.blocks[0].attrs.indent);
     const inner = d.blocks[0].kind.group.sections[0][0];
     try testing.expectEqual(@as(usize, 2), inner.attrs.indent);
@@ -2756,8 +2756,7 @@ test "nesting cap: an over-deep /cmd() chain reverts to prose with the warning i
 test "citations: entry numbering follows the list's start" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// refs citations()\n\n3. [a] First.\n4. Second.\n\n//\n\nClaim [x].cite(3) and [y].cite(a).", .empty);
+    const d = try parse(arena_state.allocator(), "// refs citations()\n\n3. [a] First.\n4. Second.\n\n//\n\nClaim [x].cite(3) and [y].cite(a).", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     const list = d.blocks[0].kind.group.sections[0][0].kind.list;
     try testing.expectEqual(@as(u32, 3), list.items[0].cite_entry);
@@ -2772,8 +2771,7 @@ test "citations: entry numbering follows the list's start" {
 test "citations: out-of-range, overflowing, and unknown refs all degrade per-ref" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// refs citations()\n\n1. Only.\n\n//\n\n[a].cite(9) [b].cite(99999999999) [c].cite(nope, 1)", .empty);
+    const d = try parse(arena_state.allocator(), "// refs citations()\n\n1. Only.\n\n//\n\n[a].cite(9) [b].cite(99999999999) [c].cite(nope, 1)", .empty);
     try testing.expectEqual(@as(usize, 3), d.warnings.len);
     for (d.warnings) |w| try testing.expect(std.mem.indexOf(u8, w, "no matching entry") != null);
     const para = d.blocks[1].kind.paragraph;
@@ -2787,8 +2785,7 @@ test "citations: out-of-range, overflowing, and unknown refs all degrade per-ref
 test "citations: duplicate refs in one mark register one backlink" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// refs citations()\n\n1. Only.\n\n//\n\n[x].cite(1,1)", .empty);
+    const d = try parse(arena_state.allocator(), "// refs citations()\n\n1. Only.\n\n//\n\n[x].cite(1,1)", .empty);
     const list = d.blocks[0].kind.group.sections[0][0].kind.list;
     try testing.expectEqual(@as(usize, 1), list.items[0].cite_sites.len);
 }
@@ -2796,8 +2793,7 @@ test "citations: duplicate refs in one mark register one backlink" {
 test "citations: a key-only entry drops its emptied text node" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// refs citations()\n\n1. [k] *Styled.*\n\n//\n\n[x].cite(k)", .empty);
+    const d = try parse(arena_state.allocator(), "// refs citations()\n\n1. [k] *Styled.*\n\n//\n\n[x].cite(k)", .empty);
     const item = d.blocks[0].kind.group.sections[0][0].kind.list.items[0];
     // The `[k] ` prefix lifted; what remains starts with the emphasis, not
     // an empty text node.
@@ -2807,8 +2803,7 @@ test "citations: a key-only entry drops its emptied text node" {
 test "citations() absorbs a collapse() on the same opener with a warning" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// refs citations() collapse()\n\n1. Only.\n\n//\n\n[x].cite(1)", .empty);
+    const d = try parse(arena_state.allocator(), "// refs citations() collapse()\n\n1. Only.\n\n//\n\n[x].cite(1)", .empty);
     try testing.expectEqual(@as(usize, 1), d.warnings.len);
     try testing.expect(std.mem.indexOf(u8, d.warnings[0], "collapse ignored") != null);
     try testing.expect(d.blocks[0].attrs.citations);
@@ -2861,8 +2856,7 @@ test "backtick runs match GFM: double backticks embed, unmatched stay literal" {
 test "mismatched group closer warns and stays prose" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// outer\n\nx\n\n// end other\n\n// end outer", .empty);
+    const d = try parse(arena_state.allocator(), "// outer\n\nx\n\n// end other\n\n// end outer", .empty);
     try testing.expectEqual(@as(usize, 1), d.warnings.len);
     try testing.expect(std.mem.indexOf(u8, d.warnings[0], "mismatched closer") != null);
     const sections = d.blocks[0].kind.group.sections;
@@ -2929,8 +2923,7 @@ test "caption: /caption(...) single-command form degrades to prose" {
 test "caption: backward-attaches to its preceding sibling as section 0" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "![a panda](p.jpg)\n\n// caption()\nA panda, **2024**.\n// end", .empty);
+    const d = try parse(arena_state.allocator(), "![a panda](p.jpg)\n\n// caption()\nA panda, **2024**.\n// end", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     try testing.expectEqual(@as(usize, 1), d.blocks.len);
     const g = d.blocks[0].kind.group;
@@ -2953,8 +2946,7 @@ test "caption: no preceding sibling warns and degrades to a plain group" {
 test "caption: attaches within an enclosing group, not the top level" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// outer\n![a](a.jpg)\n\n// caption()\ncap\n// end\n// end outer", .empty);
+    const d = try parse(arena_state.allocator(), "// outer\n![a](a.jpg)\n\n// caption()\ncap\n// end\n// end outer", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     const outer_sections = d.blocks[0].kind.group.sections;
     try testing.expectEqual(@as(usize, 1), outer_sections[0].len); // just the caption group
@@ -2965,8 +2957,7 @@ test "caption: attaches within an enclosing group, not the top level" {
 test "caption: rich multi-block caption body" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "![a](a.jpg)\n\n// caption()\nfirst **bold**\n\nsecond\n// end", .empty);
+    const d = try parse(arena_state.allocator(), "![a](a.jpg)\n\n// caption()\nfirst **bold**\n\nsecond\n// end", .empty);
     const body = d.blocks[0].kind.group.sections[1];
     try testing.expectEqual(@as(usize, 2), body.len);
 }
@@ -2974,8 +2965,7 @@ test "caption: rich multi-block caption body" {
 test "caption: chains with a sibling styling directive on the same opener" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "![a](a.jpg)\n\n// skinny(50%) caption(left, 40%)\ncap\n// end", .empty);
+    const d = try parse(arena_state.allocator(), "![a](a.jpg)\n\n// skinny(50%) caption(left, 40%)\ncap\n// end", .empty);
     const attrs = d.blocks[0].attrs;
     try testing.expectEqual(@as(?usize, 50), attrs.width_pct);
     try testing.expect(attrs.caption_pos == .left);
@@ -3039,8 +3029,7 @@ test "snug: /cmd() single-command form rejects arguments" {
 test "snug: backward-attaches to its preceding sibling as section 0" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "# Title\n\n// snug()\nA subtitle.\n// end", .empty);
+    const d = try parse(arena_state.allocator(), "# Title\n\n// snug()\nA subtitle.\n// end", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     try testing.expectEqual(@as(usize, 1), d.blocks.len);
     const g = d.blocks[0].kind.group;
@@ -3063,8 +3052,7 @@ test "snug: no preceding sibling warns and degrades to a plain group" {
 test "snug: attaches within an enclosing group, not the top level" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// outer\n# Title\n\n// snug()\nsub\n// end\n// end outer", .empty);
+    const d = try parse(arena_state.allocator(), "// outer\n# Title\n\n// snug()\nsub\n// end\n// end outer", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     const outer_sections = d.blocks[0].kind.group.sections;
     try testing.expectEqual(@as(usize, 1), outer_sections[0].len); // just the snug group
@@ -3075,8 +3063,7 @@ test "snug: attaches within an enclosing group, not the top level" {
 test "snug: chains with a sibling styling directive on the same opener" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "# Title\n\n// skinny(50%) snug()\nsub\n// end", .empty);
+    const d = try parse(arena_state.allocator(), "# Title\n\n// skinny(50%) snug()\nsub\n// end", .empty);
     const attrs = d.blocks[0].attrs;
     try testing.expectEqual(@as(?usize, 50), attrs.width_pct);
     try testing.expect(attrs.snug);
@@ -3085,15 +3072,13 @@ test "snug: chains with a sibling styling directive on the same opener" {
 test "snug and caption together: whole opener degrades to prose" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d1 = try parse(arena_state.allocator(),
-        "![a](a.jpg)\n\n// snug() caption()\n\ntext\n\n// end", .empty);
+    const d1 = try parse(arena_state.allocator(), "![a](a.jpg)\n\n// snug() caption()\n\ntext\n\n// end", .empty);
     try testing.expectEqual(@as(usize, 4), d1.blocks.len);
     try testing.expect(d1.blocks[1].kind == .paragraph); // opener line stayed literal
     try testing.expect(!d1.blocks[1].attrs.snug);
     try testing.expect(d1.blocks[1].attrs.caption_pos == null);
 
-    const d2 = try parse(arena_state.allocator(),
-        "![a](a.jpg)\n\n// caption() snug()\n\ntext\n\n// end", .empty);
+    const d2 = try parse(arena_state.allocator(), "![a](a.jpg)\n\n// caption() snug()\n\ntext\n\n// end", .empty);
     try testing.expect(d2.blocks[1].kind == .paragraph); // order-independent
 }
 
@@ -3142,8 +3127,7 @@ test "an unterminated fence runs to end of document" {
 test "table rows pad and truncate to the header's column count" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |", .empty);
+    const d = try parse(arena_state.allocator(), "| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |", .empty);
     const t = d.blocks[0].kind.table;
     try testing.expectEqual(@as(usize, 2), t.header.len);
     try testing.expectEqual(@as(usize, 2), t.rows[0].len); // padded
@@ -3171,8 +3155,7 @@ test "a nested > inside a quote stays literal text" {
 test "three list levels nest and dedent" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "- a\n  - b\n    - c\n  - b2\n- a2", .empty);
+    const d = try parse(arena_state.allocator(), "- a\n  - b\n    - c\n  - b2\n- a2", .empty);
     const l = d.blocks[0].kind.list;
     try testing.expectEqual(@as(usize, 2), l.items.len);
     const l2 = l.items[0].tail[0].list;
@@ -3209,8 +3192,7 @@ test "text after a nested list lazily continues the deepest item" {
 test "citation marks resolve in every flowing context" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "# Head [h].cite(1)\n\n> Quote [q].cite(1)\n\n- Item [i].cite(1)\n\n| Cell [c].cite(1) |\n|---|\n\n// refs citations()\n\n1. Entry.\n\n//", .empty);
+    const d = try parse(arena_state.allocator(), "# Head [h].cite(1)\n\n> Quote [q].cite(1)\n\n- Item [i].cite(1)\n\n| Cell [c].cite(1) |\n|---|\n\n// refs citations()\n\n1. Entry.\n\n//", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     const entry = d.blocks[4].kind.group.sections[0][0].kind.list.items[0];
     // all four marks registered backlinks
@@ -3220,8 +3202,7 @@ test "citation marks resolve in every flowing context" {
 test "a citations() group nested inside a plain group still adopts" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        "// outer\n\n// refs citations()\n\n1. Entry.\n\n// end refs\n\n// end outer\n\n[x].cite(1)", .empty);
+    const d = try parse(arena_state.allocator(), "// outer\n\n// refs citations()\n\n1. Entry.\n\n// end refs\n\n// end outer\n\n[x].cite(1)", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     const para = d.blocks[1].kind.paragraph;
     try testing.expectEqual(@as(u32, 1), para[0].cite_span.refs[0].num);
@@ -3231,8 +3212,7 @@ test "key refs resolve regardless of document order" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     // the mark precedes the group; resolution runs at parse end
-    const d = try parse(arena_state.allocator(),
-        "Claim [x].cite(smith).\n\n// refs citations()\n\n1. [smith] Smith 2024.\n\n//", .empty);
+    const d = try parse(arena_state.allocator(), "Claim [x].cite(smith).\n\n// refs citations()\n\n1. [smith] Smith 2024.\n\n//", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     try testing.expectEqual(@as(u32, 1), d.blocks[0].kind.paragraph[1].cite_span.refs[0].num);
 }
@@ -3242,8 +3222,7 @@ test "key refs resolve regardless of document order" {
 test "alias: an in-document definition applies through a group opener" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        ":thin-grid grid(2) skinny(80%)\n\n// figs thin-grid()\n\na\n\n// --\n\nb\n\n// end figs", .empty);
+    const d = try parse(arena_state.allocator(), ":thin-grid grid(2) skinny(80%)\n\n// figs thin-grid()\n\na\n\n// --\n\nb\n\n// end figs", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     try testing.expectEqual(@as(usize, 1), d.blocks.len);
     const g = d.blocks[0].kind.group;
@@ -3256,8 +3235,7 @@ test "alias: an in-document definition applies through a group opener" {
 test "alias: bundles several commands and composes with the opener's own" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        ":muted-box color(muted) collapse()\n\n// muted-box() center()\n\na\n\n//", .empty);
+    const d = try parse(arena_state.allocator(), ":muted-box color(muted) collapse()\n\n// muted-box() center()\n\na\n\n//", .empty);
     try testing.expectEqual(@as(usize, 0), d.warnings.len);
     const attrs = d.blocks[0].attrs;
     try testing.expectEqual(TextColor.muted, attrs.text_color.?);
@@ -3289,8 +3267,7 @@ test "alias: a use before its definition sees a plain name, not the alias" {
     defer arena_state.deinit();
     // `thin-grid()` isn't defined yet at this point in the single-pass
     // parse — unrecognized, so the whole opener line degrades to prose.
-    const d = try parse(arena_state.allocator(),
-        "// figs thin-grid()\n\na\n\n// end figs\n\n:thin-grid grid(2)", .empty);
+    const d = try parse(arena_state.allocator(), "// figs thin-grid()\n\na\n\n// end figs\n\n:thin-grid grid(2)", .empty);
     try testing.expect(d.blocks[0].kind == .paragraph);
 }
 
@@ -3316,7 +3293,19 @@ test "alias: an in-document definition overrides the header sheet's same name" {
 test "alias: caption-bundling degrades a /alias() single-command use to prose" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const d = try parse(arena_state.allocator(),
-        ":cap caption(top)\n\n/cap()\n\n![c](cat.png)", .empty);
+    const d = try parse(arena_state.allocator(), ":cap caption(top)\n\n/cap()\n\n![c](cat.png)", .empty);
     try testing.expect(d.blocks[0].kind == .paragraph); // "/cap()" stayed literal text
+}
+
+test "flow group keeps one source-ordered stream and rejects grid combination" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const d = try parse(arena_state.allocator(), "# Report\n\n// body flow(2)\n\nFirst.\n\nSecond.\n\n// end body", .empty);
+    try testing.expectEqual(@as(usize, 2), d.blocks[1].attrs.flow_columns.?);
+    try testing.expectEqual(@as(usize, 1), d.blocks[1].kind.group.sections.len);
+    try testing.expectEqual(@as(usize, 2), d.blocks[1].kind.group.sections[0].len);
+    const bad = try parse(arena_state.allocator(), "// body flow(2) grid(2)\n\nx\n\n// end body", .empty);
+    try testing.expect(bad.blocks[0].kind == .paragraph);
+    const single = try parse(arena_state.allocator(), "/flow(2)\n\nx", .empty);
+    try testing.expect(single.blocks[0].kind == .paragraph);
 }

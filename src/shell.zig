@@ -10,6 +10,8 @@
 
 const std = @import("std");
 const html = @import("html.zig");
+const theme_file = @import("theme_file.zig");
+const sheet = @import("sheet.zig");
 const escapeInto = html.escapeInto;
 const escapeAttrInto = html.escapeAttrInto;
 const Allocator = std.mem.Allocator;
@@ -41,6 +43,10 @@ pub const Shell = struct {
     season: []const u8 = "",
     time: []const u8 = "",
     width: []const u8 = "",
+    /// Defaults from the project's `.sxh` header. Reader preferences still
+    /// win; the header's measure takes precedence over site/project width.
+    typography: sheet.TypeStyle = .{},
+    custom_theme: ?theme_file.ThemeFile = null,
 };
 
 /// A minimal shell for standalone rendering with no project/site context
@@ -78,14 +84,31 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     try w.writeAll(head_pre_b);
     try w.writeAll(safeToken(shell.time));
     try w.writeAll(head_pre_c);
-    try w.writeAll(safeToken(shell.width));
-    try w.writeAll(head_pre_d);
+    const width_default = if (shell.typography.measure) |m| safeDecimal(m[0 .. m.len - 3]) else safeToken(shell.width);
+    try w.writeAll(width_default);
+    try w.writeAll(head_pre_d_a);
+    try w.writeAll(font_guard);
+    try w.writeAll(head_pre_d_b);
+    if (shell.typography.font) |font| try w.writeAll(@tagName(font));
+    try w.writeAll(head_pre_d_c);
+    try writeTypographyDefaults(w, shell.typography);
+    if (shell.custom_theme) |theme| try writeCustomTheme(w, theme);
+    try w.writeAll("<title>");
     try escapeInto(w, shell.title);
     try w.writeAll(head_post_a);
     try writeBrand(w, shell);
     try w.writeAll(head_post_c);
     try w.writeAll(shell.nav_html);
-    try w.writeAll(head_post_d);
+    if (shell.custom_theme) |theme| {
+        try w.writeAll(head_post_d_a);
+        try w.writeAll(theme_buttons_html);
+        try w.writeAll("        <button class=\"opt\" type=\"button\" data-v=\"custom\">");
+        try escapeInto(w, theme.label);
+        try w.writeAll("</button>\n");
+        try w.writeAll(head_post_d_b);
+        try w.writeAll(font_buttons_html);
+        try w.writeAll(head_post_d_c);
+    } else try w.writeAll(head_post_d);
     try w.writeAll(body_html);
     try w.writeAll(page_tail);
     return out.toOwnedSlice();
@@ -100,6 +123,44 @@ fn safeToken(s: []const u8) []const u8 {
         if (!std.ascii.isAlphanumeric(c) and c != ' ' and c != '-' and c != '_') return "";
     }
     return s;
+}
+
+fn safeDecimal(s: []const u8) []const u8 {
+    if (s.len == 0 or s.len > 12) return "";
+    for (s) |c| if (!std.ascii.isDigit(c) and c != '.') return "";
+    return s;
+}
+
+fn writeTypographyDefaults(w: *Writer, style: sheet.TypeStyle) Writer.Error!void {
+    if (style.font == null and style.size == null and style.leading == null) return;
+    try w.writeAll("<style>:root{");
+    if (style.size) |v| {
+        if (std.mem.endsWith(u8, v, "rem") and safeDecimal(v[0 .. v.len - 3]).len > 0) {
+            try w.writeAll("--font-size:");
+            try w.writeAll(v);
+            try w.writeByte(';');
+        }
+    }
+    if (style.leading) |v| {
+        if (safeDecimal(v).len > 0) {
+            try w.writeAll("--line-height:");
+            try w.writeAll(v);
+            try w.writeByte(';');
+        }
+    }
+    try w.writeAll("}");
+    if (style.font) |font| switch (font) {
+        .serif => try w.writeAll(":root:not([data-font]) .content{font-family:Georgia,\"Iowan Old Style\",\"Times New Roman\",serif}"),
+        .mono => try w.writeAll(":root:not([data-font]) .content{font-family:\"IBM Plex Mono\",ui-monospace,Menlo,Consolas,monospace}"),
+        .sans => {},
+    };
+    try w.writeAll("</style>\n");
+}
+
+fn writeCustomTheme(w: *Writer, theme: theme_file.ThemeFile) Writer.Error!void {
+    try w.writeAll("<style>:root[data-season=\"custom\"]:not([data-time]),:root[data-season=\"custom\"][data-time]{");
+    try w.writeAll(theme.css);
+    try w.writeAll("}</style>\n");
 }
 
 /// The brand is a *path*, not a name. The sidebar nav below it shows one
@@ -136,117 +197,126 @@ const head_pre_a =
 const head_pre_b =
     \\";var t=localStorage.getItem("time")||"
 ;
-const head_pre_c =
+const head_pre_c_a =
     \\";if(!t){var l=localStorage.getItem("theme");if(l==="dark")t="evening";else if(l==="light")t="morning";}
-    \\if(s==="fall"||s==="winter"||s==="spring"||s==="summer")d.dataset.season=s;
+    \\if(
+;
+const head_pre_c_b =
+    \\)d.dataset.season=s;
     \\if(t==="morning"||t==="evening")d.dataset.time=t;var w=localStorage.getItem("width")||"
 ;
-const head_pre_d =
+const head_pre_c = head_pre_c_a ++ theme_season_guard ++ "||s===\"custom\"" ++ head_pre_c_b;
+const head_pre_d_a =
     \\";if(w)d.style.setProperty("--content-width",w+"rem");
     \\var fs=localStorage.getItem("fontsize");if(fs)d.style.setProperty("--font-size",fs+"px");
     \\var lh=localStorage.getItem("lineheight");if(lh)d.style.setProperty("--line-height",lh);
-    \\var f=localStorage.getItem("font");if(f==="serif")d.dataset.font=f;
+    \\var f=localStorage.getItem("font");if(
+;
+const head_pre_d_b =
+    \\)d.dataset.font=f;
+    \\else if(f==="")d.dataset.font="sans";
+    \\else if(f===null){var hf="
+;
+const head_pre_d_c =
+    \\";if(hf)d.dataset.font=hf;}
     \\var v=localStorage.getItem("sidebar");if(v==="collapsed")d.dataset.sidebar="collapsed";}catch(e){}})();</script>
-    \\<title>
 ;
 
-// The seasonal palettes: four themes, each a "morning" (light) and "evening"
-// (dark) token set. `seasonRules` splices each pair into three rules — the
-// season's base (morning), its system-dark fallback when no explicit time is
-// chosen, and its explicit-evening override. Winter is the default season, so
-// its tokens also fill the bare `:root` rules (pages with no attributes set —
-// JS disabled, static export before the bootstrap runs).
-const fall_morning =
-    \\    color-scheme: light;
-    \\    --bg: #faf6ef; --fg: #3d2f23; --muted: #8a7360; --accent: #d97a2b;
-    \\    --warn: #b0432f;
-    \\    --code-bg: rgba(120,90,60,.12); --border: rgba(120,90,60,.28);
-    \\    --collapse-closed-bg: rgba(120,90,60,.06); --collapse-open-bg: var(--bg);
-    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
-    \\    --collapse-closed-shadow: 0 1px 4px rgba(0,0,0,.07);
-    \\    --sidebar-bg: #f3ead9;
-;
-const fall_evening =
-    \\    color-scheme: dark;
-    \\    --bg: #16211a; --fg: #e6e4d6; --muted: #a3a888; --accent: #a8b968;
-    \\    --warn: #e0b568;
-    \\    --code-bg: rgba(255,255,255,.07); --border: rgba(168,185,104,.25);
-    \\    --collapse-closed-bg: rgba(0,0,0,.12); --collapse-open-bg: rgba(255,255,255,.05);
-    \\    --collapse-shadow: none; --collapse-closed-shadow: none;
-    \\    --sidebar-bg: #101a14;
-;
-const winter_morning =
-    \\    color-scheme: light;
-    \\    --bg: #ffffff; --fg: #1d2a3a; --muted: #5b6b7f; --accent: #4a9edb;
-    \\    --warn: #c07a1e;
-    \\    --code-bg: rgba(90,130,170,.12); --border: rgba(90,130,170,.30);
-    \\    --collapse-closed-bg: rgba(90,130,170,.06); --collapse-open-bg: var(--bg);
-    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
-    \\    --collapse-closed-shadow: 0 1px 4px rgba(0,0,0,.07);
-    \\    --sidebar-bg: #f2f7fc;
-;
-const winter_evening =
-    \\    color-scheme: dark;
-    \\    --bg: #0d1626; --fg: #dce7f5; --muted: #8fa3c0; --accent: #7fb2ff;
-    \\    --warn: #f0b45c;
-    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(220,231,245,.16);
-    \\    --collapse-closed-bg: rgba(0,0,0,.13); --collapse-open-bg: rgba(255,255,255,.06);
-    \\    --collapse-shadow: none; --collapse-closed-shadow: none;
-    \\    --sidebar-bg: #0a111e;
-;
-const spring_morning =
-    \\    color-scheme: light;
-    \\    --bg: #fdf3f6; --fg: #43324a; --muted: #8b7392; --accent: #8a6fd1;
-    \\    --warn: #bf5f2a;
-    \\    --code-bg: rgba(150,110,180,.12); --border: rgba(150,110,180,.26);
-    \\    --collapse-closed-bg: rgba(150,110,180,.06); --collapse-open-bg: var(--bg);
-    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
-    \\    --collapse-closed-shadow: 0 1px 4px rgba(0,0,0,.07);
-    \\    --sidebar-bg: #f6ecf9;
-;
-const spring_evening =
-    \\    color-scheme: dark;
-    \\    --bg: #23262a; --fg: #e2e6e0; --muted: #9aa79b; --accent: #cf6fa3;
-    \\    --warn: #e0a35c;
-    \\    --code-bg: rgba(255,255,255,.08); --border: rgba(207,111,163,.22);
-    \\    --collapse-closed-bg: rgba(0,0,0,.12); --collapse-open-bg: rgba(255,255,255,.06);
-    \\    --collapse-shadow: none; --collapse-closed-shadow: none;
-    \\    --sidebar-bg: #1b1e21;
-;
-const summer_morning =
-    \\    color-scheme: light;
-    \\    --bg: #fbf3d9; --fg: #2c3a2c; --muted: #8a8560; --accent: #5a9c3f;
-    \\    --warn: #b3572d;
-    \\    --code-bg: rgba(90,130,60,.12); --border: rgba(90,130,60,.28);
-    \\    --collapse-closed-bg: rgba(90,130,60,.06); --collapse-open-bg: var(--bg);
-    \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16);
-    \\    --collapse-closed-shadow: 0 1px 4px rgba(0,0,0,.07);
-    \\    --sidebar-bg: #f5e9bd;
-;
-const summer_evening =
-    \\    color-scheme: dark;
-    \\    --bg: #170c0e; --fg: #ead9d9; --muted: #a88b8b; --accent: #c96a6a;
-    \\    --warn: #e0a95c;
-    \\    --code-bg: rgba(255,255,255,.07); --border: rgba(234,217,217,.14);
-    \\    --collapse-closed-bg: rgba(0,0,0,.14); --collapse-open-bg: rgba(255,255,255,.05);
-    \\    --collapse-shadow: none; --collapse-closed-shadow: none;
-    \\    --sidebar-bg: #120809;
-;
+const builtins = @import("themes.zig");
+const Palette = builtins.Palette;
+const themes = builtins.themes;
+const default_theme = builtins.default_theme;
+const paletteCss = builtins.paletteCss;
+pub const theme_names = builtins.theme_names;
 
-fn seasonRules(comptime name: []const u8, comptime morning: []const u8, comptime evening: []const u8) []const u8 {
-    return "  :root[data-season=\"" ++ name ++ "\"] {\n" ++ morning ++ "\n  }\n" ++
-        "  @media (prefers-color-scheme: dark) { :root[data-season=\"" ++ name ++ "\"]:not([data-time]) {\n" ++ evening ++ "\n  } }\n" ++
-        "  :root[data-season=\"" ++ name ++ "\"][data-time=\"evening\"] {\n" ++ evening ++ "\n  }\n";
+/// The pre-paint bootstrap's guard before trusting a stored `season` value:
+/// `s==="fall"||s==="winter"||...` — one source, generated from `themes`,
+/// covering every theme name instead of a hand-written four-way chain.
+const theme_season_guard = blk: {
+    var out: []const u8 = "";
+    for (themes, 0..) |t, i| {
+        if (i > 0) out = out ++ "||";
+        out = out ++ "s===\"" ++ t.name ++ "\"";
+    }
+    break :blk out;
+};
+
+/// The settings-panel's theme buttons, one per row of `themes`.
+const theme_buttons_html = blk: {
+    var out: []const u8 = "";
+    for (themes) |t| {
+        out = out ++ "        <button class=\"opt\" type=\"button\" data-v=\"" ++ t.name ++ "\">" ++ t.label ++ "</button>\n";
+    }
+    break :blk out;
+};
+
+/// A reader-selectable body font. Adding a font means adding one row here — the CSS rule
+/// (`font_rules`), the settings-panel button (`font_buttons_html`) and the
+/// pre-paint bootstrap's guard (`font_guard`) are all generated from this
+/// table, the same pattern `themes` establishes above.
+const Font = struct {
+    /// The `data-font` attribute value and the settings-panel button's
+    /// `data-v`.
+    name: []const u8,
+    /// The settings-panel button's visible text.
+    label: []const u8,
+    /// A CSS `font-family` value — a full fallback stack, not a single name.
+    stack: []const u8,
+};
+
+const fonts = [_]Font{
+    .{ .name = "sans", .label = "Sans", .stack = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif" },
+    .{ .name = "serif", .label = "Serif", .stack = "Georgia, \"Iowan Old Style\", \"Times New Roman\", serif" },
+    .{ .name = "mono", .label = "Mono", .stack = "\"IBM Plex Mono\", ui-monospace, Menlo, Consolas, \"Liberation Mono\", monospace" },
+    .{ .name = "humanist", .label = "Humanist", .stack = "Seravek, \"Gill Sans Nova\", Ubuntu, Calibri, \"DejaVu Sans\", sans-serif" },
+};
+
+/// The pre-paint bootstrap's guard before trusting a stored `font` value:
+/// `f==="serif"||f==="mono"||...` — generated from `fonts` so a new row does
+/// not also need a hand-edited guard.
+const font_guard = blk: {
+    var out: []const u8 = "";
+    for (fonts, 0..) |f, i| {
+        if (i > 0) out = out ++ "||";
+        out = out ++ "f===\"" ++ f.name ++ "\"";
+    }
+    break :blk out;
+};
+
+/// One `.content`-scoped font-family override per row of `fonts`.
+const font_rules = blk: {
+    var out: []const u8 = "";
+    for (fonts) |f| {
+        out = out ++ "  :root[data-font=\"" ++ f.name ++ "\"] .content { font-family: " ++ f.stack ++ "; }\n";
+    }
+    break :blk out;
+};
+
+/// The settings-panel's font buttons, one per row of `fonts`.
+const font_buttons_html = blk: {
+    var out: []const u8 = "";
+    for (fonts) |f| {
+        out = out ++ "        <button class=\"opt\" type=\"button\" data-v=\"" ++ f.name ++ "\">" ++ f.label ++ "</button>\n";
+    }
+    break :blk out;
+};
+
+fn seasonRules(comptime name: []const u8, comptime morning: Palette, comptime evening: Palette) []const u8 {
+    return "  :root[data-season=\"" ++ name ++ "\"] {\n" ++ paletteCss(morning) ++ "  }\n" ++
+        "  @media (prefers-color-scheme: dark) { :root[data-season=\"" ++ name ++ "\"]:not([data-time]) {\n" ++ paletteCss(evening) ++ "  } }\n" ++
+        "  :root[data-season=\"" ++ name ++ "\"][data-time=\"evening\"] {\n" ++ paletteCss(evening) ++ "  }\n";
 }
 
-const theme_rules =
-    "  :root {\n" ++ winter_morning ++ "\n  }\n" ++
-    "  @media (prefers-color-scheme: dark) { :root:not([data-time]) {\n" ++ winter_evening ++ "\n  } }\n" ++
-    "  :root[data-time=\"evening\"] {\n" ++ winter_evening ++ "\n  }\n" ++
-    seasonRules("fall", fall_morning, fall_evening) ++
-    seasonRules("winter", winter_morning, winter_evening) ++
-    seasonRules("spring", spring_morning, spring_evening) ++
-    seasonRules("summer", summer_morning, summer_evening);
+const theme_rules = blk: {
+    var out: []const u8 =
+        "  :root {\n" ++ paletteCss(default_theme.morning) ++ "  }\n" ++
+        "  @media (prefers-color-scheme: dark) { :root:not([data-time]) {\n" ++ paletteCss(default_theme.evening) ++ "  } }\n" ++
+        "  :root[data-time=\"evening\"] {\n" ++ paletteCss(default_theme.evening) ++ "  }\n";
+    for (themes) |t| {
+        out = out ++ seasonRules(t.name, t.morning, t.evening);
+    }
+    break :blk out;
+};
 
 // Everything from `</title>` through the opening of `<main>`. Includes the
 // MathJax loader, the seasonal stylesheet (`theme_rules`), and the sidebar.
@@ -271,7 +341,7 @@ const head_post_a =
     \\    max-width: var(--content-width, 44rem); margin: 3rem auto; padding: 0 1.25rem;
     \\    font-size: var(--font-size, 1rem); line-height: var(--line-height, 1.6);
     \\  }
-    \\  :root[data-font="serif"] .content { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; }
+++ font_rules ++
     \\  h1, h2, h3 { line-height: 1.25; }
     \\  code {
     \\    background: var(--code-bg); padding: .15em .35em;
@@ -426,7 +496,7 @@ const head_post_a =
     \\     strip itself lights it accent, clicking toggles. Collapsed, the strip
     \\     slides to the screen's left edge and reopens the sidebar the same way. */
     \\  .sidebar-edge {
-    \\    position: fixed; top: 0; left: calc(var(--sidebar-width) - .75rem); width: 1.5rem; height: 100vh; z-index: 10;
+    \\    position: fixed; top: 0; left: calc(var(--sidebar-width) - 1.25rem); width: 2.5rem; height: 100vh; z-index: 10;
     \\    margin: 0; padding: 0; border: none; background: transparent; cursor: pointer;
     \\    transition: left .2s ease;
     \\  }
@@ -443,7 +513,7 @@ const head_post_a =
     \\    transform: translateX(-100%); visibility: hidden;
     \\    transition: transform .2s ease, visibility 0s .2s;
     \\  }
-    \\  :root[data-sidebar="collapsed"] .sidebar-edge { left: -.75rem; }
+    \\  :root[data-sidebar="collapsed"] .sidebar-edge { left: -1.25rem; }
     \\  /* Settings: two plain-text triggers; each panel pops out OVER the sidebar
     \\     (absolutely positioned above the trigger row), keeping nav uncluttered. */
     \\  .sidebar-settings { position: relative; display: flex; gap: 1rem; }
@@ -499,18 +569,17 @@ const head_post_c =
     \\  </div>
     \\  <nav class="sidebar-nav">
 ;
-const head_post_d =
+const head_post_d_a =
     \\</nav>
     \\  <div class="sidebar-settings">
     \\    <button id="theme-toggle" class="settings-toggle" type="button" aria-expanded="false">Theme</button>
     \\    <button id="text-toggle" class="settings-toggle" type="button" aria-expanded="false">Text</button>
     \\    <div id="theme-panel" class="settings-panel" hidden>
     \\      <div class="opt-group" id="season-opts">
-    \\        <span class="opt-label">Season</span>
-    \\        <button class="opt" type="button" data-v="fall">Fall</button>
-    \\        <button class="opt" type="button" data-v="winter">Winter</button>
-    \\        <button class="opt" type="button" data-v="spring">Spring</button>
-    \\        <button class="opt" type="button" data-v="summer">Summer</button>
+    \\        <span class="opt-label">Theme</span>
+    \\
+;
+const head_post_d_b =
     \\      </div>
     \\      <div class="opt-group" id="time-opts">
     \\        <span class="opt-label">Time</span>
@@ -534,8 +603,8 @@ const head_post_d =
     \\      </label>
     \\      <div class="opt-group" id="font-opts">
     \\        <span class="opt-label">Font</span>
-    \\        <button class="opt" type="button" data-v="">Sans</button>
-    \\        <button class="opt" type="button" data-v="serif">Serif</button>
+;
+const head_post_d_c =
     \\      </div>
     \\    </div>
     \\  </div>
@@ -544,6 +613,7 @@ const head_post_d =
     \\<main class="content">
     \\
 ;
+const head_post_d = head_post_d_a ++ theme_buttons_html ++ head_post_d_b ++ font_buttons_html ++ head_post_d_c;
 
 const page_tail =
     \\</main>
@@ -617,10 +687,12 @@ const page_tail =
     \\
     \\  // Text sliders share one shape: restore from localStorage, apply live,
     \\  // echo the value next to the label. With nothing saved the slider must
-    \\  // apply nothing — the head bootstrap has already put the site default
-    \\  // (yaml `width:`) on the root's inline style, and applying here would
-    \\  // overwrite it with the markup's own default. So an unset reader only
-    \\  // syncs the knob to whatever is already in effect.
+    \\  // apply nothing — the head bootstrap has already put a default in
+    \\  // effect (yaml `width:` inline on the root, or an `.sxh` header's
+    \\  // size/leading via a <style> rule), and applying here would overwrite
+    \\  // it with the markup's own default. So an unset reader only syncs the
+    \\  // knob to whatever is already in effect — read via computed style,
+    \\  // since a stylesheet rule never shows up on the inline style object.
     \\  function slider(id, valId, key, unit, prop, apply){
     \\    var range = document.getElementById(id);
     \\    var val = document.getElementById(valId);
@@ -629,7 +701,7 @@ const page_tail =
     \\    try { saved = localStorage.getItem(key); } catch (e) {}
     \\    if (saved) { range.value = saved; apply(saved); }
     \\    else {
-    \\      var cur = parseFloat(d.style.getPropertyValue(prop));
+    \\      var cur = parseFloat(getComputedStyle(d).getPropertyValue(prop));
     \\      if (!isNaN(cur)) range.value = cur;
     \\    }
     \\    if (val) val.textContent = range.value + unit;
@@ -707,7 +779,7 @@ test "wrapPage emits sidebar, settings panel and content body" {
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-toggle\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-open\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, page, ".sidebar:hover + .sidebar-edge::before") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar-edge { left: -.75rem; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar-edge { left: -1.25rem; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"sidebar\")") != null);
     // The brand subtitle credits strike and opens in a new tab.
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"brand-repo\" href=\"" ++ project_url ++ "\"") != null);
@@ -790,6 +862,51 @@ test "snug CSS: descendant combinator, not just direct child, reaches through a 
     try std.testing.expect(std.mem.indexOf(u8, page, "> .sx-group-sec:last-child > :first-child") == null);
 }
 
+test "kanagawa and vanta-black themes: selectable and carry their own palette" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    // Buttons: generated from the same table as the seasonal four.
+    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"kanagawa\">Kanagawa</button>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "class=\"opt\" type=\"button\" data-v=\"vanta-black\">Vanta Black</button>") != null);
+    // Pre-paint bootstrap accepts both as valid `data-season` values.
+    try std.testing.expect(std.mem.indexOf(u8, page, "s===\"kanagawa\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "s===\"vanta-black\"") != null);
+    // Each has its own CSS rule carrying its own accent color.
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"kanagawa\"] {\n    color-scheme: dark;\n    --bg: #1F1F28; --fg: #DCD7BA; --muted: #727169; --accent: #7E9CD8;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"vanta-black\"] {\n    color-scheme: dark;\n    --bg: #000000; --fg: #E0E0E0; --muted: #808080; --accent: #00D9FF;") != null);
+}
+
+test "existing seasonal theme CSS is byte-identical after the data-driven refactor" {
+    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page,
+        \\  :root[data-season="winter"] {
+        \\    color-scheme: light;
+        \\    --bg: #ffffff; --fg: #1d2a3a; --muted: #5b6b7f; --accent: #4a9edb;
+        \\    --warn: #c07a1e;
+        \\    --code-bg: rgba(90,130,170,.12); --border: rgba(90,130,170,.30);
+        \\    --collapse-closed-bg: rgba(90,130,170,.06); --collapse-open-bg: var(--bg);
+        \\    --collapse-shadow: 0 2px 10px rgba(0,0,0,.16); --collapse-closed-shadow: 0 1px 4px rgba(0,0,0,.07);
+        \\    --sidebar-bg: #f2f7fc;
+        \\  }
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, page,
+        \\  :root[data-season="fall"][data-time="evening"] {
+        \\    color-scheme: dark;
+        \\    --bg: #16211a; --fg: #e6e4d6; --muted: #a3a888; --accent: #a8b968;
+        \\    --warn: #e0b568;
+        \\    --code-bg: rgba(255,255,255,.07); --border: rgba(168,185,104,.25);
+        \\    --collapse-closed-bg: rgba(0,0,0,.12); --collapse-open-bg: rgba(255,255,255,.05);
+        \\    --collapse-shadow: none; --collapse-closed-shadow: none;
+        \\    --sidebar-bg: #101a14;
+        \\  }
+    ) != null);
+}
+
 test "spacer CSS: fixed height" {
     const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
@@ -826,4 +943,37 @@ test "wrapPage wires the pre-paint theme bootstrap and never the reload script" 
     // The live-reload script is spliced in server.zig only — a wrapped page
     // (what static export emits) must never contain it.
     try std.testing.expect(std.mem.indexOf(u8, page, reload_script) == null);
+}
+
+test "header typography sets defaults beneath saved reader preferences" {
+    const sh: Shell = .{
+        .title = "T",
+        .brand = "B",
+        .home_href = "/",
+        .nav_html = "",
+        .width = "46",
+        .typography = .{ .font = .serif, .measure = "34rem", .size = "1rem", .leading = "1.5" },
+    };
+    const page = try wrapPage(std.testing.allocator, sh, "<p>x</p>\n");
+    defer std.testing.allocator.free(page);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"width\")||\"34\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "--font-size:1rem;--line-height:1.5;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root:not([data-font]) .content{font-family:Georgia") != null);
+}
+
+test "project theme file is inlined and selectable" {
+    const sh: Shell = .{
+        .title = "T",
+        .brand = "B",
+        .home_href = "/",
+        .nav_html = "",
+        .season = "custom",
+        .custom_theme = .{ .label = "Paper & Ink", .css = "color-scheme:dark;--bg:#101010;" },
+    };
+    const page = try wrapPage(std.testing.allocator, sh, "<p>x</p>\n");
+    defer std.testing.allocator.free(page);
+    try std.testing.expect(std.mem.indexOf(u8, page, "s===\"custom\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "data-v=\"custom\">Paper &amp; Ink</button>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"custom\"]:not([data-time])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "--bg:#101010;") != null);
 }

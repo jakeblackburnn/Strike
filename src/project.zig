@@ -33,6 +33,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml = @import("yaml.zig");
 const sheet = @import("sheet.zig");
+const theme_file = @import("theme_file.zig");
+const builtin_themes = @import("themes.zig");
 const routes = @import("routes.zig");
 
 pub const Doc = struct {
@@ -87,6 +89,7 @@ pub const Project = struct {
     /// The project's typography sheet: the site `header:` .sxh layered under
     /// the project's own (see yaml `header:`). Seeds every document's parse.
     sheet: sheet.Sheet = .empty,
+    custom_theme: ?theme_file.ThemeFile = null,
 };
 
 pub const Site = struct {
@@ -107,19 +110,15 @@ pub const Site = struct {
     /// The site-level typography sheet (yaml `header:` at the content root);
     /// used for the picker intro. Projects carry their own layered copy.
     sheet: sheet.Sheet = .empty,
-    /// Reserved for the planned PDF backend (roadmap item 2; no renderer
-    /// consumes this yet — see `PdfConfig`).
+    custom_theme: ?theme_file.ThemeFile = null,
+    /// Site PDF defaults; `strike pdf` also reads the same yaml keys while
+    /// walking from the content root toward an individual document.
     pdf: PdfConfig = .{},
 };
 
-/// Site-scope `pdf:` settings, parsed from `strike.yaml` ahead of the PDF
-/// backend that will read them — inert config today, exactly like an unused
-/// yaml key, until `render_pdf.zig` exists. Mirrors `main.zig`'s
-/// `ServeConfig`/`resolveServe` pattern: a struct with yaml-or-default
-/// fields, populated by one `cfg.get("pdf")` lookup. Kept deliberately
-/// minimal (just enough to prove the shape parses) rather than guessing a
-/// full print-settings schema no renderer has validated yet — that's the
-/// PDF backend's own design note's job.
+/// Site-scope `pdf:` settings as parsed by the project scanner. The CLI's
+/// single-file PDF path layers the same keys from ancestor configs before
+/// passing validated values to `render_pdf.zig`.
 pub const PdfConfig = struct {
     page_size: []const u8 = "letter",
     margin: []const u8 = "",
@@ -158,6 +157,7 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     const site_cfg = readConfig(io, gpa, content, "strike.yaml");
     const base = try normalizeBase(gpa, site_cfg.getScalar("base") orelse "");
     const site_sheet = loadHeader(io, gpa, content, site_cfg);
+    const site_custom_theme = loadThemeFile(io, gpa, content, site_cfg);
 
     // Collect top-level project folders, and note whether the root itself has
     // documents directly inside (the implicit root project, if any).
@@ -193,11 +193,11 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
         // Root-project mode: loose docs at the content root mean the whole
         // tree is one project — subdirectories nest into its nav instead of
         // becoming sibling projects nothing links to (there's no picker).
-        if (try loadProject(io, gpa, content, "", site_cfg, base, site_sheet)) |root| try projects.append(gpa, root);
+        if (try loadProject(io, gpa, content, "", site_cfg, base, site_sheet, site_custom_theme)) |root| try projects.append(gpa, root);
     } else {
         orderSlugs(slugs.items, site_cfg.getList("projects"));
         for (slugs.items) |slug| {
-            const p = try loadProject(io, gpa, content, slug, site_cfg, base, site_sheet) orelse continue;
+            const p = try loadProject(io, gpa, content, slug, site_cfg, base, site_sheet, site_custom_theme) orelse continue;
             try projects.append(gpa, p);
         }
     }
@@ -228,6 +228,7 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
         .projects = project_slice,
         .main = site_main,
         .sheet = site_sheet,
+        .custom_theme = site_custom_theme,
         .pdf = resolvePdfConfig(site_cfg),
     };
 }
@@ -235,12 +236,13 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
 /// Load one project rooted at `content/<slug>`, or — when `slug` is `""` — the
 /// content root itself (the implicit root project; see the module doc comment).
 /// `base` is the already-normalized site base path ("" or "/sub/path").
-fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8, site_cfg: yaml.Value, base: []const u8, site_sheet: sheet.Sheet) !?Project {
+fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8, site_cfg: yaml.Value, base: []const u8, site_sheet: sheet.Sheet, site_custom_theme: ?theme_file.ThemeFile) !?Project {
     const is_root = slug.len == 0;
     var dir = if (is_root) content else content.openDir(io, slug, .{ .iterate = true }) catch return null;
     defer if (!is_root) dir.close(io);
 
     const cfg = readConfig(io, gpa, dir, "strike.yaml");
+    const custom_theme = loadThemeFile(io, gpa, dir, cfg) orelse site_custom_theme;
     // The root project's strike.yaml *is* the site one, so its header is
     // already in site_sheet; other projects layer theirs on top.
     const proj_sheet = if (is_root)
@@ -286,19 +288,21 @@ fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8
     // site's own title instead — it's serving as the site's front page.
     const default_title = if (is_root) site_cfg.getScalar("title") orelse "strikedown" else try prettify(gpa, slug);
     const site_theme = parseTheme(site_cfg.getScalar("theme") orelse "");
+    const project_theme = parseTheme(cfg.getScalar("theme") orelse "");
 
     return .{
         .slug = slug,
         .title = cfg.getScalar("title") orelse default_title,
         .description = cfg.getScalar("description") orelse "",
-        .season = site_theme.season,
-        .time = site_theme.time,
-        .width = site_cfg.getScalar("width") orelse "",
+        .season = if (project_theme.season.len > 0) project_theme.season else site_theme.season,
+        .time = if (project_theme.time.len > 0) project_theme.time else site_theme.time,
+        .width = cfg.getScalar("width") orelse site_cfg.getScalar("width") orelse "",
         .base = base,
         .home = home,
         .tree = res.nodes,
         .docs = try ctx.docs.toOwnedSlice(gpa),
         .sheet = proj_sheet,
+        .custom_theme = custom_theme,
     };
 }
 
@@ -462,6 +466,14 @@ fn loadHeader(io: std.Io, gpa: Allocator, dir: std.Io.Dir, cfg: yaml.Value) shee
     };
 }
 
+fn loadThemeFile(io: std.Io, gpa: Allocator, dir: std.Io.Dir, cfg: yaml.Value) ?theme_file.ThemeFile {
+    const path = cfg.getScalar("theme_file") orelse return null;
+    return theme_file.load(io, gpa, dir, path) catch {
+        std.debug.print("strike: warning: theme file {s} could not be loaded; ignoring\n", .{path});
+        return null;
+    };
+}
+
 pub const Theme = struct { season: []const u8 = "", time: []const u8 = "" };
 
 /// Parse a yaml `theme:` value into season + time (fail-soft, unknown words
@@ -471,11 +483,11 @@ pub fn parseTheme(raw: []const u8) Theme {
     var out: Theme = .{};
     var it = std.mem.tokenizeAny(u8, raw, " \t");
     while (it.next()) |w| {
-        if (std.mem.eql(u8, w, "fall") or std.mem.eql(u8, w, "winter") or
-            std.mem.eql(u8, w, "spring") or std.mem.eql(u8, w, "summer"))
-        {
-            out.season = w;
-        } else if (std.mem.eql(u8, w, "morning") or std.mem.eql(u8, w, "light")) {
+        if (std.mem.eql(u8, w, "custom")) out.season = w;
+        for (builtin_themes.theme_names) |name| {
+            if (std.mem.eql(u8, w, name)) out.season = name;
+        }
+        if (std.mem.eql(u8, w, "morning") or std.mem.eql(u8, w, "light")) {
             out.time = "morning";
         } else if (std.mem.eql(u8, w, "evening") or std.mem.eql(u8, w, "dark")) {
             out.time = "evening";
@@ -635,6 +647,8 @@ test "parseTheme maps legacy and seasonal values" {
     try testing.expectEqualStrings("morning", parseTheme("light").time);
     try testing.expectEqualStrings("evening", parseTheme("dark").time);
     try testing.expectEqualStrings("winter", parseTheme("winter").season);
+    try testing.expectEqualStrings("kanagawa", parseTheme("kanagawa").season);
+    try testing.expectEqualStrings("vanta-black", parseTheme("vanta-black").season);
     const both = parseTheme("fall evening");
     try testing.expectEqualStrings("fall", both.season);
     try testing.expectEqualStrings("evening", both.time);

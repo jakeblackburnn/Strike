@@ -1,0 +1,157 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [3 0 R 5 0 R ] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612.00 792.00] /Resources << /Font << /F1 7 0 R /F2 8 0 R /F3 9 0 R /F4 10 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 2957 >>
+stream
+BT /F4 20.00 Tf 102.00 729.00 Td (A reusable technical report) Tj ET
+BT /F1 12.00 Tf 102.00 688.00 Td (Strike documentation team, September 2026) Tj ET
+BT /F4 15.00 Tf 102.00 656.65 Td (Abstract) Tj ET
+BT /F1 12.00 Tf 102.00 625.90 Td (This report is a template for documents that must remain readable) Tj ET
+BT /F1 12.00 Tf 102.00 607.90 Td (in both a browser and a paged PDF. It separates a full-width) Tj ET
+BT /F1 12.00 Tf 102.00 589.90 Td (abstract and contents from a source-ordered, two-column body. Its) Tj ET
+BT /F1 12.00 Tf 102.00 571.90 Td (companion paper.sxh supplies a serif face, a narrower measure,) Tj ET
+BT /F1 12.00 Tf 102.00 553.90 Td (generous leading, and three reusable command groups. The exercise) Tj ET
+BT /F1 12.00 Tf 102.00 535.90 Td (tests the same source against two renderers without asking the) Tj ET
+BT /F1 12.00 Tf 102.00 517.90 Td (author to write separate versions of the report.) Tj ET
+BT /F1 12.00 Tf 102.00 493.30 Td (Keywords: document structure, column flow, typography, reusable) Tj ET
+BT /F1 12.00 Tf 102.00 475.30 Td (components) Tj ET
+BT /F4 15.00 Tf 102.00 443.95 Td (Contents) Tj ET
+BT /F1 12.00 Tf 102.00 413.20 Td (- Question) Tj ET
+BT /F1 12.00 Tf 102.00 388.60 Td (- Method) Tj ET
+BT /F1 12.00 Tf 102.00 364.00 Td (- Result) Tj ET
+BT /F1 12.00 Tf 102.00 339.40 Td (- Discussion) Tj ET
+BT /F1 12.00 Tf 102.00 314.80 Td (- Conclusion) Tj ET
+BT /F4 15.00 Tf 54.00 283.45 Td (Question) Tj ET
+BT /F1 12.00 Tf 54.00 252.70 Td (How can one document be pleasant to) Tj ET
+BT /F1 12.00 Tf 54.00 234.70 Td (read in a browser while carrying) Tj ET
+BT /F1 12.00 Tf 54.00 216.70 Td (enough structure for a later PDF) Tj ET
+BT /F1 12.00 Tf 54.00 198.70 Td (renderer? The content records meaning;) Tj ET
+BT /F1 12.00 Tf 54.00 180.70 Td (the header chooses a serif face, a) Tj ET
+BT /F1 12.00 Tf 54.00 162.70 Td (measured line, and line spacing for) Tj ET
+BT /F1 12.00 Tf 54.00 144.70 Td (this project. The flow\(2\) group begins) Tj ET
+BT /F1 12.00 Tf 54.00 126.70 Td (after the abstract and contents, so) Tj ET
+BT /F1 12.00 Tf 54.00 108.70 Td (both remain full-width while the) Tj ET
+BT /F1 12.00 Tf 54.00 90.70 Td (report body uses two columns.) Tj ET
+BT /F1 12.00 Tf 315.00 290.20 Td (The aside alias expands to skinny\(72%\)) Tj ET
+BT /F1 12.00 Tf 315.00 272.20 Td (color\(muted\). It is reusable across) Tj ET
+BT /F1 12.00 Tf 315.00 254.20 Td (documents without repeating the) Tj ET
+BT /F1 12.00 Tf 315.00 236.20 Td (command chain.) Tj ET
+BT /F4 15.00 Tf 315.00 204.85 Td (Method) Tj ET
+BT /F4 12.00 Tf 315.00 168.70 Td (Source) Tj ET
+BT /F1 12.00 Tf 315.00 144.10 Td (Write headings, prose, and command) Tj ET
+BT /F1 12.00 Tf 315.00 126.10 Td (groups in the source document. Keep) Tj ET
+BT /F1 12.00 Tf 315.00 108.10 Td (the section order explicit. A renderer) Tj ET
+BT /F1 12.00 Tf 315.00 90.10 Td (may change line breaks, but it must) Tj ET
+BT /F1 12.00 Tf 315.00 72.10 Td (preserve the order of headings,) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612.00 792.00] /Resources << /Font << /F1 7 0 R /F2 8 0 R /F3 9 0 R /F4 10 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 4710 >>
+stream
+BT /F1 12.00 Tf 54.00 738.00 Td (paragraphs, figures, and references.) Tj ET
+BT /F4 12.00 Tf 54.00 708.00 Td (Presentation) Tj ET
+BT /F1 12.00 Tf 54.00 683.40 Td (Keep page typography in the shared) Tj ET
+BT /F1 12.00 Tf 54.00 665.40 Td (.sxh header. The header is loaded by) Tj ET
+BT /F1 12.00 Tf 54.00 647.40 Td (strike.yaml, then layered with any) Tj ET
+BT /F1 12.00 Tf 54.00 629.40 Td (site header. Aliases are resolved) Tj ET
+BT /F1 12.00 Tf 54.00 611.40 Td (before either renderer walks the) Tj ET
+BT /F1 12.00 Tf 54.00 593.40 Td (document tree.) Tj ET
+BT /F4 12.00 Tf 54.00 563.40 Td (A compact code explanation) Tj ET
+BT /F1 10.20 Tf 54.00 538.80 Td (const result = try render\(source, .{ .sheet = header }\);) Tj ET
+BT /F1 12.00 Tf 54.00 515.10 Td (The call passes the same header to) Tj ET
+BT /F1 12.00 Tf 54.00 497.10 Td (every document in the project. The) Tj ET
+BT /F1 12.00 Tf 54.00 479.10 Td (code-note alias gives the explanation) Tj ET
+BT /F1 12.00 Tf 54.00 461.10 Td (a consistent muted treatment. The) Tj ET
+BT /F1 12.00 Tf 54.00 443.10 Td (source line is an example of where) Tj ET
+BT /F1 12.00 Tf 54.00 425.10 Td (configuration enters the pipeline;) Tj ET
+BT /F1 12.00 Tf 54.00 407.10 Td (neither renderer needs to parse) Tj ET
+BT /F1 12.00 Tf 54.00 389.10 Td (typography out of prose.) Tj ET
+BT /F4 15.00 Tf 54.00 357.75 Td (Result) Tj ET
+BT /F1 12.00 Tf 54.00 327.00 Td (The table of contents, comparison,) Tj ET
+BT /F1 12.00 Tf 54.00 309.00 Td (aside, and code explanation remain) Tj ET
+BT /F1 12.00 Tf 54.00 291.00 Td (ordinary document structure. Their) Tj ET
+BT /F1 12.00 Tf 54.00 273.00 Td (presentation can change without) Tj ET
+BT /F1 12.00 Tf 54.00 255.00 Td (changing the prose. The body moves) Tj ET
+BT /F1 12.00 Tf 54.00 237.00 Td (from the first column to the second in) Tj ET
+BT /F1 12.00 Tf 54.00 219.00 Td (source order. A longer version) Tj ET
+BT /F1 12.00 Tf 54.00 201.00 Td (continues on the next physical page in) Tj ET
+BT /F1 12.00 Tf 54.00 183.00 Td (PDF; HTML keeps the same ordered) Tj ET
+BT /F1 12.00 Tf 54.00 165.00 Td (content in a column container.) Tj ET
+BT /F4 15.00 Tf 54.00 133.65 Td (Discussion) Tj ET
+BT /F1 12.00 Tf 54.00 102.90 Td (Two renderers need different) Tj ET
+BT /F1 12.00 Tf 54.00 84.90 Td (measurement engines. HTML delegates) Tj ET
+BT /F1 12.00 Tf 315.00 738.00 Td (line and column breaks to CSS. The) Tj ET
+BT /F1 12.00 Tf 315.00 720.00 Td (native PDF backend measures in points) Tj ET
+BT /F1 12.00 Tf 315.00 702.00 Td (and advances to another column when) Tj ET
+BT /F1 12.00 Tf 315.00 684.00 Td (the remaining height is too small.) Tj ET
+BT /F1 12.00 Tf 315.00 666.00 Td (Both receive the same parsed headings,) Tj ET
+BT /F1 12.00 Tf 315.00 648.00 Td (paragraphs, code, and groups. This) Tj ET
+BT /F1 12.00 Tf 315.00 630.00 Td (distinction matters: the document) Tj ET
+BT /F1 12.00 Tf 315.00 612.00 Td (states what flows, while each backend) Tj ET
+BT /F1 12.00 Tf 315.00 594.00 Td (decides where a line break occurs.) Tj ET
+BT /F1 12.00 Tf 315.00 569.40 Td (The template also shows a current) Tj ET
+BT /F1 12.00 Tf 315.00 551.40 Td (limitation. A wide figure inside the) Tj ET
+BT /F1 12.00 Tf 315.00 533.40 Td (body has no accepted span command yet.) Tj ET
+BT /F1 12.00 Tf 315.00 515.40 Td (Place full-width material before or) Tj ET
+BT /F1 12.00 Tf 315.00 497.40 Td (after the flow group, or use a) Tj ET
+BT /F1 12.00 Tf 315.00 479.40 Td (narrower figure that fits one column.) Tj ET
+BT /F1 12.00 Tf 315.00 461.40 Td (A later design decision can add a span) Tj ET
+BT /F1 12.00 Tf 315.00 443.40 Td (form without changing this document's) Tj ET
+BT /F1 12.00 Tf 315.00 425.40 Td (reading order.) Tj ET
+BT /F4 15.00 Tf 315.00 394.05 Td (Conclusion) Tj ET
+BT /F1 12.00 Tf 315.00 363.30 Td (A report template is useful when the) Tj ET
+BT /F1 12.00 Tf 315.00 345.30 Td (source remains ordinary enough to edit) Tj ET
+BT /F1 12.00 Tf 315.00 327.30 Td (without a layout tool. This one uses) Tj ET
+BT /F1 12.00 Tf 315.00 309.30 Td (headings for navigation, a header for) Tj ET
+BT /F1 12.00 Tf 315.00 291.30 Td (typographic defaults, aliases for) Tj ET
+BT /F1 12.00 Tf 315.00 273.30 Td (recurring components, and one flow) Tj ET
+BT /F1 12.00 Tf 315.00 255.30 Td (group for the main body. Each piece) Tj ET
+BT /F1 12.00 Tf 315.00 237.30 Td (has a clear place in the source. That) Tj ET
+BT /F1 12.00 Tf 315.00 219.30 Td (makes the document easier to revise:) Tj ET
+BT /F1 12.00 Tf 315.00 201.30 Td (changing the theme does not move) Tj ET
+BT /F1 12.00 Tf 315.00 183.30 Td (paragraphs, and rewording a section) Tj ET
+BT /F1 12.00 Tf 315.00 165.30 Td (does not require manually reassigning) Tj ET
+BT /F1 12.00 Tf 315.00 147.30 Td (it to a column.) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+10 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000122 00000 n 
+0000000285 00000 n 
+0000003293 00000 n 
+0000003456 00000 n 
+0000008217 00000 n 
+0000008289 00000 n 
+0000008359 00000 n 
+0000008427 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+8499
+%%EOF

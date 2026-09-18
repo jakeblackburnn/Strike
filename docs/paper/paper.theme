@@ -1,0 +1,15 @@
+# A fixed palette loaded at build time and inlined into the report pages.
+label: Paper Ink
+color-scheme: light
+--bg: #f7f4ed
+--fg: #292d31
+--muted: #697078
+--accent: #4b6586
+--warn: #a45b3f
+--code-bg: rgba(75,101,134,.10)
+--border: rgba(75,101,134,.25)
+--collapse-closed-bg: rgba(75,101,134,.06)
+--collapse-open-bg: var(--bg)
+--collapse-shadow: 0 2px 10px rgba(0,0,0,.12)
+--collapse-closed-shadow: 0 1px 4px rgba(0,0,0,.06)
+--sidebar-bg: #eee9de

@@ -14,9 +14,13 @@ width: 46               # default content width in rem; readers override in Sett
 serve:                  # defaults for `strike serve docs`
   watch: true
 
+pdf:                    # defaults for `strike pdf` on files under docs/
+  page_size: letter
+  margin: 54pt
+
 projects:               # picker order; unlisted projects follow alphabetically
   - reference
   - example
+  - paper
 
-# Each project's display name and blurb live in its own strike.yaml `title:`
-# and `description:` — see reference/strike.yaml and example/strike.yaml.
+# Each project's title and description live in its own strike.yaml.

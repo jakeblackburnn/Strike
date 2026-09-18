@@ -13,12 +13,12 @@ wins.
   `STRIKE_YAML.md`.)
 - **Generated defaults are minimal.** In the absence of a `main.*`, a page is a heading,
   the project's `description:` if it has one, and a plain list of links. Nothing more.
-- **Chrome supplies the palette; it never overrides the author.** The seasonal themes
+- **Chrome supplies the palette; it never overrides the author.** The themes
   define what `accent`, `muted` and `fg` *look like* — and document color roles resolve
   against exactly those tokens, so chrome and content share one palette by design. What
   chrome must never do is override a decision the document made: no reader setting
-  competes with a directive. Document typography belongs to strikedown; the reading
-  environment belongs to the reader.
+  changes a command's meaning. A document's `.sxh` header supplies typography
+  defaults; the reader can override font, measure, size, and leading locally.
 
 ## Links are text
 
@@ -57,27 +57,32 @@ prominence in `main.*`.
   **Theme** and **Text** — each open their own panel that pops out *over* the sidebar
   (opening one closes the other). Theme choices are selectable text links, not
   dropdowns; Text holds reading settings: content width, font size, line height, and
-  font family (sans/serif) — these style the reading experience, never the document's
-  own typography (that stays in strikedown).
+  font family (sans/serif/mono/humanist). Saved reader choices override the
+  document header's defaults.
 
-## Seasonal themes
+## Themes
 
-Four themes, each with a light **morning** and dark **evening** variant. They apply to
+Four seasonal themes have a light **morning** and dark **evening** variant.
+Kanagawa and Vanta Black are fixed dark palettes. A `theme_file:` in
+`strike.yaml` adds a project or site palette, inlined into the built HTML.
+They apply to
 the reader chrome only. Two orthogonal attributes drive them: `data-season` and
 `data-time` on `<html>`; with no explicit time, the system color-scheme preference
 decides. Default season: **winter**.
 
-| Season | Morning (light) | Evening (dark) |
+| Theme | Morning | Evening |
 | --- | --- | --- |
 | fall | warm off-white, brown text, orange accent | deep green, olive accent |
 | winter | white, navy text, blue accent | dark navy, pale blue text and accent |
 | spring | pale pink, plum text, purple accent | neutral dark grey, pink accent |
 | summer | cream, deep green text, green accent | near-black maroon, muted red accent |
+| kanagawa | warm ink black, blue accent | same fixed palette |
+| vanta-black | true black, cyan accent | same fixed palette |
 
-Twelve palette tokens per variant live in `src/shell.zig`: `--bg`, `--fg`, `--muted`,
+Twelve palette tokens per variant live in `src/themes.zig`: `--bg`, `--fg`, `--muted`,
 `--accent`, `--warn`, `--code-bg`, `--border`, `--sidebar-bg`, and four
 `--collapse-*` tokens for the collapsible-group card. A new theme defines all twelve.
-The yaml `theme:` key supplies a site default (`winter evening`, `dark`, `spring`, …)
+The yaml `theme:` key supplies a site or project default (`winter evening`, `kanagawa`, …)
 that readers override in Settings.
 
 ## Narrow screens
@@ -109,12 +114,12 @@ writing reader state uses these names.
 
 | Key | Values | Effect |
 | --- | --- | --- |
-| `season` | `fall` / `winter` / `spring` / `summer` | `data-season` |
+| `season` | `fall` / `winter` / `spring` / `summer` / `kanagawa` / `vanta-black` / `custom` | `data-season` |
 | `time` | `morning` / `evening`, or absent for auto | `data-time`; absent means the system preference decides |
 | `width` | a number, in `rem` | `--content-width` |
 | `fontsize` | a number, in `px` | `--font-size` |
 | `lineheight` | a number, unitless | `--line-height` |
-| `font` | `serif`, or absent for sans | `data-font` |
+| `font` | `sans` / `serif` / `mono` / `humanist`; absent uses the header default | `data-font` |
 | `sidebar` | `collapsed` / `expanded` | `data-sidebar` |
 | `nav:<slug>/<path>` | `open` / `closed` | one nav folder's disclosure state |
 | `nav:<slug>` | `open` / `closed` | one *project's* node on the front page (no `/`, so it can't collide with a folder) |
@@ -122,7 +127,7 @@ writing reader state uses these names.
 A legacy `theme` key (`light`/`dark`) from before seasons is migrated to a `time` on
 first load and then removed.
 
-**A site default is a default, not an override.** The bootstrap seeds the theme and width
-from `strike.yaml` *only* where the reader has saved nothing, and no later script may
-overwrite what it set — a reader with no preference must keep seeing the site's, and a
-reader with one must always win.
+**A configured default is a default, not an override.** The bootstrap seeds the theme and
+width from `strike.yaml`, then `.sxh` typography where present, *only* where the reader
+has saved nothing. No later script may overwrite that choice — a reader with no preference
+keeps the configured value, and a reader with one wins.

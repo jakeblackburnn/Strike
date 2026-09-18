@@ -34,20 +34,22 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Build and run strike (default: serve docs/)");
     run_step.dependOn(&run_cmd.step);
 
-    // `zig build test` -> run the unit tests in every src/*.zig file. (Imported
+    // `zig build test` -> run the unit tests in every src/**/*.zig file. (Imported
     // files' tests only run when their file is a test root, so each gets its
-    // own test artifact.) A glob rather than a hardcoded list so a new source
-    // file is picked up automatically instead of silently going untested.
+    // own test artifact.) A recursive walk rather than a hardcoded list so a new
+    // source file, at any depth under src/, is picked up automatically instead
+    // of silently going untested.
     const test_step = b.step("test", "Run unit tests");
     var src_dir = b.build_root.handle.openDir(b.graph.io, "src", .{ .iterate = true }) catch
         @panic("could not open src/");
     defer src_dir.close(b.graph.io);
-    var src_it = src_dir.iterate();
-    while (src_it.next(b.graph.io) catch @panic("could not iterate src/")) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".zig")) continue;
+    var walker = src_dir.walk(b.allocator) catch @panic("could not walk src/");
+    defer walker.deinit();
+    while (walker.next(b.graph.io) catch @panic("could not iterate src/")) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
         const tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path(b.fmt("src/{s}", .{entry.name})),
+                .root_source_file = b.path(b.fmt("src/{s}", .{entry.path})),
                 .target = target,
                 .optimize = optimize,
             }),

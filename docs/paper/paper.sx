@@ -1,0 +1,107 @@
+# A reusable technical report
+
+**Strike documentation team**, September 2026
+
+## Abstract
+
+This report is a template for documents that must remain readable in both a
+browser and a paged PDF. It separates a full-width abstract and contents from
+a source-ordered, two-column body. Its companion `paper.sxh` supplies a serif
+face, a narrower measure, generous leading, and three reusable command groups.
+The exercise tests the same source against two renderers without asking the
+author to write separate versions of the report.
+
+**Keywords:** document structure, column flow, typography, reusable components
+
+## Contents
+
+- [Question](#question)
+- [Method](#method)
+- [Result](#result)
+- [Discussion](#discussion)
+- [Conclusion](#conclusion)
+
+// article flow(2)
+
+## Question
+
+How can one document be pleasant to read in a browser while carrying enough
+structure for a later PDF renderer? The content records meaning; the header
+chooses a serif face, a measured line, and line spacing for this project.
+The `flow(2)` group begins after the abstract and contents, so both remain
+full-width while the report body uses two columns.
+
+// context aside()
+
+The `aside` alias expands to `skinny(72%) color(muted)`. It is reusable across
+documents without repeating the command chain.
+
+// end context
+
+## Method
+
+// options comparison()
+
+### Source
+
+Write headings, prose, and command groups in the source document.
+Keep the section order explicit. A renderer may change line breaks, but it
+must preserve the order of headings, paragraphs, figures, and references.
+
+// --
+
+### Presentation
+
+Keep page typography in the shared `.sxh` header.
+The header is loaded by `strike.yaml`, then layered with any site header.
+Aliases are resolved before either renderer walks the document tree.
+
+// end options
+
+### A compact code explanation
+
+```zig
+const result = try render(source, .{ .sheet = header });
+```
+
+// explanation code-note()
+
+The call passes the same header to every document in the project. The
+`code-note` alias gives the explanation a consistent muted treatment.
+The source line is an example of where configuration enters the pipeline;
+neither renderer needs to parse typography out of prose.
+
+// end explanation
+
+## Result
+
+The table of contents, comparison, aside, and code explanation remain ordinary
+document structure. Their presentation can change without changing the prose.
+The body moves from the first column to the second in source order. A longer
+version continues on the next physical page in PDF; HTML keeps the same
+ordered content in a column container.
+
+## Discussion
+
+Two renderers need different measurement engines. HTML delegates line and
+column breaks to CSS. The native PDF backend measures in points and advances
+to another column when the remaining height is too small. Both receive the
+same parsed headings, paragraphs, code, and groups. This distinction matters:
+the document states *what* flows, while each backend decides *where* a line
+break occurs.
+
+The template also shows a current limitation. A wide figure inside the body
+has no accepted span command yet. Place full-width material before or after
+the flow group, or use a narrower figure that fits one column. A later design
+decision can add a span form without changing this document's reading order.
+
+## Conclusion
+
+A report template is useful when the source remains ordinary enough to edit
+without a layout tool. This one uses headings for navigation, a header for
+typographic defaults, aliases for recurring components, and one flow group
+for the main body. Each piece has a clear place in the source. That makes the
+document easier to revise: changing the theme does not move paragraphs, and
+rewording a section does not require manually reassigning it to a column.
+
+// end article

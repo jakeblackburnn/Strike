@@ -50,8 +50,8 @@ Zig — no build-time dependencies beyond the Zig standard library. The one runt
 is client-side MathJax (loaded from a CDN), which typesets the LaTeX math the renderer
 passes through.
 
-Rendering is two-stage: source parses into a document tree, and backends emit from it
-(HTML today; PDF is the planned second backend). `.md` and `.sx` go through the same
+Rendering is two-stage: source parses into a document tree, and HTML/PDF backends emit from it.
+`.md` and `.sx` go through the same
 pipeline — markdown is strikedown's subset, and superset features are additive: syntax
 that means nothing in plain markdown stays plain text until you activate it. The first
 layout features are **groups** and **commands**:
@@ -134,9 +134,19 @@ strike serve  [dir|file] [--host HOST] [--port PORT] [--[no-]watch] [--[no-]open
                                                   # --open opens the front page in your default browser
 strike render <file> [-o out.html] [--fragment] [--header f.sxh]
                                                   # render a single .md/.sx file to HTML
+strike pdf    <file> [-o out.pdf] [--header f.sxh] [--page-size letter|a4] [--margin PT]
+                                                  # render a single .md/.sx file to PDF
 strike build  [dir] [-o outdir]                   # export a content directory to static HTML
 strike init   [dir] [--site]                      # scaffold a starter strike.yaml
 ```
+
+`strike pdf docs/paper/paper.sx -o paper.pdf` produces the included
+[two-column report](docs/paper/paper.pdf). It reads ancestor `strike.yaml`
+PDF settings and `.sxh` headers; flags override page size, margin, and header.
+The native PDF renderer currently draws text, headings, lists, tables, rules,
+and column flow with the PDF base fonts. Inline links are text only; images,
+math typesetting, non-ASCII glyphs, and fine page-break controls are still
+limited. The HTML renderer remains the richer presentation target.
 
 A content directory is organized into **projects** — each top-level folder is a project,
 and its `.md`/`.sx` files (recursively, through subfolders) are its documents. Loose docs

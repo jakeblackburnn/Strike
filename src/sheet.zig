@@ -1,5 +1,5 @@
-//! Typography sheets: the `:` directive namespace, now carrying **command
-//! aliases** (`docs/reference/design/010-aliases.md`, candidate B, decided
+//! Typography sheets carry page typography and the `:` directive namespace's
+//! **command aliases** (`docs/reference/design/010-aliases.md`, candidate B, decided
 //! 2026-09-01): `:thin-grid grid(2) skinny(80%)` defines `thin-grid`;
 //! `// figs thin-grid()` or `/thin-grid()` uses it, entering through the
 //! same `word(args)`-shaped lookup as a real command (`Parser.resolveCommandToken`
@@ -15,7 +15,9 @@
 //! a second attribute pipeline.
 //!
 //! `strike.yaml`'s `header:` loads `.sxh` files (project layered over site,
-//! see `project.zig`) and seeds every document's base sheet; in-document
+//! see `project.zig`) and seeds every document's base sheet; the header's
+//! validated font, measure, size, and leading values also reach page emitters.
+//! In-document
 //! `:` lines add to it as parsing proceeds (`Parser.doc_aliases`). Later
 //! definitions win (`concat`, and `Parser.lookupAlias`'s most-recent-first
 //! scan) — a document can locally override a project-level alias.
@@ -37,12 +39,33 @@ pub const NamedAlias = struct {
     attrs: model.Attrs,
 };
 
+/// Page typography carried by a header. Values are validated CSS tokens so
+/// emitters can use them without accepting arbitrary CSS from a document.
+pub const TypeStyle = struct {
+    font: ?Font = null,
+    measure: ?[]const u8 = null,
+    size: ?[]const u8 = null,
+    leading: ?[]const u8 = null,
+
+    pub const Font = enum { serif, sans, mono };
+
+    pub fn layer(base: TypeStyle, over: TypeStyle) TypeStyle {
+        return .{
+            .font = over.font orelse base.font,
+            .measure = over.measure orelse base.measure,
+            .size = over.size orelse base.size,
+            .leading = over.leading orelse base.leading,
+        };
+    }
+};
+
 /// An immutable, ordered bundle of alias definitions. Sheets layer by
 /// concatenation (site header, then project header, then in-document
 /// directives); `get` and `Parser.lookupAlias` both search most-recent-first,
 /// so later entries win without needing a hash map or dedup pass.
 pub const Sheet = struct {
     aliases: []const NamedAlias = &.{},
+    typography: TypeStyle = .{},
 
     pub const empty: Sheet = .{};
 
@@ -109,25 +132,80 @@ const max_header_bytes = 1 << 20;
 /// Collect a sheet from directive source text (the pure core of `load`).
 pub fn fromSource(arena: Allocator, src: []const u8) Allocator.Error!Sheet {
     var aliases: std.ArrayList(NamedAlias) = .empty;
+    var typography: TypeStyle = .{};
     var it = std.mem.splitScalar(u8, src, '\n');
     while (it.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
+        if (parseTypography(line)) |entry| {
+            switch (entry) {
+                .font => |v| typography.font = v,
+                .measure => |v| typography.measure = v,
+                .size => |v| typography.size = v,
+                .leading => |v| typography.leading = v,
+            }
+            continue;
+        }
         if (parseLine(line)) |d| switch (d) {
             .alias => |a| try aliases.append(arena, a),
         };
     }
-    return .{ .aliases = try aliases.toOwnedSlice(arena) };
+    return .{ .aliases = try aliases.toOwnedSlice(arena), .typography = typography };
+}
+
+const TypographyEntry = union(enum) {
+    font: TypeStyle.Font,
+    measure: []const u8,
+    size: []const u8,
+    leading: []const u8,
+};
+
+fn parseTypography(line: []const u8) ?TypographyEntry {
+    if (line.len == 0 or line[0] == '#') return null;
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
+    const key = std.mem.trim(u8, line[0..colon], " \t");
+    const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+    if (std.mem.eql(u8, key, "font")) {
+        const font = std.meta.stringToEnum(TypeStyle.Font, value) orelse return null;
+        return .{ .font = font };
+    }
+    if (std.mem.eql(u8, key, "measure") or std.mem.eql(u8, key, "size")) {
+        if (!std.mem.endsWith(u8, value, "rem")) return null;
+        const number = value[0 .. value.len - 3];
+        const n = parseDecimal(number) orelse return null;
+        const max: f64 = if (std.mem.eql(u8, key, "measure")) 120 else 5;
+        if (n < 0.5 or n > max) return null;
+        return if (std.mem.eql(u8, key, "measure")) .{ .measure = value } else .{ .size = value };
+    }
+    if (std.mem.eql(u8, key, "leading")) {
+        const n = parseDecimal(value) orelse return null;
+        if (n < 1 or n > 3) return null;
+        return .{ .leading = value };
+    }
+    return null;
+}
+
+fn parseDecimal(value: []const u8) ?f64 {
+    if (value.len == 0 or value.len > 12) return null;
+    var dots: usize = 0;
+    for (value) |c| {
+        if (c == '.') {
+            dots += 1;
+            if (dots > 1) return null;
+        } else if (!std.ascii.isDigit(c)) return null;
+    }
+    if (value[0] == '.' or value[value.len - 1] == '.') return null;
+    return std.fmt.parseFloat(f64, value) catch null;
 }
 
 /// Layer `over` on top of `base` into one sheet (later entries win). Used to
 /// stack the project header over the site header.
 pub fn concat(arena: Allocator, base: Sheet, over: Sheet) Allocator.Error!Sheet {
-    if (base.aliases.len == 0) return over;
-    if (over.aliases.len == 0) return base;
+    if (base.aliases.len == 0) return .{ .aliases = over.aliases, .typography = TypeStyle.layer(base.typography, over.typography) };
+    if (over.aliases.len == 0) return .{ .aliases = base.aliases, .typography = TypeStyle.layer(base.typography, over.typography) };
     const combined = try arena.alloc(NamedAlias, base.aliases.len + over.aliases.len);
     @memcpy(combined[0..base.aliases.len], base.aliases);
     @memcpy(combined[base.aliases.len..], over.aliases);
-    return .{ .aliases = combined };
+    return .{ .aliases = combined, .typography = TypeStyle.layer(base.typography, over.typography) };
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -193,4 +271,28 @@ test "load reads a .sxh from disk" {
     defer arena_state.deinit();
     const s = try load(testing.io, arena_state.allocator(), tmp.dir, "theme.sxh");
     try testing.expectEqual(@as(usize, 2), s.get("thin-grid").?.columns.?);
+}
+
+test "typography parses safely and layers by field" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const base = try fromSource(arena,
+        \\font: serif
+        \\measure: 34rem
+        \\size: 1.05rem
+        \\leading: 1.7
+        \\:fig caption(bottom)
+    );
+    const over = try fromSource(arena,
+        \\font: mono
+        \\size: 99rem
+        \\leading: 1.5; color:red
+    );
+    const layered = try concat(arena, base, over);
+    try testing.expectEqual(TypeStyle.Font.mono, layered.typography.font.?);
+    try testing.expectEqualStrings("34rem", layered.typography.measure.?);
+    try testing.expectEqualStrings("1.05rem", layered.typography.size.?);
+    try testing.expectEqualStrings("1.7", layered.typography.leading.?);
+    try testing.expect(layered.get("fig") != null);
 }

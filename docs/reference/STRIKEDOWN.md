@@ -4,7 +4,7 @@ The spec of record for strikedown (`.sx`), a typography-first superset of
 markdown: every form and what it means. `docs/reference/design/NNN-*.md`
 records how each decision was reached (history), and this file is what wins
 when they disagree. Everything here is implementation-independent — each
-sentence must stay true for every backend (HTML today, PDF planned), so nothing
+sentence must stay true for every backend (HTML and PDF), so nothing
 names tags, CSS, or files.
 
 For worked examples, read the `docs/example/` project, where every form below
@@ -161,6 +161,7 @@ element, so they nest freely and inner wins.
 | Command | Meaning |
 | --- | --- |
 | `grid(n)` | n columns; sections fill left-to-right and wrap. n is 1–12. A section count ≠ n still renders, with a warning. |
+| `flow(n)` | one ordered stream fills n columns in a group, continuing on later pages in paged output. n is 2–4. Group-only; it cannot share an opener with `grid(n)`. Put full-width material before or after the group. (`docs/reference/design/022-paginated-columns.md`) |
 | `skinny(N%)` | the element/group takes N% of the main body's width, centered. N is 1–100, `%` required. `skinny()` defaults to 75%. *(defaults provisional — `docs/reference/design/003-skinny.md`)* |
 | `wide(N%)` | the mirror of `skinny`: the element/group takes N% of the main body's width, centered, bleeding evenly into both margins. N is 101–200, `%` required. `wide()` defaults to 125%. (`docs/reference/design/012-wide.md`) |
 | `center()` | text within the element/group is center-aligned, relative to the surrounding layout element. No arguments. (`docs/reference/design/005-center.md`) |

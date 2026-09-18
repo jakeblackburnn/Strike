@@ -24,7 +24,7 @@ Controls the whole site: the `/` project picker and global defaults.
 
 ```yaml
 title: strikedown   # picker heading + browser title base
-theme: winter evening  # default theme: a season (fall|winter|spring|summer), a time
+theme: winter evening  # default palette (including kanagawa/vanta-black) and a time
                     # (morning|evening), or both; light/dark are aliases for
                     # morning/evening. Readers can still override in Settings.
 width: 46           # default content width, in rem
@@ -36,10 +36,9 @@ projects:           # project order on the picker + nav; unlisted ones sort alph
 serve:              # default options for `strike serve <this dir>` (see below)
   watch: true
   open: true
-pdf:                # reserved for the planned PDF backend — parsed, but no
-                    # renderer reads it yet (roadmap item 2)
+pdf:                # defaults for `strike pdf` on files in this tree
   page_size: a4
-  margin: 2cm
+  margin: 54pt
 ```
 
 #### `serve` — default reader options
@@ -136,28 +135,41 @@ becomes the page at its containing folder's route:
 
 ### Typography headers — `.sxh`
 
-`strike.yaml` configures the *reader* (nav, ordering, mounting); typography belongs to
-strikedown itself, as **`:` directive lines** — today, command-alias definitions
-(`:thin-grid grid(2) skinny(80%)`, `docs/reference/design/010-aliases.md`). A `.sxh`
-header file is a shared collection of such directives that `header:` attaches to a whole
-scope, so a project can name its own layout vocabulary once and use it across every
-document (see `docs/reference/STRIKEDOWN.md`). `header:` paths are relative to the
+`strike.yaml` configures the reader (nav, ordering, mounting); a `.sxh` header
+sets document typography and reusable command aliases. Typography lines are
+`font: serif|sans|mono`, `measure: Nrem` (0.5–120), `size: Nrem` (0.5–5), and
+`leading: N` (1–3). An alias line uses the existing `:` directive form, such as
+`:thin-grid grid(2) skinny(80%)` (`docs/reference/design/010-aliases.md`).
+See [the live header](../paper/paper.sxh) and its [report](../paper/paper.sx).
+`header:` paths are relative to the
 file's own directory (content root for the site scope, the project folder for a
 project); a project header layers over the site header — an alias the project redefines
-overrides the site's same-named one. `.sxh` files are never documents — they don't
+overrides the site's same-named one; each typography field also layers separately.
+Malformed or unknown lines are ignored. `.sxh` files are never documents — they don't
 appear in nav or routes. A missing/unreadable header prints a warning and is ignored.
+
+### Theme files
+
+`theme_file: paper.theme` loads a fixed palette beside that `strike.yaml`.
+The file needs a `label:` and all 13 palette declarations (`color-scheme` and
+the twelve CSS color/shadow properties shown in
+[paper.theme](../paper/paper.theme)). Strike validates the values and inlines
+the resulting CSS at build time. The reader offers the file's label as the
+**Custom** theme. Set `theme: custom` to select it by default; a project file
+overrides a site file. No runtime theme fetch is needed.
 
 ## Key reference
 
 | Key | Scope | Effect |
 | --- | --- | --- |
 | `title` | site / project | Picker/browser title (site); project display name (project) |
-| `theme` | site | Default season (`fall`/`winter`/`spring`/`summer`) and/or time (`morning`/`evening`; `light`/`dark` alias) before the reader picks |
-| `width` | site | Default content width in rem |
+| `theme` | site / project | Default palette (`fall`, `winter`, `spring`, `summer`, `kanagawa`, `vanta-black`, or `custom` with `theme_file`) and/or time (`morning`/`evening`; `light`/`dark` alias); project values override by field |
+| `theme_file` | site / project | Dir-relative fixed palette file, inlined into HTML and selectable as Custom |
+| `width` | site / project | Default content width in rem; an `.sxh` measure takes precedence |
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
 | `projects` | site | Explicit project order on the picker + nav |
 | `serve` | served dir | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win; not re-read by `--watch` |
-| `pdf` | site | Reserved for the planned PDF backend (`page_size`, `margin`); parsed, no effect until `render_pdf.zig` exists |
+| `pdf` | site / project | PDF page size (`letter` or `a4`) and margin (points or inches); nearer config and CLI flags win |
 | `description` | project | Generated project-home subtitle |
 | `home` | project | Project-relative doc served at `/<project>` (else the project's `main.*`, else a generated index) |
 | `header` | site / project | Typography header (`.sxh`) seeding every document in the scope; project layers over site |

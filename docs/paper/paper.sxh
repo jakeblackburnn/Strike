@@ -1,0 +1,9 @@
+# A project header: typography plus reusable document components.
+font: serif
+measure: 34rem
+size: 1rem
+leading: 1.5
+
+:aside skinny(72%) color(muted)
+:comparison grid(2)
+:code-note color(muted) skinny(90%)

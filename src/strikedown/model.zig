@@ -50,6 +50,7 @@ pub const Block = struct {
 /// same fields onto heading/paragraph/… blocks with no further model change.
 pub const Attrs = struct {
     columns: ?usize = null, // from grid(n) (layout)
+    flow_columns: ?usize = null, // from flow(n): sequential column flow across pages
     width_pct: ?usize = null, // from skinny(N%) or wide(N%): % of the body column
     // width (layout). One field, two commands: ≤ 100 was written by skinny,
     // > 100 by wide — the grammar keeps the ranges disjoint (see `Command.wide`)
