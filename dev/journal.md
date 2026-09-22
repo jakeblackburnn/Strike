@@ -1,5 +1,18 @@
 # Journal
 
+## 2026-09-21 22:58 · base_sx · 02bbeb8 · devlog
+Branched off `base_md`'s finished commit and added groups: `doc.Group` (name +
+sections), a rewritten recursive `parseSection` in `src/parse.zig` (opener/splitter/
+closer via `groupOpen`/`isSectionSplit`/`groupEnd`, a 64-level nesting cap, `Doc.warnings`
+now populated for a mismatched closer and an unclosed group), a `<div class="group">`
++ `<section>` emitter arm. 10 new tests (7 parser, 3 end-to-end) covering: open/close,
+`===` splitting, nesting, and all three degradation paths (`// TODO: fix`, bare `===`,
+mismatched closer) — `zig build test` green. Verified `strike render sample/groups.sx`
+by hand; `.md` and `.sx` confirmed going through the identical pipeline (no
+extension branch anywhere). `dev/terms.md` and `README.md` updated with the new
+vocabulary/decisions. Both base branches are now committed at v0.0.1; reporting a
+tour back to Jack next.
+
 ## 2026-09-21 22:50 · base_md · a4d15a1 · devlog
 Wrote and committed v0.0.1 as an orphan root commit: `src/doc.zig` (bare `Block`
 union: heading/paragraph/code, no `Attrs`), `src/parse.zig` (line-based block loop +
