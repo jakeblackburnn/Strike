@@ -1,5 +1,18 @@
 # Journal
 
+## 2026-09-21 22:50 · base_md · a4d15a1 · devlog
+Wrote and committed v0.0.1 as an orphan root commit: `src/doc.zig` (bare `Block`
+union: heading/paragraph/code, no `Attrs`), `src/parse.zig` (line-based block loop +
+`isBlockStart` companion + flow-joining + one-pass inline chain for code/strong/em),
+`src/emit_html.zig` (walk + `page()` wrap), `src/html.zig` (escaping), `src/main.zig`
+(`strike render` only). 12 tests across the two logic files, all green
+(`zig build test`). Verified `zig build run`, `-o`, `--fragment`, and both CLI error
+paths against `zig-out/bin/strike`. `dev/terms.md` written with the full vocabulary,
+eight design-decision entries, and the backlog list; `dev/intent.md` explains the
+restart. `README.md` cut to ~35 lines. `docs/`, `strikedown/`, `sandbox/`, `test.md`
+all gone (not carried into the orphan tree). Next: branch `base_sx` off this commit
+and add groups only.
+
 ## 2026-09-21 22:44 · base_md · (root commit) · brief
 **Task:** Write v0.0.1 of both base branches (`base_md`, `base_sx`) — minimal,
 human-directed restarts of strike, replacing the AI-written 0.1.x line for these
