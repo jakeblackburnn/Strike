@@ -55,7 +55,7 @@ pub fn renderAll(arena: Allocator, site: project.Site) ![]Page {
     }
 
     if (root) |r| {
-        try pages.append(arena, .{ .route = homeHref(site.base), .src = "(root)", .kind = .home, .html = try renderProjectHome(arena, r) });
+        try pages.append(arena, .{ .route = homeHref(site.base), .src = "(root)", .kind = .home, .html = try renderProjectHome(arena, site, r) });
     } else {
         try pages.append(arena, .{ .route = homeHref(site.base), .src = "(picker)", .kind = .picker, .html = try renderPickerPage(arena, site) });
     }
@@ -65,21 +65,21 @@ pub fn renderAll(arena: Allocator, site: project.Site) ![]Page {
             // Its home was already rendered above, at "/"; only its docs
             // (already routed at "/<relpath>", no slug prefix) remain.
             for (p.docs) |d| {
-                try pages.append(arena, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(arena, p, d) });
+                try pages.append(arena, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(arena, site, p, d) });
             }
-            try appendFolderPages(arena, &pages, p, p.tree);
+            try appendFolderPages(arena, &pages, site, p, p.tree);
             continue;
         }
         try pages.append(arena, .{
             .route = try projectHref(arena, p),
             .src = p.slug,
             .kind = .home,
-            .html = try renderProjectHome(arena, p),
+            .html = try renderProjectHome(arena, site, p),
         });
         for (p.docs) |d| {
-            try pages.append(arena, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(arena, p, d) });
+            try pages.append(arena, .{ .route = d.route, .src = d.route[1..], .kind = .doc, .html = try renderDocPage(arena, site, p, d) });
         }
-        try appendFolderPages(arena, &pages, p, p.tree);
+        try appendFolderPages(arena, &pages, site, p, p.tree);
     }
     return pages.toOwnedSlice(arena);
 }
@@ -88,17 +88,17 @@ pub fn renderAll(arena: Allocator, site: project.Site) ![]Page {
 /// folder's own route. Runs after the project's docs so that on a route
 /// collision (a folder `x/` with a main.* next to a sibling doc `x.md`) the
 /// doc wins deterministically — the folder page is skipped with a warning.
-fn appendFolderPages(gpa: Allocator, pages: *std.ArrayList(Page), p: project.Project, nodes: []const project.NavNode) !void {
+fn appendFolderPages(gpa: Allocator, pages: *std.ArrayList(Page), site: project.Site, p: project.Project, nodes: []const project.NavNode) !void {
     for (nodes) |node| switch (node) {
         .folder => |f| {
             if (f.main) |m| {
                 if (routeTaken(pages.items, m.route)) {
                     std.debug.print("strike: warning: folder page {s} collides with an existing page; skipping\n", .{m.route});
                 } else {
-                    try pages.append(gpa, .{ .route = m.route, .src = m.route[1..], .kind = .home, .html = try renderDocPage(gpa, p, m) });
+                    try pages.append(gpa, .{ .route = m.route, .src = m.route[1..], .kind = .home, .html = try renderDocPage(gpa, site, p, m) });
                 }
             }
-            try appendFolderPages(gpa, pages, p, f.children);
+            try appendFolderPages(gpa, pages, site, p, f.children);
         },
         .doc => {},
     };
@@ -155,13 +155,12 @@ pub fn outPath(gpa: Allocator, page: Page, base: []const u8) ![]u8 {
 pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
     const body = try renderPicker(gpa, site);
     defer gpa.free(body);
-    const nav = try renderPickerNav(gpa, site);
+    const nav = try renderPickerNav(gpa, site, "");
     defer gpa.free(nav);
     const picker_shell: Shell = .{
         .title = site.title,
-        .brand = site.title,
-        // The picker is not inside a project; its brand links to itself.
-        .home_href = homeHref(site.base),
+        // The picker is not inside a project; its one crumb links to itself.
+        .crumbs = &.{.{ .label = site.title, .href = homeHref(site.base) }},
         .nav_html = nav,
         .season = site.season,
         .time = site.time,
@@ -175,8 +174,8 @@ pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
 /// Render a project's `/<slug>` home page: its configured `home:` doc if set,
 /// else a generated index (title, description, and a link list of its docs).
 /// Caller owns the result.
-pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
-    if (p.home) |h| return renderDocPage(gpa, p, h);
+pub fn renderProjectHome(gpa: Allocator, site: project.Site, p: project.Project) ![]u8 {
+    if (p.home) |h| return renderDocPage(gpa, site, p, h);
 
     var body: Writer.Allocating = .init(gpa);
     defer body.deinit();
@@ -193,16 +192,18 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
     for (p.docs) |d| try writeLinkItem(w, d.route, d.label);
     try w.writeAll("</ul>\n");
 
-    const nav = try renderNav(gpa, p.slug, p.tree, "");
+    const project_route = try projectHref(gpa, p);
+    defer gpa.free(project_route);
+    const nav = try siteNav(gpa, site, p, project_route);
     defer gpa.free(nav);
-    const brand_href = try projectHref(gpa, p);
-    defer gpa.free(brand_href);
+
+    var crumb_arena = std.heap.ArenaAllocator.init(gpa);
+    defer crumb_arena.deinit();
+    const crumbs = try breadcrumbSegments(crumb_arena.allocator(), site, p, project_route);
+
     const home_shell: Shell = .{
         .title = p.title,
-        .brand = p.title,
-        .home_href = brand_href,
-        .site_title = p.site_title,
-        .site_href = homeHref(p.base),
+        .crumbs = crumbs,
         .nav_html = nav,
         .season = p.season,
         .time = p.time,
@@ -215,8 +216,8 @@ pub fn renderProjectHome(gpa: Allocator, p: project.Project) ![]u8 {
 
 /// Render a single document into a full page, with its project's nav (the doc
 /// marked active) and chrome. Caller owns the result.
-pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 {
-    const nav = try renderNav(gpa, p.slug, p.tree, d.route);
+pub fn renderDocPage(gpa: Allocator, site: project.Site, p: project.Project, d: *project.Doc) ![]u8 {
+    const nav = try siteNav(gpa, site, p, d.route);
     defer gpa.free(nav);
     const body = (try render_html.render(gpa, d.md, .{
         .sheet = p.sheet,
@@ -224,14 +225,14 @@ pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 
         .link_floor = p.base,
     })).takeHtml(gpa, d.rel_path);
     defer gpa.free(body);
-    const brand_href = try projectHref(gpa, p);
-    defer gpa.free(brand_href);
+
+    var crumb_arena = std.heap.ArenaAllocator.init(gpa);
+    defer crumb_arena.deinit();
+    const crumbs = try breadcrumbSegments(crumb_arena.allocator(), site, p, d.route);
+
     const doc_shell: Shell = .{
         .title = d.title,
-        .brand = p.title,
-        .home_href = brand_href,
-        .site_title = p.site_title,
-        .site_href = homeHref(p.base),
+        .crumbs = crumbs,
         .nav_html = nav,
         .season = p.season,
         .time = p.time,
@@ -243,18 +244,20 @@ pub fn renderDocPage(gpa: Allocator, p: project.Project, d: *project.Doc) ![]u8 
 }
 
 /// Render the inner HTML of `.sidebar-nav` for one project: a nested tree of
-/// folders (`<details>`) and document links, with the `active_route` doc marked
-/// and its ancestor folders rendered open. `slug` keys per-folder collapse state
-/// in `localStorage`. Returns "" for an empty tree. Caller owns the result.
-pub fn renderNav(allocator: Allocator, slug: []const u8, tree: []const project.NavNode, active_route: []const u8) ![]u8 {
+/// folders (`<details>`) and document links, with the `active_route` doc marked.
+/// A folder opens when it's an ancestor of the active route, or unconditionally
+/// when `open_default` is true (`nav: {open: true}`, the default — see
+/// `project.NavConfig`). `slug` keys per-folder collapse state in
+/// `localStorage`. Returns "" for an empty tree. Caller owns the result.
+pub fn renderNav(allocator: Allocator, slug: []const u8, tree: []const project.NavNode, active_route: []const u8, open_default: bool) ![]u8 {
     if (tree.len == 0) return allocator.dupe(u8, "");
     var out: Writer.Allocating = .init(allocator);
     errdefer out.deinit();
-    try renderNavList(&out.writer, slug, tree, active_route);
+    try renderNavList(&out.writer, slug, tree, active_route, open_default);
     return out.toOwnedSlice();
 }
 
-fn renderNavList(w: *Writer, slug: []const u8, nodes: []const project.NavNode, active: []const u8) Writer.Error!void {
+fn renderNavList(w: *Writer, slug: []const u8, nodes: []const project.NavNode, active: []const u8, open_default: bool) Writer.Error!void {
     try w.writeAll("<ul class=\"nav-tree\">");
     for (nodes) |node| switch (node) {
         .doc => |d| {
@@ -267,7 +270,7 @@ fn renderNavList(w: *Writer, slug: []const u8, nodes: []const project.NavNode, a
         },
         .folder => |f| {
             const own_active = if (f.main) |m| std.mem.eql(u8, m.route, active) else false;
-            const open = own_active or navContainsActive(f.children, active);
+            const open = open_default or own_active or navContainsActive(f.children, active);
             try w.writeAll("<li><details class=\"nav-folder\" data-folder=\"");
             try escapeAttrInto(w, slug);
             try w.writeByte('/');
@@ -287,7 +290,7 @@ fn renderNavList(w: *Writer, slug: []const u8, nodes: []const project.NavNode, a
                 try escapeInto(w, f.label);
             }
             try w.writeAll("</summary>");
-            try renderNavList(w, slug, f.children, active);
+            try renderNavList(w, slug, f.children, active, open_default);
             try w.writeAll("</details></li>");
         },
     };
@@ -306,17 +309,21 @@ fn navContainsActive(nodes: []const project.NavNode, active: []const u8) bool {
     return false;
 }
 
-/// The picker page's sidebar nav: the whole site, one expandable node per
-/// project. Each project is the same `<details class="nav-folder">` a folder
-/// inside a project gets — its summary links the project home, its children are
-/// that project's own tree — so the picker reaches every document directly
-/// instead of bouncing the reader through a project home first. Open by default
-/// (the front page's job is to show what's there); `data-folder` is the bare
-/// slug, which no folder key can collide with since those always carry a `/`,
-/// so a reader's collapse survives in `localStorage` like any other folder.
-/// A project with no documents of its own stays a plain link. Returns "" when
-/// there are no projects. Caller owns the result.
-pub fn renderPickerNav(allocator: Allocator, site: project.Site) ![]u8 {
+/// The whole-site sidebar nav: one expandable node per project. Each project is
+/// the same `<details class="nav-folder">` a folder inside a project gets — its
+/// summary links the project home, its children are that project's own tree —
+/// so any page reaches every document directly instead of bouncing the reader
+/// through a project home first (`site.nav.scope == .full`, the default; used
+/// on the picker page and, per `siteNav`, on every project/doc page too).
+/// Project nodes always render open — `data-folder` is the bare slug, which no
+/// folder key can collide with since those always carry a `/`, so a reader's
+/// collapse still survives in `localStorage` like any other folder; a folder
+/// inside a project tree instead follows `open_default`
+/// (`site.nav.open`, see `project.NavConfig`). `active_route` marks the doc a
+/// page is on ("" on the picker, which is on no document). A project with no
+/// documents of its own stays a plain link. Returns "" when there are no
+/// projects. Caller owns the result.
+pub fn renderPickerNav(allocator: Allocator, site: project.Site, active_route: []const u8) ![]u8 {
     if (site.projects.len == 0) return allocator.dupe(u8, "");
     var out: Writer.Allocating = .init(allocator);
     errdefer out.deinit();
@@ -338,11 +345,80 @@ pub fn renderPickerNav(allocator: Allocator, site: project.Site) ![]u8 {
         try w.writeAll("\">");
         try escapeInto(w, p.title);
         try w.writeAll("</a></summary>");
-        try renderNavList(w, p.slug, p.tree, "");
+        try renderNavList(w, p.slug, p.tree, active_route, site.nav.open);
         try w.writeAll("</details></li>");
     }
     try w.writeAll("</ul>");
     return out.toOwnedSlice();
+}
+
+/// One page's sidebar nav, following `site.nav.scope` (`project.NavConfig`):
+/// `.project` keeps the pre-full-nav behavior — just `p`'s own tree; `.full`
+/// (the default) is the whole site — every project's tree, from the root
+/// project's own tree directly (it already *is* the whole site) or otherwise
+/// `renderPickerNav`. Caller owns the result.
+fn siteNav(allocator: Allocator, site: project.Site, p: project.Project, active_route: []const u8) ![]u8 {
+    if (site.nav.scope == .project) return renderNav(allocator, p.slug, p.tree, active_route, site.nav.open);
+    for (site.projects) |sp| {
+        if (sp.slug.len == 0) return renderNav(allocator, sp.slug, sp.tree, active_route, site.nav.open);
+    }
+    return renderPickerNav(allocator, site, active_route);
+}
+
+/// The breadcrumb segments for `p`'s page at `route`: the site root (segment
+/// 0, unconditional — "root is always root"), then at most **one** more
+/// segment — the nearest thing below root on the way to `route`. That
+/// "outer folder" is the project (when `p` is a real project distinct from
+/// the site — a root project *is* the whole site, so it gets no second
+/// segment naming itself again) if `route` sits directly in the project
+/// root, or otherwise the nearest ancestor nav folder. Anything past that
+/// single segment — a project *and* folders, or several nested folders — is
+/// compressed into it: its label gains a `..` prefix (no separator) to mark
+/// that levels were skipped, while its link still goes to that nearest
+/// folder (or plain text — `shell.Segment.href = null` — when it has no
+/// `main.*` to link to). `site.nav.breadcrumb == false` drops this second
+/// segment entirely except for the project, keeping the older
+/// one-or-two-segment brand. Caller owns the result.
+pub fn breadcrumbSegments(gpa: Allocator, site: project.Site, p: project.Project, route: []const u8) ![]shell.Segment {
+    var out: std.ArrayList(shell.Segment) = .empty;
+    try out.append(gpa, .{ .label = site.title, .href = homeHref(site.base) });
+
+    if (!site.nav.breadcrumb) {
+        if (p.slug.len > 0) try out.append(gpa, .{ .label = p.title, .href = try projectHref(gpa, p) });
+        return out.toOwnedSlice(gpa);
+    }
+
+    // The project and the folder ancestry form one chain below root; only
+    // its nearest (last) entry survives into the breadcrumb, compressed.
+    var chain: std.ArrayList(shell.Segment) = .empty;
+    if (p.slug.len > 0) try chain.append(gpa, .{ .label = p.title, .href = try projectHref(gpa, p) });
+    _ = try collectAncestors(gpa, p.tree, route, &chain);
+
+    if (chain.items.len == 1) {
+        try out.append(gpa, chain.items[0]);
+    } else if (chain.items.len > 1) {
+        const nearest = chain.items[chain.items.len - 1];
+        try out.append(gpa, .{ .label = try std.fmt.allocPrint(gpa, "..{s}", .{nearest.label}), .href = nearest.href });
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Walks `nodes` for the folder chain containing `active`, appending a
+/// `Segment` per ancestor folder in root-to-leaf order as it descends;
+/// speculative pushes for folders that turn out not to contain `active` are
+/// popped back off. Mirrors `navContainsActive`'s recursion, returning the
+/// path instead of a bool.
+fn collectAncestors(gpa: Allocator, nodes: []const project.NavNode, active: []const u8, out: *std.ArrayList(shell.Segment)) Allocator.Error!bool {
+    for (nodes) |node| switch (node) {
+        .doc => |d| if (std.mem.eql(u8, d.route, active)) return true,
+        .folder => |f| {
+            const own_active = if (f.main) |m| std.mem.eql(u8, m.route, active) else false;
+            try out.append(gpa, .{ .label = f.label, .href = if (f.main) |m| m.route else null });
+            if (own_active or try collectAncestors(gpa, f.children, active, out)) return true;
+            _ = out.pop();
+        },
+    };
+    return false;
 }
 
 fn writeProjectHref(w: *Writer, base: []const u8, slug: []const u8) Writer.Error!void {
@@ -398,14 +474,16 @@ fn testDoc(route: []const u8, label: []const u8) project.Doc {
     return .{ .rel_path = route, .route = route, .label = label, .title = label, .md = "" };
 }
 
-test "renderNav marks the active doc and opens its ancestor folder" {
+test "renderNav marks the active doc and opens its ancestor folder even with open_default off" {
     var leaf = testDoc("/p/topo/a", "A");
     var sibling = testDoc("/p/topo/b", "B");
     var children = [_]project.NavNode{ .{ .doc = &leaf }, .{ .doc = &sibling } };
     var tree = [_]project.NavNode{
         .{ .folder = .{ .label = "Topo", .rel_path = "topo", .children = &children } },
     };
-    const nav = try renderNav(testing.allocator, "p", &tree, "/p/topo/a");
+    // open_default: false (`nav: {open: false}`) still opens an ancestor of
+    // the active route — the two rules are independent.
+    const nav = try renderNav(testing.allocator, "p", &tree, "/p/topo/a", false);
     defer testing.allocator.free(nav);
 
     try testing.expect(std.mem.indexOf(u8, nav, "<details class=\"nav-folder\" data-folder=\"p/topo\" open>") != null);
@@ -413,8 +491,24 @@ test "renderNav marks the active doc and opens its ancestor folder" {
     try testing.expect(std.mem.indexOf(u8, nav, "class=\"nav-doc\" href=\"/p/topo/b\">B</a>") != null);
 }
 
+test "renderNav: open_default opens a folder that isn't an ancestor of the active route" {
+    var leaf = testDoc("/p/topo/a", "A");
+    var children = [_]project.NavNode{.{ .doc = &leaf }};
+    var tree = [_]project.NavNode{
+        .{ .folder = .{ .label = "Topo", .rel_path = "topo", .children = &children } },
+    };
+    // Nothing is active, so without open_default this folder would stay closed.
+    const closed = try renderNav(testing.allocator, "p", &tree, "", false);
+    defer testing.allocator.free(closed);
+    try testing.expect(std.mem.indexOf(u8, closed, "data-folder=\"p/topo\" open>") == null);
+
+    const open = try renderNav(testing.allocator, "p", &tree, "", true);
+    defer testing.allocator.free(open);
+    try testing.expect(std.mem.indexOf(u8, open, "data-folder=\"p/topo\" open>") != null);
+}
+
 test "renderNav returns empty string for an empty tree" {
-    const nav = try renderNav(testing.allocator, "p", &.{}, "");
+    const nav = try renderNav(testing.allocator, "p", &.{}, "", true);
     defer testing.allocator.free(nav);
     try testing.expectEqualStrings("", nav);
 }
@@ -449,7 +543,9 @@ test "renderProjectHome escapes generated-index title, description and labels" {
         .tree = &tree,
         .docs = &docs,
     };
-    const page = try renderProjectHome(testing.allocator, p);
+    var projects = [_]project.Project{p};
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
+    const page = try renderProjectHome(testing.allocator, site, p);
     defer testing.allocator.free(page);
 
     try testing.expect(std.mem.indexOf(u8, page, "<h1>Title &lt;script&gt;</h1>") != null);
@@ -547,7 +643,7 @@ test "renderNav links a folder's label to its main page and marks it active" {
     var tree = [_]project.NavNode{
         .{ .folder = .{ .label = "Sub", .rel_path = "sub", .children = &children, .main = &folder_main } },
     };
-    const nav = try renderNav(testing.allocator, "p", &tree, "/p/sub");
+    const nav = try renderNav(testing.allocator, "p", &tree, "/p/sub", false);
     defer testing.allocator.free(nav);
 
     try testing.expect(std.mem.indexOf(u8, nav, "<a class=\"nav-folder-link active\" aria-current=\"page\" href=\"/p/sub\">Sub</a>") != null);
@@ -585,7 +681,7 @@ test "picker page sidebar nav expands each project into its own tree" {
         .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &b_tree, .docs = &b_docs },
     };
     const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
-    const nav = try renderPickerNav(testing.allocator, site);
+    const nav = try renderPickerNav(testing.allocator, site, "");
     defer testing.allocator.free(nav);
 
     // Each project is a folder node keyed by its bare slug, open by default,
@@ -605,31 +701,27 @@ test "a picker site's brand leads with the site title" {
     var doc = testDoc("/blog/post", "Post");
     var docs = [_]*project.Doc{&doc};
     var tree = [_]project.NavNode{.{ .doc = &doc }};
-    var p: project.Project = .{
+    const p: project.Project = .{
         .slug = "blog",
         .title = "Blog",
         .description = "",
         .season = "",
         .time = "",
         .width = "",
-        .site_title = "Site",
         .home = null,
         .tree = &tree,
         .docs = &docs,
     };
+    var projects = [_]project.Project{p};
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
     // The sidebar nav below is one project's tree, so the site segment is the
-    // only way back to `/` from a document.
-    const page = try renderDocPage(testing.allocator, p, &doc);
+    // only way back to `/` from a document. The project segment follows
+    // regardless of `site_title` (left unset here) — a non-root project
+    // (`slug` non-empty) always gets its own segment; see "the sidebar brand
+    // links to the current project's root" for the root-project case.
+    const page = try renderDocPage(testing.allocator, site, p, &doc);
     defer testing.allocator.free(page);
-    try testing.expect(std.mem.indexOf(u8, page, "<a class=\"brand-site\" href=\"/\">Site</a><span class=\"brand-sep\">/</span><a class=\"brand-home\" href=\"/blog\">Blog</a>") != null);
-
-    // Root-project mode leaves it off: `site_title` is unset, so the brand is
-    // the single link it always was.
-    p.site_title = "";
-    const plain = try renderDocPage(testing.allocator, p, &doc);
-    defer testing.allocator.free(plain);
-    try testing.expect(std.mem.indexOf(u8, plain, "<a class=\"brand-site\"") == null);
-    try testing.expect(std.mem.indexOf(u8, plain, "<div class=\"sidebar-brand\"><a class=\"brand-home\" href=\"/blog\">Blog</a></div>") != null);
+    try testing.expect(std.mem.indexOf(u8, page, "<a class=\"brand-site\" href=\"/\">Site</a><a class=\"brand-home\" href=\"/blog\">Blog</a>") != null);
 }
 
 test "renderPicker: site main.* dictates the entire page" {
@@ -736,9 +828,11 @@ test "the sidebar brand links to the current project's root" {
         .tree = &tree,
         .docs = &docs,
     };
+    var projects = [_]project.Project{p};
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
     // From a document deep in the project, the brand still points at /blog —
     // not at the site root, and not at the document.
-    const page = try renderDocPage(testing.allocator, p, &doc);
+    const page = try renderDocPage(testing.allocator, site, p, &doc);
     defer testing.allocator.free(page);
     try testing.expect(std.mem.indexOf(u8, page, "class=\"brand-home\" href=\"/blog\">Blog</a>") != null);
 
@@ -757,7 +851,156 @@ test "the sidebar brand links to the current project's root" {
         .tree = &root_tree,
         .docs = &root_docs,
     };
-    const root_page = try renderDocPage(testing.allocator, root, &root_doc);
+    var root_projects = [_]project.Project{root};
+    const root_site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &root_projects };
+    const root_page = try renderDocPage(testing.allocator, root_site, root, &root_doc);
     defer testing.allocator.free(root_page);
     try testing.expect(std.mem.indexOf(u8, root_page, "class=\"brand-home\" href=\"/\">Site</a>") != null);
+}
+
+test "breadcrumbSegments: one folder deep shows it plainly; two or more collapses to '..nearest'" {
+    // docs/reference/a — one folder deep: no compression.
+    var shallow_doc = testDoc("/docs/reference/a", "A");
+    var reference_main = testDoc("/reference", "Reference");
+    var shallow_children = [_]project.NavNode{.{ .doc = &shallow_doc }};
+    var shallow_tree = [_]project.NavNode{
+        .{ .folder = .{ .label = "Reference", .rel_path = "reference", .children = &shallow_children, .main = &reference_main } },
+    };
+    const shallow_p: project.Project = .{
+        .slug = "", // root-project mode: no project segment competing for the one slot
+        .title = "Docs",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &shallow_tree,
+        .docs = &.{},
+    };
+    var shallow_projects = [_]project.Project{shallow_p};
+    const shallow_site: project.Site = .{ .title = "Docs", .season = "", .time = "", .width = "", .projects = &shallow_projects };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const shallow_crumbs = try breadcrumbSegments(arena.allocator(), shallow_site, shallow_p, shallow_doc.route);
+    try testing.expectEqual(@as(usize, 2), shallow_crumbs.len);
+    try testing.expectEqualStrings("Docs", shallow_crumbs[0].label);
+    try testing.expectEqualStrings("Reference", shallow_crumbs[1].label);
+    try testing.expectEqualStrings("/reference", shallow_crumbs[1].href.?);
+
+    // docs/reference/design/a — two folders deep: collapses to the nearest
+    // one, ".."-prefixed, dropping "Reference" (unreachable via the crumb —
+    // still reachable through the nav tree beside it).
+    var deep_doc = testDoc("/docs/reference/design/a", "A");
+    var design_children = [_]project.NavNode{.{ .doc = &deep_doc }};
+    var reference_children = [_]project.NavNode{
+        .{ .folder = .{ .label = "Design", .rel_path = "reference/design", .children = &design_children } },
+    };
+    var deep_tree = [_]project.NavNode{
+        .{ .folder = .{ .label = "Reference", .rel_path = "reference", .children = &reference_children } },
+    };
+    const deep_p: project.Project = .{
+        .slug = "",
+        .title = "Docs",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &deep_tree,
+        .docs = &.{},
+    };
+    var deep_projects = [_]project.Project{deep_p};
+    const deep_site: project.Site = .{ .title = "Docs", .season = "", .time = "", .width = "", .projects = &deep_projects };
+
+    const deep_crumbs = try breadcrumbSegments(arena.allocator(), deep_site, deep_p, deep_doc.route);
+    try testing.expectEqual(@as(usize, 2), deep_crumbs.len);
+    try testing.expectEqualStrings("Docs", deep_crumbs[0].label);
+    try testing.expectEqualStrings("..Design", deep_crumbs[1].label);
+    try testing.expect(deep_crumbs[1].href == null); // "Design" has no main.* — plain text
+}
+
+test "breadcrumbSegments: a project one folder deep still collapses (project + folder = 2 in the chain)" {
+    var doc = testDoc("/docs/reference/a", "A");
+    var children = [_]project.NavNode{.{ .doc = &doc }};
+    var tree = [_]project.NavNode{
+        .{ .folder = .{ .label = "Reference", .rel_path = "reference", .children = &children } },
+    };
+    const p: project.Project = .{
+        .slug = "docs",
+        .title = "Docs",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &tree,
+        .docs = &.{},
+    };
+    var projects = [_]project.Project{p};
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const crumbs = try breadcrumbSegments(arena.allocator(), site, p, doc.route);
+
+    // Root, then the nearest thing below it — the project and the one
+    // folder both sit "below root", so together they're already 2 deep and
+    // collapse to the folder, same as two folders would with no project.
+    try testing.expectEqual(@as(usize, 2), crumbs.len);
+    try testing.expectEqualStrings("Site", crumbs[0].label);
+    try testing.expectEqualStrings("..Reference", crumbs[1].label);
+}
+
+test "nav: {breadcrumb: false} drops the folder walk, keeping the older one-or-two-segment brand" {
+    var doc = testDoc("/docs/reference/design/a", "A");
+    var design_children = [_]project.NavNode{.{ .doc = &doc }};
+    var reference_children = [_]project.NavNode{
+        .{ .folder = .{ .label = "Design", .rel_path = "reference/design", .children = &design_children } },
+    };
+    var tree = [_]project.NavNode{
+        .{ .folder = .{ .label = "Reference", .rel_path = "reference", .children = &reference_children } },
+    };
+    const p: project.Project = .{
+        .slug = "docs",
+        .title = "Docs",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &tree,
+        .docs = &.{},
+    };
+    var projects = [_]project.Project{p};
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects, .nav = .{ .breadcrumb = false } };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const crumbs = try breadcrumbSegments(arena.allocator(), site, p, doc.route);
+    try testing.expectEqual(@as(usize, 2), crumbs.len); // site + project only
+}
+
+test "siteNav: full scope (default) surfaces every project on any page; project scope restores the old per-project view" {
+    var doc_a = testDoc("/a/one", "One");
+    var tree_a = [_]project.NavNode{.{ .doc = &doc_a }};
+    var docs_a = [_]*project.Doc{&doc_a};
+    var doc_b = testDoc("/b/two", "Two");
+    var tree_b = [_]project.NavNode{.{ .doc = &doc_b }};
+    var docs_b = [_]*project.Doc{&doc_b};
+    var projects = [_]project.Project{
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &tree_a, .docs = &docs_a },
+        .{ .slug = "b", .title = "B", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &tree_b, .docs = &docs_b },
+    };
+    const site: project.Site = .{ .title = "Site", .season = "", .time = "", .width = "", .projects = &projects };
+
+    const full = try siteNav(testing.allocator, site, projects[0], "/a/one");
+    defer testing.allocator.free(full);
+    try testing.expect(std.mem.indexOf(u8, full, "href=\"/b/two\">Two</a>") != null); // another project's doc, reachable
+
+    var project_scope_site = site;
+    project_scope_site.nav.scope = .project;
+    const scoped = try siteNav(testing.allocator, project_scope_site, projects[0], "/a/one");
+    defer testing.allocator.free(scoped);
+    try testing.expect(std.mem.indexOf(u8, scoped, "href=\"/b/two\">Two</a>") == null); // only this project's own tree
 }

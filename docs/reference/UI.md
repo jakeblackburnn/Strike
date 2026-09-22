@@ -28,25 +28,37 @@ prominence in `main.*`.
 
 ## The sidebar is minimal
 
-- **The sidebar owns navigation.** Within a project it's that project's doc tree; on the
-  front page of a multi-project site it's the *whole* site — one expandable node per
-  project, each holding that project's tree, so every document is one click from the
-  front page rather than two. So on any screen wide enough to show it, every page is
-  reachable from the sidebar no matter what the author put in `main.*`. (Narrow screens
-  are the standing exception — see "Narrow screens".)
-- **A project node is a folder node.** Nothing about a project's row in the front-page
-  nav is special: it is the same disclosure control a folder inside a project gets, with
-  the same label-links-to-its-page rule and the same persistence. Projects open by
-  default there — the front page's job is to show what the site holds.
+- **The sidebar owns navigation, and by default it's the whole site.** Every page's
+  sidebar — not just the front page's — carries every project and its documents, one
+  expandable node per project, each holding that project's tree: any document is one
+  click from any other. So on any screen wide enough to show it, every page is reachable
+  from the sidebar no matter what the author put in `main.*`. (Narrow screens are the
+  standing exception — see "Narrow screens".) `nav: {scope: project}` in `strike.yaml`
+  restores the older, project-scoped sidebar (`docs/reference/STRIKE_YAML.md`).
+- **A project node is a folder node.** Nothing about a project's row in the nav is
+  special: it is the same disclosure control a folder inside a project gets, with the
+  same label-links-to-its-page rule and the same persistence. Nav folders — project nodes
+  included — open by default; `nav: {open: false}` restores the older rule (closed unless
+  an ancestor of the active page). A reader's own collapse always wins over either default.
 - Navigation first: brand, nav tree, and (at the bottom) the settings triggers.
-- **The brand is a way back, and it is a path.** Inside a project it shows that project's
-  title and links to the project's own root — the reader's "up". On a multi-project site
-  it leads with the site title, linked to the front page, because the nav below is one
-  project's tree and so can never be the way back to it. A project that *is* the whole
-  site gets no site segment; naming it twice would only link to the page you are on.
-  Under the brand sits the chrome's one outbound link: a small muted subtitle crediting
-  strike. All of it is fixed, not configurable; a link to the author's own repo is author
-  content and belongs in `main.*`.
+- **Root is always root, and the brand is a two-segment breadcrumb, capped.** The
+  brand's first segment always reaches the front page — `/`, or the mount base —
+  however deep the reader is, because the nav beside it can carry the whole site but the
+  brand is still the fastest single click home. At most one segment follows: the nearest
+  thing below root on the way to the page — the project (skipped when the project *is*
+  the whole site — naming it twice would only link to the page you are on), or the
+  page's nearest ancestor nav folder, whichever is closer. Everything past that single
+  segment — a project *and* folders, or several nested folders — collapses into it: its
+  label gains a `..` prefix (`..design`, no separator) to mark that levels were skipped,
+  while it still links to that nearest folder's `main.*` when it has one, plain text
+  otherwise. Two segments, never more, each its own block-level line — root above, the
+  nearest thing below it underneath, no `/` between them — so the brand never
+  line-wraps mid-segment; a label too long for the sidebar's width truncates with an
+  ellipsis instead. `nav: {breadcrumb: false}` drops the second segment down to just the
+  project (`STRIKE_YAML.md`). Under the brand sits the chrome's one outbound link: a
+  small muted subtitle crediting strike. All of it is fixed except the two `nav:` keys
+  above; a link to the author's own repo is
+  author content and belongs in `main.*`.
 - **The right edge is the collapse control.** No arrow buttons: hovering the sidebar
   warms the edge line, hovering the edge itself lights it in the accent color, and
   clicking it toggles. The sidebar slides away; the edge strip slides to the screen's
@@ -77,11 +89,14 @@ decides. Default season: **winter**.
 | spring | pale pink, plum text, purple accent | neutral dark grey, pink accent |
 | summer | cream, deep green text, green accent | near-black maroon, muted red accent |
 | kanagawa | warm ink black, blue accent | same fixed palette |
-| vanta-black | true black, cyan accent | same fixed palette |
+| vanta-black | true black, off-white accent | same fixed palette |
 
-Twelve palette tokens per variant live in `src/themes.zig`: `--bg`, `--fg`, `--muted`,
-`--accent`, `--warn`, `--code-bg`, `--border`, `--sidebar-bg`, and four
-`--collapse-*` tokens for the collapsible-group card. A new theme defines all twelve.
+Thirteen palette tokens per variant live in `src/themes.zig`: `--bg`, `--fg`, `--muted`,
+`--accent`, `--on-accent`, `--warn`, `--code-bg`, `--border`, `--sidebar-bg`, and four
+`--collapse-*` tokens for the collapsible-group card. `--on-accent` is the text color for
+content painted on `--accent` (`.nav-doc.active`'s background) — it defaults to white,
+which every seasonal/kanagawa accent is saturated enough to contrast with, but a near-white
+accent (vanta-black's) needs a dark one instead. A new theme defines all thirteen.
 The yaml `theme:` key supplies a site or project default (`winter evening`, `kanagawa`, …)
 that readers override in Settings.
 

@@ -29,11 +29,18 @@ pub const Palette = struct {
     collapse_shadow: []const u8,
     collapse_closed_shadow: []const u8,
     sidebar_bg: []const u8,
+    /// Text color for content painted *on* `accent` (`.nav-doc.active`'s
+    /// background, chiefly). "#fff" reads fine against every seasonal/kanagawa
+    /// accent, all of which are saturated enough to contrast with white — but
+    /// a near-white accent (vanta-black's) needs a dark one instead, so this
+    /// is per-palette rather than the single global constant it used to be.
+    on_accent: []const u8 = "#fff",
 };
 
 pub fn paletteCss(comptime p: Palette) []const u8 {
     return "    color-scheme: " ++ p.color_scheme ++ ";\n" ++
         "    --bg: " ++ p.bg ++ "; --fg: " ++ p.fg ++ "; --muted: " ++ p.muted ++ "; --accent: " ++ p.accent ++ ";\n" ++
+        "    --on-accent: " ++ p.on_accent ++ ";\n" ++
         "    --warn: " ++ p.warn ++ ";\n" ++
         "    --code-bg: " ++ p.code_bg ++ "; --border: " ++ p.border ++ ";\n" ++
         "    --collapse-closed-bg: " ++ p.collapse_closed_bg ++ "; --collapse-open-bg: " ++ p.collapse_open_bg ++ ";\n" ++
@@ -181,13 +188,13 @@ const kanagawa: Palette = .{
     .sidebar_bg = "#16161D",
 };
 
-// Vanta Black: true-black OLED palette, cyan accent. No time variant.
+// Vanta Black: true-black OLED palette, off-white accent. No time variant.
 const vanta_black: Palette = .{
     .color_scheme = "dark",
     .bg = "#000000",
     .fg = "#E0E0E0",
     .muted = "#808080",
-    .accent = "#00D9FF",
+    .accent = "#EDEAE0",
     .warn = "#FFB300",
     .code_bg = "#0A0A0A",
     .border = "#1A1A1A",
@@ -196,6 +203,9 @@ const vanta_black: Palette = .{
     .collapse_shadow = "none",
     .collapse_closed_shadow = "none",
     .sidebar_bg = "#050505",
+    // The off-white accent is too light for white text on top of it
+    // (`.nav-doc.active`) — pair it with dark text instead.
+    .on_accent = "#0A0A0A",
 };
 
 pub const Theme = struct {
@@ -268,14 +278,14 @@ test "every palette declares light or dark, nothing else" {
     }
 }
 
-test "paletteCss emits all 13 declarations" {
+test "paletteCss emits all 14 declarations" {
     const css = comptime paletteCss(winter_morning);
     for ([_][]const u8{
         "color-scheme:", "--bg:",                    "--fg:",
-        "--muted:",      "--accent:",                 "--warn:",
-        "--code-bg:",    "--border:",                 "--collapse-closed-bg:",
-        "--collapse-open-bg:", "--collapse-shadow:",  "--collapse-closed-shadow:",
-        "--sidebar-bg:",
+        "--muted:",      "--accent:",                 "--on-accent:",
+        "--warn:",       "--code-bg:",                 "--border:",
+        "--collapse-closed-bg:", "--collapse-open-bg:", "--collapse-shadow:",
+        "--collapse-closed-shadow:", "--sidebar-bg:",
     }) |decl| {
         try testing.expect(std.mem.indexOf(u8, css, decl) != null);
     }

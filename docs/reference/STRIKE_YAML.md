@@ -39,7 +39,41 @@ serve:              # default options for `strike serve <this dir>` (see below)
 pdf:                # defaults for `strike pdf` on files in this tree
   page_size: a4
   margin: 54pt
+nav:                # sidebar/brand defaults — all optional, shown here at
+  scope: full       # their own defaults (see below)
+  open: true
+  breadcrumb: true
 ```
+
+#### `nav` — sidebar scope, folder disclosure, breadcrumb
+
+Site-scope only — nav shape is one whole-site property, so there is no per-project
+override (a reader crossing between projects shouldn't see the sidebar change rules).
+
+- `scope: full` (default) — every page's sidebar carries the whole site: every
+  project and its documents, the same tree the picker has always shown, not just the
+  page's own project. `scope: project` restores the pre-`nav:` behavior — a project's
+  sidebar shows only that project's tree, and crossing to another project goes through
+  the front page.
+- `open: true` (default) — nav folders render expanded (`<details open>`); a reader's
+  own collapse (saved in Settings/`localStorage`) still wins over this default. `open:
+  false` restores the old behavior: a folder starts closed unless it's an ancestor of
+  the page you're on.
+- `breadcrumb: true` (default) — the sidebar brand is a **two-segment** breadcrumb,
+  capped, each segment its own line — no wrapping, no `/` between them: the site root on
+  top (**root is always root** — it always reaches `/` or the mount base, however deep
+  the page sits), then at most one more line underneath for the nearest thing below
+  root — the project (outside root-project mode), or the page's nearest ancestor nav
+  folder, whichever is closer. Anything past that single line — a project *and*
+  folders, or several nested folders — collapses into it: its label gains a `..` prefix
+  (`..design`, no separator), and it still links to that nearest folder's `main.*` when
+  it has one, plain text otherwise. `docs/a/b/c.md` shows `docs`, then `..b` (not `docs`
+  / `a` / `b` / `c`, one per line); `docs/a/c.md` (one folder) shows the uncompressed
+  `docs`, then `a`. `breadcrumb: false` drops the second line down to just the project
+  (site, then project — nothing about the page's own folder).
+
+Each key falls back to its default on a garbage value (`scope: sideways`), same as
+every other yaml key here — fail-soft, never a crash.
 
 #### `serve` — default reader options
 
@@ -170,6 +204,7 @@ overrides a site file. No runtime theme fetch is needed.
 | `projects` | site | Explicit project order on the picker + nav |
 | `serve` | served dir | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win; not re-read by `--watch` |
 | `pdf` | site / project | PDF page size (`letter` or `a4`) and margin (points or inches); nearer config and CLI flags win |
+| `nav` | site | Sidebar `scope` (`full`/`project`), folder `open` default, brand `breadcrumb` on/off |
 | `description` | project | Generated project-home subtitle |
 | `home` | project | Project-relative doc served at `/<project>` (else the project's `main.*`, else a generated index) |
 | `header` | site / project | Typography header (`.sxh`) seeding every document in the scope; project layers over site |
@@ -195,11 +230,18 @@ either, and no per-site repo link. `docs/reference/UI.md` says why and what to d
   when the reader has no saved preference — they never override a reader's choice, and
   nothing in the reader may overwrite them for a reader who has expressed none
   (`docs/reference/UI.md`, "The reader-state contract").
-- **Self-contained projects**: inside a project the sidebar shows only that project, so
-  crossing between projects goes through `/` — where the sidebar instead carries the whole
-  site, every project expandable into its own documents. From a project page the brand's
-  first segment is the way back there. (A root project has no picker: `/` is its home, and
-  there's no cross-project page — see "Root project" above.)
+- **Full-site nav, by default**: every page's sidebar carries the whole site — the same
+  tree the picker has always shown, every project expandable into its own documents — not
+  just the page's own project, so any document is one click away from any other. `nav:
+  {scope: project}` restores the older behavior: a project's sidebar shows only that
+  project's tree, and crossing between projects goes through `/`. (A root project has no
+  picker: `/` is its home either way — see "Root project" above.)
+- **Root is always root**: the sidebar brand's first segment always reaches `/` (or the
+  mount base), however deep the page sits, then at most one more segment for the
+  nearest thing below root — the project (outside root-project mode) or the page's
+  nearest ancestor folder — `..`-compressed when there's more than one level between
+  root and the page. `nav: {breadcrumb: false}` drops that second segment down to just
+  the project.
 
 ## Supported YAML
 

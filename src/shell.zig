@@ -21,21 +21,22 @@ const Writer = std.Io.Writer;
 /// it is attribution, not configuration, so no yaml key sets it.
 pub const project_url = "https://github.com/jakeblackburnn/Strike";
 
-/// The per-page chrome threaded into `wrapPage`: the document title, the sidebar
-/// brand text and the link it carries (the current project's own root), and the
-/// pre-rendered `.sidebar-nav` contents (empty for the project picker).
+/// One brand/breadcrumb segment: `href` is `null` for a folder with no
+/// `main.*` to link to (`STRIKE_YAML.md` "main.*") — it still renders, as
+/// plain text, since there's no page to send a reader to.
+pub const Segment = struct { label: []const u8, href: ?[]const u8 };
+
+/// The per-page chrome threaded into `wrapPage`: the document title, the
+/// sidebar brand's breadcrumb (root first, nearest ancestor last — never the
+/// current page, which the reader is already on), and the pre-rendered
+/// `.sidebar-nav` contents (empty for the project picker).
 pub const Shell = struct {
     title: []const u8,
-    brand: []const u8,
-    /// Where the brand links: the root of the project being read (`/<slug>`,
-    /// or `/` for a root project and the picker).
-    home_href: []const u8,
-    /// The site root, when the page sits inside a project of a *picker* site:
-    /// the brand becomes a two-level path, `site / project`. "" (the default)
-    /// means the project is the whole site — root-project mode, the picker page
-    /// itself, or `strike render` — and the brand stays a single link.
-    site_title: []const u8 = "",
-    site_href: []const u8 = "",
+    /// Root-is-always-root: `crumbs[0]` is always the site root. `site.zig`'s
+    /// `breadcrumbSegments` builds this (site, then project in picker mode,
+    /// then one segment per ancestor nav folder); `nav.breadcrumb: false`
+    /// collapses it back to the pre-breadcrumb one-or-two-segment form.
+    crumbs: []const Segment,
     nav_html: []const u8,
     /// Site default theme (season + time) and width, used as the pre-paint
     /// fallback when the reader has no `localStorage` preference yet.
@@ -54,7 +55,7 @@ pub const Shell = struct {
 /// brand falls back to the page's own title, and there is no project root to
 /// link to.
 pub fn standalone(title: []const u8) Shell {
-    return .{ .title = title, .brand = title, .home_href = "#", .nav_html = "" };
+    return .{ .title = title, .crumbs = &.{.{ .label = title, .href = "#" }}, .nav_html = "" };
 }
 
 /// The `--watch` live-reload client. `server.zig` splices this before
@@ -96,7 +97,7 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     try w.writeAll("<title>");
     try escapeInto(w, shell.title);
     try w.writeAll(head_post_a);
-    try writeBrand(w, shell);
+    try writeBrand(w, shell.crumbs);
     try w.writeAll(head_post_c);
     try w.writeAll(shell.nav_html);
     if (shell.custom_theme) |theme| {
@@ -163,23 +164,35 @@ fn writeCustomTheme(w: *Writer, theme: theme_file.ThemeFile) Writer.Error!void {
     try w.writeAll("}</style>\n");
 }
 
-/// The brand is a *path*, not a name. The sidebar nav below it shows one
-/// project's tree, so on a picker site it can never be the way back to `/` —
-/// leading with the site title makes the front page one click from any document.
-/// With no site segment the brand stays the single link it has always been.
-fn writeBrand(w: *Writer, shell: Shell) Writer.Error!void {
-    if (shell.site_title.len > 0) {
-        try w.writeAll("<a class=\"brand-site\" href=\"");
-        try escapeAttrInto(w, shell.site_href);
-        try w.writeAll("\">");
-        try escapeInto(w, shell.site_title);
-        try w.writeAll("</a><span class=\"brand-sep\">/</span>");
+/// The brand is a *path*, not a name — root is always root: `crumbs[0]`
+/// always reaches the site root, however deep the current page sits. Each
+/// segment is its own block-level line (`.sidebar-brand`'s CSS), not joined
+/// with a separator — `breadcrumbSegments` caps this at two, so the brand
+/// never wraps mid-line, it just stacks: root above, the nearest thing below
+/// it underneath. Every segment but the last is `.brand-site`; the last
+/// (nearest ancestor) is `.brand-home`. A segment with no `href` (an
+/// ancestor folder with no `main.*`) renders as plain text — there's no page
+/// to send a reader to.
+fn writeBrand(w: *Writer, crumbs: []const Segment) Writer.Error!void {
+    for (crumbs, 0..) |seg, i| {
+        const last = i == crumbs.len - 1;
+        const class: []const u8 = if (last) "brand-home" else "brand-site";
+        if (seg.href) |href| {
+            try w.writeAll("<a class=\"");
+            try w.writeAll(class);
+            try w.writeAll("\" href=\"");
+            try escapeAttrInto(w, href);
+            try w.writeAll("\">");
+            try escapeInto(w, seg.label);
+            try w.writeAll("</a>");
+        } else {
+            try w.writeAll("<span class=\"");
+            try w.writeAll(class);
+            try w.writeAll("\">");
+            try escapeInto(w, seg.label);
+            try w.writeAll("</span>");
+        }
     }
-    try w.writeAll("<a class=\"brand-home\" href=\"");
-    try escapeAttrInto(w, shell.home_href);
-    try w.writeAll("\">");
-    try escapeInto(w, shell.brand);
-    try w.writeAll("</a>");
 }
 
 // The no-flash bootstrap: it restores season/time/width/font-size/line-height/
@@ -329,7 +342,7 @@ const head_post_a =
     \\<style>
     \\
 ++ theme_rules ++
-    \\  :root { --sidebar-width: 14rem; --on-accent: #fff; }
+    \\  :root { --sidebar-width: 14rem; }
     \\  * { box-sizing: border-box; }
     \\  body {
     \\    margin: 0; padding-left: var(--sidebar-width);
@@ -464,28 +477,38 @@ const head_post_a =
     \\    padding: 1.25rem 1rem;
     \\    background: var(--sidebar-bg);
     \\    transition: transform .2s ease;
+    \\    overflow-x: hidden;
     \\  }
-    \\  /* Brand block: the project title links to that project's own root, led on
-    \\     a picker site by the site title (the way back to `/`, which the nav
-    \\     below can't offer). Under it a small muted subtitle credits strike (a
-    \\     text link, per UI.md — the one outbound link in the chrome). */
+    \\  /* A flex item's default min-width is `auto` — "never shrink below content's
+    \\     intrinsic width" — which lets an unbreakable (nowrap) label push these
+    \\     columns wider than the fixed-width sidebar, defeating the ellipsis rules
+    \\     below and forcing a horizontal scrollbar. min-width: 0 lets them actually
+    \\     shrink to the sidebar's width instead, so long names truncate. */
+    \\  .sidebar-head, .sidebar-nav { min-width: 0; }
+    \\  /* Brand block: root above, the nearest thing below it underneath —
+    \\     `breadcrumbSegments` caps this at two segments, one per line, each
+    \\     `display: block` so the brand always stacks instead of wrapping
+    \\     mid-line; a long label truncates with an ellipsis rather than
+    \\     wrapping or overflowing the sidebar. Under it a small muted subtitle
+    \\     credits strike (a text link, per UI.md — the chrome's one outbound
+    \\     link). */
     \\  .sidebar-head { display: flex; flex-direction: column; gap: .1rem; }
-    \\  .sidebar-brand { font-weight: 600; font-size: 1.05rem; letter-spacing: .02em; }
+    \\  .sidebar-brand { display: flex; flex-direction: column; gap: .05rem; font-weight: 600; font-size: 1.05rem; letter-spacing: .02em; }
+    \\  .brand-site, .brand-home { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     \\  .brand-home { color: inherit; text-decoration: none; }
     \\  .brand-home:hover { color: var(--accent); }
-    \\  .brand-site { color: var(--muted); text-decoration: none; }
+    \\  .brand-site { color: var(--muted); text-decoration: none; font-size: .85em; font-weight: 500; }
     \\  .brand-site:hover { color: var(--accent); }
-    \\  .brand-sep { color: var(--muted); font-weight: 400; margin: 0 .25rem; }
     \\  .brand-repo { font-size: .75rem; color: var(--muted); text-decoration: none; }
     \\  .brand-repo:hover { color: var(--accent); text-decoration: underline; }
-    \\  .sidebar-nav { flex: 1; min-height: 0; overflow-y: auto; }
+    \\  .sidebar-nav { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
     \\  .nav-tree { list-style: none; margin: 0; padding: 0; font-size: .88rem; }
     \\  .nav-tree .nav-tree { margin-left: .4rem; border-left: 1px solid var(--border); padding-left: .25rem; }
     \\  .nav-tree li { margin: .05rem 0; }
     \\  .nav-doc { display: block; padding: .2rem .5rem; border-radius: 6px; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     \\  .nav-doc:hover { background: var(--code-bg); color: var(--fg); }
     \\  .nav-doc.active { background: var(--accent); color: var(--on-accent); }
-    \\  .nav-folder > summary { padding: .2rem .35rem; border-radius: 6px; cursor: pointer; color: var(--fg); font-weight: 600; list-style: none; white-space: nowrap; }
+    \\  .nav-folder > summary { display: block; padding: .2rem .35rem; border-radius: 6px; cursor: pointer; color: var(--fg); font-weight: 600; list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     \\  .nav-folder-link { color: inherit; text-decoration: none; }
     \\  .nav-folder-link:hover, .nav-folder-link.active { color: var(--accent); }
     \\  .nav-folder > summary::-webkit-details-marker { display: none; }
@@ -571,6 +594,23 @@ const head_post_c =
 ;
 const head_post_d_a =
     \\</nav>
+    \\<script>
+    \\  // Persist each sidebar folder's open/closed state under nav:<project>/<path>.
+    \\  // Spliced right after the nav (not in page_tail's end-of-body script) so
+    \\  // it runs before first paint: with folders open by default, running it
+    \\  // late would flash every folder open, then closed, for a reader who
+    \\  // collapsed one.
+    \\  (function(){
+    \\    var folders = document.querySelectorAll("details.nav-folder");
+    \\    for (var i = 0; i < folders.length; i++) {
+    \\      (function(d){
+    \\        var key = "nav:" + d.dataset.folder;
+    \\        try { var s = localStorage.getItem(key); if (s === "open") d.open = true; else if (s === "closed") d.open = false; } catch (e) {}
+    \\        d.addEventListener("toggle", function(){ try { localStorage.setItem(key, d.open ? "open" : "closed"); } catch (e) {} });
+    \\      })(folders[i]);
+    \\    }
+    \\  })();
+    \\</script>
     \\  <div class="sidebar-settings">
     \\    <button id="theme-toggle" class="settings-toggle" type="button" aria-expanded="false">Theme</button>
     \\    <button id="text-toggle" class="settings-toggle" type="button" aria-expanded="false">Text</button>
@@ -721,15 +761,6 @@ const page_tail =
     \\    d.style.setProperty("--line-height", v);
     \\  });
     \\
-    \\  // Persist each sidebar folder's open/closed state under nav:<project>/<path>.
-    \\  var folders = document.querySelectorAll("details.nav-folder");
-    \\  for (var i = 0; i < folders.length; i++) {
-    \\    (function(d){
-    \\      var key = "nav:" + d.dataset.folder;
-    \\      try { var s = localStorage.getItem(key); if (s === "open") d.open = true; else if (s === "closed") d.open = false; } catch (e) {}
-    \\      d.addEventListener("toggle", function(){ try { localStorage.setItem(key, d.open ? "open" : "closed"); } catch (e) {} });
-    \\    })(folders[i]);
-    \\  }
     \\  var navActive = document.querySelector(".sidebar-nav .nav-doc.active");
     \\  if (navActive) navActive.scrollIntoView({ block: "center" });
     \\})();
@@ -744,8 +775,7 @@ const page_tail =
 test "wrapPage emits sidebar, settings panel and content body" {
     const shell: Shell = .{
         .title = "Doc",
-        .brand = "Data Mining",
-        .home_href = "/",
+        .crumbs = &.{.{ .label = "Data Mining", .href = "/" }},
         .nav_html = "<ul class=\"nav-tree\"></ul>",
     };
     const page = try wrapPage(std.testing.allocator, shell, "<p>hi</p>\n");
@@ -795,7 +825,7 @@ test "wrapPage emits sidebar, settings panel and content body" {
 }
 
 test "collapse summary resets text-indent so an ancestor indent() never reaches the arrow" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -808,7 +838,7 @@ test "collapse summary resets text-indent so an ancestor indent() never reaches 
 }
 
 test "caption CSS: default figcaption style, position flex/order rules, and the split-percent var" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -819,7 +849,7 @@ test "caption CSS: default figcaption style, position flex/order rules, and the 
 }
 
 test "figure/caption spacing: inner paragraph margins reset, deliberate flex gap replaces them" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -831,7 +861,7 @@ test "figure/caption spacing: inner paragraph margins reset, deliberate flex gap
 }
 
 test "alert CSS: title's tight bottom margin isn't lost to the following paragraph's default margin" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -839,7 +869,7 @@ test "alert CSS: title's tight bottom margin isn't lost to the following paragra
 }
 
 test "snug CSS: seam between the popped partner and the attached content is tightened" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -854,7 +884,7 @@ test "snug CSS: descendant combinator, not just direct child, reaches through a 
     // no margin of its own, and the real element's default margin would
     // collapse straight through it, undoing the tightened seam. `*` (any
     // descendant) reaches every first/last-child down the chain instead.
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -863,7 +893,7 @@ test "snug CSS: descendant combinator, not just direct child, reaches through a 
 }
 
 test "kanagawa and vanta-black themes: selectable and carry their own palette" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -875,11 +905,11 @@ test "kanagawa and vanta-black themes: selectable and carry their own palette" {
     try std.testing.expect(std.mem.indexOf(u8, page, "s===\"vanta-black\"") != null);
     // Each has its own CSS rule carrying its own accent color.
     try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"kanagawa\"] {\n    color-scheme: dark;\n    --bg: #1F1F28; --fg: #DCD7BA; --muted: #727169; --accent: #7E9CD8;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"vanta-black\"] {\n    color-scheme: dark;\n    --bg: #000000; --fg: #E0E0E0; --muted: #808080; --accent: #00D9FF;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-season=\"vanta-black\"] {\n    color-scheme: dark;\n    --bg: #000000; --fg: #E0E0E0; --muted: #808080; --accent: #EDEAE0;\n    --on-accent: #0A0A0A;") != null);
 }
 
 test "existing seasonal theme CSS is byte-identical after the data-driven refactor" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -887,6 +917,7 @@ test "existing seasonal theme CSS is byte-identical after the data-driven refact
         \\  :root[data-season="winter"] {
         \\    color-scheme: light;
         \\    --bg: #ffffff; --fg: #1d2a3a; --muted: #5b6b7f; --accent: #4a9edb;
+        \\    --on-accent: #fff;
         \\    --warn: #c07a1e;
         \\    --code-bg: rgba(90,130,170,.12); --border: rgba(90,130,170,.30);
         \\    --collapse-closed-bg: rgba(90,130,170,.06); --collapse-open-bg: var(--bg);
@@ -898,6 +929,7 @@ test "existing seasonal theme CSS is byte-identical after the data-driven refact
         \\  :root[data-season="fall"][data-time="evening"] {
         \\    color-scheme: dark;
         \\    --bg: #16211a; --fg: #e6e4d6; --muted: #a3a888; --accent: #a8b968;
+        \\    --on-accent: #fff;
         \\    --warn: #e0b568;
         \\    --code-bg: rgba(255,255,255,.07); --border: rgba(168,185,104,.25);
         \\    --collapse-closed-bg: rgba(0,0,0,.12); --collapse-open-bg: rgba(255,255,255,.05);
@@ -908,7 +940,7 @@ test "existing seasonal theme CSS is byte-identical after the data-driven refact
 }
 
 test "spacer CSS: fixed height" {
-    const shell: Shell = .{ .title = "T", .brand = "B", .home_href = "/", .nav_html = "" };
+    const shell: Shell = .{ .title = "T", .crumbs = &.{.{ .label = "B", .href = "/" }}, .nav_html = "" };
     const page = try wrapPage(std.testing.allocator, shell, "");
     defer std.testing.allocator.free(page);
 
@@ -927,11 +959,29 @@ test "standalone shell has no nav and no project root to link to" {
     try std.testing.expect(std.mem.indexOf(u8, page, ">built with strike</a>") != null);
 }
 
+test "writeBrand: each segment is its own block-level line, no separator; an unlinked segment renders as plain text" {
+    const shell: Shell = .{
+        .title = "T",
+        .crumbs = &.{
+            .{ .label = "Site", .href = "/" },
+            .{ .label = "Design", .href = null }, // no main.* — nothing to link to
+        },
+        .nav_html = "",
+    };
+    const page = try wrapPage(std.testing.allocator, shell, "");
+    defer std.testing.allocator.free(page);
+
+    // No `brand-sep` glyph between them — CSS (`display: block` on both
+    // classes) stacks them into separate lines instead.
+    try std.testing.expect(std.mem.indexOf(u8, page,
+        "<a class=\"brand-site\" href=\"/\">Site</a><span class=\"brand-home\">Design</span>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "brand-sep") == null);
+}
+
 test "wrapPage wires the pre-paint theme bootstrap and never the reload script" {
     const sh: Shell = .{
         .title = "T",
-        .brand = "B",
-        .home_href = "/",
+        .crumbs = &.{.{ .label = "B", .href = "/" }},
         .nav_html = "",
     };
     const page = try wrapPage(std.testing.allocator, sh, "<p>x</p>\n");
@@ -948,8 +998,7 @@ test "wrapPage wires the pre-paint theme bootstrap and never the reload script" 
 test "header typography sets defaults beneath saved reader preferences" {
     const sh: Shell = .{
         .title = "T",
-        .brand = "B",
-        .home_href = "/",
+        .crumbs = &.{.{ .label = "B", .href = "/" }},
         .nav_html = "",
         .width = "46",
         .typography = .{ .font = .serif, .measure = "34rem", .size = "1rem", .leading = "1.5" },
@@ -964,8 +1013,7 @@ test "header typography sets defaults beneath saved reader preferences" {
 test "project theme file is inlined and selectable" {
     const sh: Shell = .{
         .title = "T",
-        .brand = "B",
-        .home_href = "/",
+        .crumbs = &.{.{ .label = "B", .href = "/" }},
         .nav_html = "",
         .season = "custom",
         .custom_theme = .{ .label = "Paper & Ink", .css = "color-scheme:dark;--bg:#101010;" },
