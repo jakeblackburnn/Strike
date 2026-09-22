@@ -1,11 +1,12 @@
 //! The strikedown document model, v0.0.1: the `Doc` tree `parse.zig` builds
 //! and `emit_html.zig` walks. Pure types; no I/O, no parsing logic.
 //!
-//! Deliberately small — three block forms, four inline forms — because this
-//! is the base: everything not implemented is a backlog entry
-//! (`dev/terms.md`), not an oversight. `Block` is a bare union here, not
-//! `struct { kind, attrs }`; the split arrives with the first command
-//! (see `dev/terms.md`, "Block shape, expected next").
+//! Deliberately small — four block forms (three content elements plus the
+//! one superset form, groups), four inline forms — because this is the
+//! base: everything not implemented is a backlog entry (`dev/terms.md`),
+//! not an oversight. `Block` is a bare union here, not `struct { kind,
+//! attrs }`; the split arrives with the first command (see `dev/terms.md`,
+//! "Block shape, expected next").
 
 const std = @import("std");
 
@@ -24,6 +25,18 @@ pub const Block = union(enum) {
     heading: Heading,
     paragraph: []Inline,
     code: Code,
+    /// A `//` group directive (`dev/terms.md`, "group / section /
+    /// directive") — the one strikedown superset form in this base. Carries
+    /// no commands and no `Attrs`; it is a plain named container, nothing
+    /// more, until a command exists to write onto it.
+    group: Group,
+};
+
+pub const Group = struct {
+    name: []const u8,
+    /// Sections in source order, split by `===`. A group with no `===`
+    /// inside it has exactly one section.
+    sections: [][]Block,
 };
 
 pub const Heading = struct {

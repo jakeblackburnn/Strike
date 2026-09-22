@@ -59,6 +59,17 @@ fn emitBlock(w: *Writer, block: doc.Block) !void {
             try html.escapeInto(w, c.text);
             try w.writeAll("</code></pre>\n");
         },
+        .group => |g| {
+            try w.writeAll("<div class=\"group\" data-group=\"");
+            try html.escapeAttrInto(w, g.name);
+            try w.writeAll("\">\n");
+            for (g.sections) |section| {
+                try w.writeAll("<section>\n");
+                for (section) |b| try emitBlock(w, b);
+                try w.writeAll("</section>\n");
+            }
+            try w.writeAll("</div>\n");
+        },
     }
 }
 
@@ -146,6 +157,24 @@ test "nested strong/em" {
 
 test "text is escaped" {
     try expectRender("a & b < c", "<p>a &amp; b &lt; c</p>\n");
+}
+
+test "a group renders as a div with sections" {
+    try expectRender(
+        "// aside\n\nhello\n\n// end aside",
+        "<div class=\"group\" data-group=\"aside\">\n<section>\n<p>hello</p>\n</section>\n</div>\n",
+    );
+}
+
+test "=== splits a group into multiple sections" {
+    try expectRender(
+        "// two\n\na\n\n===\n\nb\n\n// end two",
+        "<div class=\"group\" data-group=\"two\">\n<section>\n<p>a</p>\n</section>\n<section>\n<p>b</p>\n</section>\n</div>\n",
+    );
+}
+
+test "degradation: an unrecognized // line renders as an ordinary paragraph" {
+    try expectRender("// TODO: fix this", "<p>// TODO: fix this</p>\n");
 }
 
 test "page() wraps a fragment with a title" {

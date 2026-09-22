@@ -1,8 +1,12 @@
-//! `strike` — the CLI for the strikedown markdown renderer.
+//! `strike` — the CLI for the strikedown/markdown renderer.
 //!
 //! One subcommand at v0.0.1 (`usage()` below is the authoritative flag
 //! list):
-//!   strike render <file>   Render a single .md file to HTML.
+//!   strike render <file>   Render a single .md/.sx file to HTML.
+//!
+//! `.md` and `.sx` go through the same parser and the same renderer — no
+//! branch on extension anywhere in this file (see `dev/terms.md`, "one
+//! flavor").
 //!
 //! `serve`/`build`/`init` are backlog (`dev/terms.md`) — no server, no site
 //! scanning, no static export yet.
@@ -51,11 +55,11 @@ fn fail(cmd: []const u8, err: anyerror) noreturn {
 
 fn usage() void {
     std.debug.print(
-        \\strike -- render strikedown markdown to HTML.
+        \\strike -- render strikedown/markdown (.md/.sx) to HTML.
         \\
         \\Usage:
         \\  strike render <file> [-o out.html] [--fragment]
-        \\                                    Render a single .md file to HTML.
+        \\                                    Render a single .md/.sx file to HTML.
         \\
     , .{});
 }

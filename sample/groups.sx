@@ -1,0 +1,37 @@
+# Groups
+
+The one strikedown feature in this base: a `//` group directive opens a named
+container, `===` splits it into sections, `// end name` closes it.
+
+// aside
+
+A group holding one paragraph. Ordinary markdown works the same inside a
+group as outside one — `code`, **bold**, *em* all still parse.
+
+// end aside
+
+Two sections side by side, split by `===`:
+
+// two
+
+Section one.
+
+===
+
+Section two.
+
+// end two
+
+Degradation: a `//` line that doesn't parse cleanly as a directive is just a
+paragraph, exactly like in any other markdown viewer.
+
+// TODO: this line looks like a directive but isn't one — it has a colon and
+a space in what would need to be the name, so it stays plain prose.
+
+A mismatched closer degrades the same way instead of closing anything:
+
+// example
+
+// end nothing
+
+// end example
