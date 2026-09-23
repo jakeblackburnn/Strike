@@ -59,7 +59,12 @@ prominence in `main.*`.
   nearest thing below it underneath, no `/` between them — so the brand never
   line-wraps mid-segment; a label too long for the sidebar's width truncates with an
   ellipsis instead. `nav: {breadcrumb: false}` drops the second segment down to just the
-  project (`STRIKE_YAML.md`). Under the brand sits the chrome's one outbound link: a
+  project (`STRIKE_YAML.md`). A site mounted under a parent site's subroute (`base:` set)
+  can point this first segment at that parent instead with `root:` — the local front
+  page then keeps its one-click reach as a second, always-present segment, fixed
+  regardless of depth; the project/folder chain above doesn't apply in that mode
+  (`STRIKE_YAML.md`, "root — linking out to a parent site"). Under the brand sits the
+  chrome's one outbound link: a
   small muted subtitle crediting strike. All of it is fixed except the two `nav:` keys
   above; a link to the author's own repo is
   author content and belongs in `main.*`.
@@ -72,10 +77,12 @@ prominence in `main.*`.
 - Collapsed means **gone**: zero width, no reserved margin — only the hairline edge
   strip remains to bring it back.
 - **Sidebar width is stepped, not dragged.** Two plain-text controls — `−` and `+`
-  — widen or narrow the sidebar in fixed steps. Today's default width is the floor:
-  a reader can only widen from there, never narrow past it, so the nav's own layout
-  never breaks. There's a fixed ceiling too. No drag handle — a resize-by-dragging
-  affordance would fight the collapse edge for the same strip of screen.
+  — widen or narrow the sidebar in fixed steps, between a fixed floor and ceiling so
+  the nav's own layout never breaks. No drag handle — a resize-by-dragging affordance
+  would fight the collapse edge for the same strip of screen. `sidebar_width:` in
+  `strike.yaml` sets the unset-preference default within that same range (a bare rem
+  number, clamped if it overshoots, or `min`/`max`) — a reader's own resize always
+  wins (`STRIKE_YAML.md`).
 - Settings stay out of the sidebar body. Plain-text triggers at the bottom —
   **Theme** and **Text** open their own panel that pops out *over* the sidebar
   (opening one closes the other); `−`/`+` act immediately, with no panel. Theme

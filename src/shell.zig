@@ -44,6 +44,11 @@ pub const Shell = struct {
     season: []const u8 = "",
     time: []const u8 = "",
     width: []const u8 = "",
+    /// `strike.yaml` `sidebar_width:` — "" (no default), a bare rem number
+    /// (clamped into the reader's stepper range if it overshoots), or the
+    /// keywords `min`/`max` for that range's floor/ceiling. Resolved by
+    /// `sidebarWidthToken` at render time.
+    sidebar_width: []const u8 = "",
     /// Defaults from the project's `.sxh` header. Reader preferences still
     /// win; the header's measure takes precedence over site/project width.
     typography: sheet.TypeStyle = .{},
@@ -87,7 +92,9 @@ pub fn wrapPage(allocator: Allocator, shell: Shell, body_html: []const u8) ![]u8
     try w.writeAll(head_pre_c);
     const width_default = if (shell.typography.measure) |m| safeDecimal(m[0 .. m.len - 3]) else safeToken(shell.width);
     try w.writeAll(width_default);
-    try w.writeAll(head_pre_d_a);
+    try w.writeAll(head_pre_d_a1);
+    try w.writeAll(sidebarWidthToken(shell.sidebar_width));
+    try w.writeAll(head_pre_d_a2);
     try w.writeAll(font_guard);
     try w.writeAll(head_pre_d_b);
     if (shell.typography.font) |font| try w.writeAll(@tagName(font));
@@ -130,6 +137,28 @@ fn safeDecimal(s: []const u8) []const u8 {
     if (s.len == 0 or s.len > 12) return "";
     for (s) |c| if (!std.ascii.isDigit(c) and c != '.') return "";
     return s;
+}
+
+/// The reader's sidebar stepper range, in rem — mirrors `SIDEBAR_MIN`/
+/// `SIDEBAR_MAX` in `page_tail`'s JS (kept in sync by hand; there's no single
+/// source shared across Zig and that JS text).
+const sidebar_min: f64 = 14;
+const sidebar_max: f64 = 28;
+
+/// Resolve a `sidebar_width:` yaml value into the bootstrap's
+/// `localStorage.getItem("sidebarwidth")||"…"` fallback token: "" (no
+/// default) when unset or unparseable, `min`/`max` for the stepper's floor/
+/// ceiling, or a bare rem number — collapsed to the floor/ceiling if it
+/// overshoots the stepper's own range, otherwise passed through unchanged.
+fn sidebarWidthToken(raw: []const u8) []const u8 {
+    if (std.mem.eql(u8, raw, "min")) return "14";
+    if (std.mem.eql(u8, raw, "max")) return "28";
+    const trimmed = safeDecimal(raw);
+    if (trimmed.len == 0) return "";
+    const v = std.fmt.parseFloat(f64, trimmed) catch return "";
+    if (v < sidebar_min) return "14";
+    if (v > sidebar_max) return "28";
+    return trimmed;
 }
 
 fn writeTypographyDefaults(w: *Writer, style: sheet.TypeStyle) Writer.Error!void {
@@ -219,9 +248,12 @@ const head_pre_c_b =
     \\if(t==="morning"||t==="evening")d.dataset.time=t;var w=localStorage.getItem("width")||"
 ;
 const head_pre_c = head_pre_c_a ++ theme_season_guard ++ "||s===\"custom\"" ++ head_pre_c_b;
-const head_pre_d_a =
+const head_pre_d_a1 =
     \\";if(w)d.style.setProperty("--content-width",w+"rem");
-    \\var sw=localStorage.getItem("sidebarwidth");if(sw)d.style.setProperty("--sidebar-width",sw+"rem");
+    \\var sw=localStorage.getItem("sidebarwidth")||"
+;
+const head_pre_d_a2 =
+    \\";if(sw)d.style.setProperty("--sidebar-width",sw+"rem");
     \\var fs=localStorage.getItem("fontsize");if(fs)d.style.setProperty("--font-size",fs+"px");
     \\var lh=localStorage.getItem("lineheight");if(lh)d.style.setProperty("--line-height",lh);
     \\var f=localStorage.getItem("font");if(
@@ -1029,6 +1061,28 @@ test "header typography sets defaults beneath saved reader preferences" {
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"width\")||\"34\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "--font-size:1rem;--line-height:1.5;") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, ":root:not([data-font]) .content{font-family:Georgia") != null);
+}
+
+test "sidebarWidthToken resolves keywords, passes valid numbers, clamps overshoots" {
+    try std.testing.expectEqualStrings("", sidebarWidthToken(""));
+    try std.testing.expectEqualStrings("14", sidebarWidthToken("min"));
+    try std.testing.expectEqualStrings("28", sidebarWidthToken("max"));
+    try std.testing.expectEqualStrings("20", sidebarWidthToken("20"));
+    try std.testing.expectEqualStrings("14", sidebarWidthToken("4")); // below floor
+    try std.testing.expectEqualStrings("28", sidebarWidthToken("50")); // above ceiling
+    try std.testing.expectEqualStrings("", sidebarWidthToken("nope")); // unparseable
+}
+
+test "sidebar_width: sets the sidebarwidth localStorage fallback" {
+    const sh: Shell = .{
+        .title = "T",
+        .crumbs = &.{.{ .label = "B", .href = "/" }},
+        .nav_html = "",
+        .sidebar_width = "max",
+    };
+    const page = try wrapPage(std.testing.allocator, sh, "<p>x</p>\n");
+    defer std.testing.allocator.free(page);
+    try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"sidebarwidth\")||\"28\"") != null);
 }
 
 test "project theme file is inlined and selectable" {

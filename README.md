@@ -148,8 +148,9 @@ and column flow with the PDF base fonts. Inline links are text only; images,
 math typesetting, non-ASCII glyphs, and fine page-break controls are still
 limited. The HTML renderer remains the richer presentation target.
 
-A content directory is organized into **projects** — each top-level folder is a project,
-and its `.md`/`.sx` files (recursively, through subfolders) are its documents. Loose docs
+A content directory is organized into **projects** — each top-level folder holding at
+least one `.md`/`.sx` file, recursively, is a project (an asset-only folder like
+`images/` is served but not listed); its own `.md`/`.sx` files are its documents. Loose docs
 directly in the content root form an implicit root project served at `/`. Configure nav
 labels, ordering, and metadata with an optional `strike.yaml`; a file named
 `main.md`/`main.sx` supplies the content shown at its containing folder's own route (the

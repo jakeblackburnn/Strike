@@ -165,6 +165,7 @@ pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
         .season = site.season,
         .time = site.time,
         .width = site.width,
+        .sidebar_width = site.sidebar_width,
         .typography = site.sheet.typography,
         .custom_theme = site.custom_theme,
     };
@@ -208,6 +209,7 @@ pub fn renderProjectHome(gpa: Allocator, site: project.Site, p: project.Project)
         .season = p.season,
         .time = p.time,
         .width = p.width,
+        .sidebar_width = p.sidebar_width,
         .typography = p.sheet.typography,
         .custom_theme = p.custom_theme,
     };
@@ -237,6 +239,7 @@ pub fn renderDocPage(gpa: Allocator, site: project.Site, p: project.Project, d: 
         .season = p.season,
         .time = p.time,
         .width = p.width,
+        .sidebar_width = p.sidebar_width,
         .typography = p.sheet.typography,
         .custom_theme = p.custom_theme,
     };
@@ -378,9 +381,23 @@ fn siteNav(allocator: Allocator, site: project.Site, p: project.Project, active_
 /// folder (or plain text — `shell.Segment.href = null` — when it has no
 /// `main.*` to link to). `site.nav.breadcrumb == false` drops this second
 /// segment entirely except for the project, keeping the older
-/// one-or-two-segment brand. Caller owns the result.
+/// one-or-two-segment brand.
+///
+/// When yaml `root:` is set (only possible alongside `base:` — see
+/// `project.resolveRootLink`), that unconditional root segment points
+/// externally instead, and a second, always-present segment (site title,
+/// linking to this site's own `/`) takes over what segment 0 used to do —
+/// two fixed segments, every page, nothing past them: the project/folder
+/// chain below doesn't apply in this mode.
+///
+/// Caller owns the result.
 pub fn breadcrumbSegments(gpa: Allocator, site: project.Site, p: project.Project, route: []const u8) ![]shell.Segment {
     var out: std.ArrayList(shell.Segment) = .empty;
+    if (site.root.len > 0) {
+        try out.append(gpa, .{ .label = site.root_label, .href = site.root });
+        try out.append(gpa, .{ .label = site.title, .href = homeHref(site.base) });
+        return out.toOwnedSlice(gpa);
+    }
     try out.append(gpa, .{ .label = site.title, .href = homeHref(site.base) });
 
     if (!site.nav.breadcrumb) {
@@ -856,6 +873,48 @@ test "the sidebar brand links to the current project's root" {
     const root_page = try renderDocPage(testing.allocator, root_site, root, &root_doc);
     defer testing.allocator.free(root_page);
     try testing.expect(std.mem.indexOf(u8, root_page, "class=\"brand-home\" href=\"/\">Site</a>") != null);
+}
+
+test "breadcrumbSegments: root: fixes the brand to [external root, local root], ignoring depth" {
+    var deep_doc = testDoc("/weblog/reference/design/a", "A");
+    var design_children = [_]project.NavNode{.{ .doc = &deep_doc }};
+    var reference_children = [_]project.NavNode{
+        .{ .folder = .{ .label = "Design", .rel_path = "reference/design", .children = &design_children } },
+    };
+    var deep_tree = [_]project.NavNode{
+        .{ .folder = .{ .label = "Reference", .rel_path = "reference", .children = &reference_children } },
+    };
+    const p: project.Project = .{
+        .slug = "",
+        .title = "Weblog",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &deep_tree,
+        .docs = &.{},
+    };
+    var projects = [_]project.Project{p};
+    const site: project.Site = .{
+        .title = "Weblog",
+        .season = "",
+        .time = "",
+        .width = "",
+        .base = "/weblog",
+        .root = "https://jake.example",
+        .root_label = "jake.example",
+        .projects = &projects,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const crumbs = try breadcrumbSegments(arena.allocator(), site, p, deep_doc.route);
+    try testing.expectEqual(@as(usize, 2), crumbs.len);
+    try testing.expectEqualStrings("jake.example", crumbs[0].label);
+    try testing.expectEqualStrings("https://jake.example", crumbs[0].href.?);
+    try testing.expectEqualStrings("Weblog", crumbs[1].label);
+    try testing.expectEqualStrings("/weblog", crumbs[1].href.?);
 }
 
 test "breadcrumbSegments: one folder deep shows it plainly; two or more collapses to '..nearest'" {

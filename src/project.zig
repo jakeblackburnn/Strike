@@ -1,8 +1,10 @@
 //! Turns a content folder into a `Site` of self-contained `Project`s, each with
 //! a navigable folder/document tree.
 //!
-//! Layout model (see CLAUDE.md): every *top-level folder* is a project; its
-//! `.md`/`.sx` files (recursively, through subfolders) are its documents. A
+//! Layout model (see CLAUDE.md): every *top-level folder holding at least one
+//! `.md`/`.sx` file, recursively* is a project; a folder with none (an
+//! `images/` folder, say) is skipped rather than becoming an empty project —
+//! the same "skip empty folders" rule applied one level up (see `scan`). A
 //! project may carry a `strike.yaml` that overrides nav labels, ordering,
 //! hidden paths, the home document, and display metadata; a site-level
 //! `strike.yaml` (at the content root) carries the picker title, theme, width,
@@ -77,6 +79,10 @@ pub const Project = struct {
     season: []const u8, // site default theme season ("", "fall", ...)
     time: []const u8, // site default theme time ("", "morning", "evening")
     width: []const u8, // site default content width ("" or bare rem number)
+    /// Sidebar default width ("" or bare rem number, else `min`/`max`) — see
+    /// `STRIKE_YAML.md`'s `sidebar_width:`. Resolved to a clamped rem token at
+    /// render time (`shell.sidebarWidthToken`), same split as `width`.
+    sidebar_width: []const u8 = "",
     base: []const u8 = "", // site base path ("" or "/sub/path"), copied like theme/width
     home: ?*Doc, // doc served at /<slug>; null ⇒ generated index
     tree: []NavNode,
@@ -111,11 +117,25 @@ pub const Site = struct {
     season: []const u8, // "" or a season name ("fall", "winter", "spring", "summer")
     time: []const u8, // "" (auto), "morning", or "evening"
     width: []const u8, // "" or a bare number (rem)
+    /// Sidebar default width ("" or bare rem number, else `min`/`max`) — see
+    /// `Project.sidebar_width`.
+    sidebar_width: []const u8 = "",
     /// Site base path for mounting under a subpath of an existing website:
     /// "" (serve at the domain root, the default) or "/sub/path". Baked into
     /// every route at scan time; `site.outPath` strips it again so the static
     /// export stays relative to the mount point. From the site yaml `base:`.
     base: []const u8 = "",
+    /// An external parent site's homepage the sidebar brand's root segment
+    /// links to instead of this site's own `/`, from yaml `root:` — only
+    /// honored when `base:` is also set (an external root link only makes
+    /// sense for a site mounted as a subroute of that parent) and `root:` is
+    /// an `http(s)://` URL; otherwise "" (ignored, fail-soft). When set, a
+    /// second, always-present brand segment takes over the old root-anchored
+    /// link to this site's own `/` — see `site.breadcrumbSegments`.
+    root: []const u8 = "",
+    /// Label for the `root:` segment — yaml `root_label:`, else `root:`'s URL
+    /// host. "" unless `root` is also set.
+    root_label: []const u8 = "",
     projects: []Project,
     /// A content-root `main.*` in picker mode (no root project): rendered at
     /// the top of the picker page in place of the default site-title heading.
@@ -164,6 +184,32 @@ fn resolveNavConfig(site_cfg: yaml.Value) NavConfig {
         if (std.mem.eql(u8, s, "false")) out.breadcrumb = false;
     }
     return out;
+}
+
+const RootLink = struct { root: []const u8 = "", label: []const u8 = "" };
+
+/// Resolve `root:`/`root_label:` (site-scope only, `Site.root`'s doc comment
+/// says why): ignored — fail-soft, like every other yaml key here — unless
+/// `base` is non-empty and `root:` is an `http://`/`https://` URL.
+fn resolveRootLink(site_cfg: yaml.Value, base: []const u8) RootLink {
+    if (base.len == 0) return .{};
+    const root = site_cfg.getScalar("root") orelse "";
+    if (!isAbsoluteUrl(root)) return .{};
+    return .{ .root = root, .label = site_cfg.getScalar("root_label") orelse urlHost(root) };
+}
+
+fn isAbsoluteUrl(s: []const u8) bool {
+    return std.mem.startsWith(u8, s, "http://") or std.mem.startsWith(u8, s, "https://");
+}
+
+/// The `host[:port]` component of an `http(s)://` URL, for `root_label:`'s
+/// default — `https://jake.example/blog` -> `jake.example`. Assumes
+/// `isAbsoluteUrl(url)` already held; falls back to the whole url past the
+/// scheme if there's no `/` to end the host at.
+fn urlHost(url: []const u8) []const u8 {
+    const after_scheme = if (std.mem.startsWith(u8, url, "https://")) url[8..] else url[7..];
+    const end = std.mem.indexOfScalar(u8, after_scheme, '/') orelse after_scheme.len;
+    return after_scheme[0..end];
 }
 
 /// Per-project parsed config + the accumulating document list, threaded through
@@ -248,6 +294,7 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
     const theme = parseTheme(site_cfg.getScalar("theme") orelse "");
     const title = site_cfg.getScalar("title") orelse "strikedown";
     const nav = resolveNavConfig(site_cfg);
+    const root_link = resolveRootLink(site_cfg, base);
     const project_slice = try projects.toOwnedSlice(gpa);
     // nav is site-scope only, so every project carries the same copy.
     for (project_slice) |*p| p.nav = nav;
@@ -256,7 +303,10 @@ pub fn load(io: std.Io, gpa: Allocator, content: std.Io.Dir) !Site {
         .season = theme.season,
         .time = theme.time,
         .width = site_cfg.getScalar("width") orelse "",
+        .sidebar_width = site_cfg.getScalar("sidebar_width") orelse "",
         .base = base,
+        .root = root_link.root,
+        .root_label = root_link.label,
         .projects = project_slice,
         .main = site_main,
         .sheet = site_sheet,
@@ -298,6 +348,12 @@ fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8
     // slash), `{base}/{slug}` otherwise.
     const route_prefix = if (is_root) base else try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, slug });
     const res = try scan(&ctx, dir, "", route_prefix);
+    // A top-level folder with no `.md`/`.sx` anywhere in it (recursively) is
+    // not a project — same "skip empty folders" rule `scan` already applies
+    // to subfolders (see its own comment), just not yet applied one level up.
+    // The root project is exempt: `load` only reaches here for it when
+    // `has_root_docs` already guarantees content.
+    if (!is_root and res.nodes.len == 0 and res.main == null) return null;
 
     // Resolve the home document: yaml `home:` wins when it resolves (it may
     // name the main.* file itself); else the project root's main.*, if any.
@@ -330,6 +386,7 @@ fn loadProject(io: std.Io, gpa: Allocator, content: std.Io.Dir, slug: []const u8
         .season = if (project_theme.season.len > 0) project_theme.season else site_theme.season,
         .time = if (project_theme.time.len > 0) project_theme.time else site_theme.time,
         .width = cfg.getScalar("width") orelse site_cfg.getScalar("width") orelse "",
+        .sidebar_width = cfg.getScalar("sidebar_width") orelse site_cfg.getScalar("sidebar_width") orelse "",
         .base = base,
         .home = home,
         .tree = res.nodes,
@@ -709,6 +766,44 @@ test "orderIndex and slug ordering" {
 // contract (see `load`'s doc comment); an arena over `testing.allocator`
 // matches that contract instead of tripping its leak detector.
 
+test "sidebar_width: resolves site default, project override" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "strike.yaml", .data = "sidebar_width: max\n" });
+    try tmp.dir.createDirPath(testing.io, "blog");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/a.md", .data = "body" });
+    try tmp.dir.createDirPath(testing.io, "wiki");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "wiki/a.md", .data = "body" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "wiki/strike.yaml", .data = "sidebar_width: 20\n" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    try testing.expectEqualStrings("max", site.sidebar_width);
+    for (site.projects) |p| {
+        if (std.mem.eql(u8, p.slug, "blog")) try testing.expectEqualStrings("max", p.sidebar_width);
+        if (std.mem.eql(u8, p.slug, "wiki")) try testing.expectEqualStrings("20", p.sidebar_width);
+    }
+}
+
+test "a top-level folder with no .md/.sx anywhere in it is not a project" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "images/sub");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "images/photo.png", .data = "fake-png" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "images/sub/other.png", .data = "fake-png" });
+    try tmp.dir.createDirPath(testing.io, "blog");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "blog/hello.md", .data = "# Hello\nbody" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const site = try load(testing.io, arena.allocator(), tmp.dir);
+
+    try testing.expectEqual(@as(usize, 1), site.projects.len);
+    try testing.expectEqualStrings("blog", site.projects[0].slug);
+}
+
 test "load scans a project folder into a Site" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
@@ -1057,6 +1152,47 @@ test "normalizeBase accepts docs, /docs, and docs/ alike" {
     const multi = try normalizeBase(testing.allocator, "/a/b/");
     defer testing.allocator.free(multi);
     try testing.expectEqualStrings("/a/b", multi);
+}
+
+test "urlHost extracts the host from an http(s) URL" {
+    try testing.expectEqualStrings("jake.example", urlHost("https://jake.example"));
+    try testing.expectEqualStrings("jake.example", urlHost("https://jake.example/blog"));
+    try testing.expectEqualStrings("jake.example:8080", urlHost("http://jake.example:8080/x"));
+}
+
+test "root: is ignored without base:, honored with it, root_label: overrides the host default" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "docs");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/a.md", .data = "body" });
+
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "strike.yaml", .data = "root: https://jake.example\n" });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const no_base_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqualStrings("", no_base_site.root); // no base: -> ignored
+
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "strike.yaml",
+        .data = "base: /weblog\nroot: https://jake.example\n",
+    });
+    const with_base_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqualStrings("https://jake.example", with_base_site.root);
+    try testing.expectEqualStrings("jake.example", with_base_site.root_label);
+
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "strike.yaml",
+        .data = "base: /weblog\nroot: https://jake.example\nroot_label: Jake's Site\n",
+    });
+    const labeled_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqualStrings("Jake's Site", labeled_site.root_label);
+
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "strike.yaml",
+        .data = "base: /weblog\nroot: not-a-url\n",
+    });
+    const bad_url_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqualStrings("", bad_url_site.root); // not http(s) -> ignored
 }
 
 test "site base: prefixes every route" {

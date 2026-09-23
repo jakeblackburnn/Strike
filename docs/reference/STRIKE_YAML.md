@@ -11,8 +11,10 @@ it under `--watch` has no effect until the next `strike serve`.
 Examples below use `docs/` as the content directory, the same one this site is built from.
 
 Everything is optional. With no `strike.yaml` anywhere, the site still works: projects are
-the top-level folders (alphabetical), docs auto-discover, and labels fall back to each
-doc's first heading (then a prettified filename).
+the top-level folders that hold at least one `.md`/`.sx` file, recursively (alphabetical;
+a folder with none, like `images/`, is skipped as a project but its files are still
+served), docs auto-discover, and labels fall back to each doc's first heading (then a
+prettified filename).
 
 ## Scopes
 
@@ -28,7 +30,10 @@ theme: winter evening  # default palette (including kanagawa/vanta-black) and a 
                     # (morning|evening), or both; light/dark are aliases for
                     # morning/evening. Readers can still override in Settings.
 width: 46           # default content width, in rem
+sidebar_width: max  # default sidebar width: bare rem, or min/max
 base: /docs         # mount the site under a subpath of an existing website (see below)
+root: https://example.com       # external parent site; only honored alongside base:
+root_label: Example             # else the root: URL's host
 header: theme.sxh   # typography header applied to every project's documents (see below)
 projects:           # project order on the picker + nav; unlisted ones sort alphabetically after
   - example
@@ -106,6 +111,27 @@ everything behaves as before (links from `/`).
 
 One known seam: the server's own 404 page links back to `/` rather than to the base, so a
 missing route under a mounted preview offers a way out of the mount point.
+
+#### `root` — linking out to a parent site
+
+`root:` sends the sidebar brand's root segment to an external site instead of this
+site's own `/` — for a site mounted as a subroute of a bigger personal site (`base:
+/weblog` under `jake.example`, say), where the reader's fastest click home should reach
+`jake.example`, not `jake.example/weblog`. It's only honored alongside `base:` (an
+external root link makes sense only for a site that *is* a subroute of something else)
+and only when it's an `http://`/`https://` URL — otherwise ignored, same fail-soft rule
+as every other key here.
+
+Setting it doesn't strand the local site: it adds a second, always-present brand
+segment underneath — this site's own title, linking to its own `/` (or mount base) —
+so the brand becomes two fixed lines on every page, `root:`'s target on top and the
+local front page underneath, regardless of how deep the reader is. The project/folder
+breadcrumb chain (`nav: {breadcrumb: true}`'s "nearest thing below root" rule, above)
+doesn't apply in this mode — with the reader's own click home now two lines deep, the
+nav beside it, not the brand, carries the rest of "where am I."
+
+`root_label:` names the first segment; unset, it defaults to the `root:` URL's host
+(`https://jake.example` → `jake.example`).
 
 ### Per-project — `docs/<project>/strike.yaml`
 
@@ -200,7 +226,10 @@ overrides a site file. No runtime theme fetch is needed.
 | `theme` | site / project | Default palette (`fall`, `winter`, `spring`, `summer`, `kanagawa`, `vanta-black`, or `custom` with `theme_file`) and/or time (`morning`/`evening`; `light`/`dark` alias); project values override by field |
 | `theme_file` | site / project | Dir-relative fixed palette file, inlined into HTML and selectable as Custom |
 | `width` | site / project | Default content width in rem; an `.sxh` measure takes precedence |
+| `sidebar_width` | site / project | Default sidebar width: a bare rem number (clamped to the reader's `−`/`+` range if it overshoots) or `min`/`max` for that range's floor/ceiling |
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
+| `root` | site | An external parent site's homepage the brand's root segment links to instead of this site's own `/`; ignored unless `base:` is also set and the value is an `http(s)://` URL |
+| `root_label` | site | Label for the `root:` segment; else the URL's host |
 | `projects` | site | Explicit project order on the picker + nav |
 | `serve` | served dir | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win; not re-read by `--watch` |
 | `pdf` | site / project | PDF page size (`letter` or `a4`) and margin (points or inches); nearer config and CLI flags win |
@@ -217,8 +246,10 @@ use forward slashes, and include the file extension for documents.
 
 ## Not configurable
 
-The sidebar's brand and its subtitle are chrome, not config — there is no yaml key for
-either, and no per-site repo link. `docs/reference/UI.md` says why and what to do instead.
+The sidebar brand's *subtitle* (the small strike attribution link beneath it) is chrome,
+not config — no yaml key sets it, and there is no per-site repo link. `docs/reference/UI.md`
+says why and what to do instead. The brand's root segment itself *is* configurable — see
+`root:` above and "Root is always root, unless mounted under a parent site" below.
 
 ## How values resolve
 
@@ -236,12 +267,16 @@ either, and no per-site repo link. `docs/reference/UI.md` says why and what to d
   {scope: project}` restores the older behavior: a project's sidebar shows only that
   project's tree, and crossing between projects goes through `/`. (A root project has no
   picker: `/` is its home either way — see "Root project" above.)
-- **Root is always root**: the sidebar brand's first segment always reaches `/` (or the
-  mount base), however deep the page sits, then at most one more segment for the
-  nearest thing below root — the project (outside root-project mode) or the page's
-  nearest ancestor folder — `..`-compressed when there's more than one level between
-  root and the page. `nav: {breadcrumb: false}` drops that second segment down to just
-  the project.
+- **Root is always root, unless mounted under a parent site**: the sidebar brand's first
+  segment always reaches `/` (or the mount base), however deep the page sits, then at
+  most one more segment for the nearest thing below root — the project (outside
+  root-project mode) or the page's nearest ancestor folder — `..`-compressed when
+  there's more than one level between root and the page. `nav: {breadcrumb: false}`
+  drops that second segment down to just the project. When `root:` is set, this whole
+  scheme is replaced by two fixed segments on every page — `root:`'s external link
+  first, then this site's own `/` (or mount base) — so a site living under a parent
+  site's subroute (e.g. `jake.example/weblog`) can send readers to the parent's
+  homepage without losing a one-click way back to its own front page.
 
 ## Supported YAML
 
