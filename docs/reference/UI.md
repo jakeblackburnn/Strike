@@ -60,9 +60,12 @@ prominence in `main.*`.
   line-wraps mid-segment; a label too long for the sidebar's width truncates with an
   ellipsis instead. `nav: {breadcrumb: false}` drops the second segment down to just the
   project (`STRIKE_YAML.md`). A site mounted under a parent site's subroute (`base:` set)
-  can point this first segment at that parent instead with `root:` — the local front
-  page then keeps its one-click reach as a second, always-present segment, fixed
-  regardless of depth; the project/folder chain above doesn't apply in that mode
+  can point this first segment at an external site (or, for a dev server, a local path)
+  instead with `root:` — the local front page then keeps its one-click reach as a
+  second, always-present segment, fixed regardless of depth, and a third, optional
+  segment reappears below it for the current page's nearest project/folder (same
+  compression as above, `/`-prefixed instead of `..`-prefixed). In this mode only the
+  root segment is bold; the base and folder segments render in the normal muted weight
   (`STRIKE_YAML.md`, "root — linking out to a parent site"). Under the brand sits the
   chrome's one outbound link: a
   small muted subtitle crediting strike. All of it is fixed except the two `nav:` keys

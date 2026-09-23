@@ -23,8 +23,12 @@ pub const project_url = "https://github.com/jakeblackburnn/Strike";
 
 /// One brand/breadcrumb segment: `href` is `null` for a folder with no
 /// `main.*` to link to (`STRIKE_YAML.md` "main.*") — it still renders, as
-/// plain text, since there's no page to send a reader to.
-pub const Segment = struct { label: []const u8, href: ?[]const u8 };
+/// plain text, since there's no page to send a reader to. `bold` overrides
+/// `writeBrand`'s default "last segment is bold" rule — `null` (the default
+/// for every caller but `root:` mode) leaves that default in place;
+/// `site.zig`'s `root:` branch sets it explicitly on every segment, since
+/// there the *first* (external root) segment is the bold one.
+pub const Segment = struct { label: []const u8, href: ?[]const u8, bold: ?bool = null };
 
 /// The per-page chrome threaded into `wrapPage`: the document title, the
 /// sidebar brand's breadcrumb (root first, nearest ancestor last — never the
@@ -196,16 +200,19 @@ fn writeCustomTheme(w: *Writer, theme: theme_file.ThemeFile) Writer.Error!void {
 /// The brand is a *path*, not a name — root is always root: `crumbs[0]`
 /// always reaches the site root, however deep the current page sits. Each
 /// segment is its own block-level line (`.sidebar-brand`'s CSS), not joined
-/// with a separator — `breadcrumbSegments` caps this at two, so the brand
-/// never wraps mid-line, it just stacks: root above, the nearest thing below
-/// it underneath. Every segment but the last is `.brand-site`; the last
-/// (nearest ancestor) is `.brand-home`. A segment with no `href` (an
-/// ancestor folder with no `main.*`) renders as plain text — there's no page
-/// to send a reader to.
+/// with a separator — `breadcrumbSegments` caps this at two (three in
+/// `root:` mode), so the brand never wraps mid-line, it just stacks: root
+/// above, the nearest thing below it underneath. By default every segment
+/// but the last is `.brand-site`; the last (nearest ancestor) is
+/// `.brand-home` — a segment's own `bold` field overrides this (`root:`
+/// mode makes the *first* segment bold instead). A segment with no `href`
+/// (an ancestor folder with no `main.*`) renders as plain text — there's no
+/// page to send a reader to.
 fn writeBrand(w: *Writer, crumbs: []const Segment) Writer.Error!void {
     for (crumbs, 0..) |seg, i| {
         const last = i == crumbs.len - 1;
-        const class: []const u8 = if (last) "brand-home" else "brand-site";
+        const bold = seg.bold orelse last;
+        const class: []const u8 = if (bold) "brand-home" else "brand-site";
         if (seg.href) |href| {
             try w.writeAll("<a class=\"");
             try w.writeAll(class);

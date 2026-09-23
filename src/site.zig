@@ -157,10 +157,26 @@ pub fn renderPickerPage(gpa: Allocator, site: project.Site) ![]u8 {
     defer gpa.free(body);
     const nav = try renderPickerNav(gpa, site, "");
     defer gpa.free(nav);
+    // The picker isn't inside any one project, so the dummy project below
+    // (empty slug, empty tree) always yields an empty ancestor chain —
+    // `breadcrumbSegments` still needs it to pick up `root:` mode's brand
+    // (root + base [+ nothing, here] segments) the same as every other page.
+    var crumb_arena = std.heap.ArenaAllocator.init(gpa);
+    defer crumb_arena.deinit();
+    const crumbs = try breadcrumbSegments(crumb_arena.allocator(), site, .{
+        .slug = "",
+        .title = "",
+        .description = "",
+        .season = "",
+        .time = "",
+        .width = "",
+        .home = null,
+        .tree = &.{},
+        .docs = &.{},
+    }, homeHref(site.base));
     const picker_shell: Shell = .{
         .title = site.title,
-        // The picker is not inside a project; its one crumb links to itself.
-        .crumbs = &.{.{ .label = site.title, .href = homeHref(site.base) }},
+        .crumbs = crumbs,
         .nav_html = nav,
         .season = site.season,
         .time = site.time,
@@ -385,17 +401,29 @@ fn siteNav(allocator: Allocator, site: project.Site, p: project.Project, active_
 ///
 /// When yaml `root:` is set (only possible alongside `base:` — see
 /// `project.resolveRootLink`), that unconditional root segment points
-/// externally instead, and a second, always-present segment (site title,
-/// linking to this site's own `/`) takes over what segment 0 used to do —
-/// two fixed segments, every page, nothing past them: the project/folder
-/// chain below doesn't apply in this mode.
+/// externally instead (bold, per D5), and a second, always-present segment
+/// (this site's `base:` path, linking to its own `/`) takes over what
+/// segment 0 used to do. A third, optional segment — the current page's
+/// nearest project/folder, same compression `collectAncestors` produces
+/// below — follows when that chain is non-empty (i.e. every page but the
+/// base route's own front page), its label prefixed with a literal `/`.
 ///
 /// Caller owns the result.
 pub fn breadcrumbSegments(gpa: Allocator, site: project.Site, p: project.Project, route: []const u8) ![]shell.Segment {
     var out: std.ArrayList(shell.Segment) = .empty;
     if (site.root.len > 0) {
-        try out.append(gpa, .{ .label = site.root_label, .href = site.root });
-        try out.append(gpa, .{ .label = site.title, .href = homeHref(site.base) });
+        try out.append(gpa, .{ .label = site.root_label, .href = site.root, .bold = true });
+        try out.append(gpa, .{ .label = site.base, .href = homeHref(site.base), .bold = false });
+
+        const chain = try projectFolderChain(gpa, p, route);
+        if (chain.items.len > 0) {
+            const nearest = chain.items[chain.items.len - 1];
+            try out.append(gpa, .{
+                .label = try std.fmt.allocPrint(gpa, "/{s}", .{nearest.label}),
+                .href = nearest.href,
+                .bold = false,
+            });
+        }
         return out.toOwnedSlice(gpa);
     }
     try out.append(gpa, .{ .label = site.title, .href = homeHref(site.base) });
@@ -407,10 +435,7 @@ pub fn breadcrumbSegments(gpa: Allocator, site: project.Site, p: project.Project
 
     // The project and the folder ancestry form one chain below root; only
     // its nearest (last) entry survives into the breadcrumb, compressed.
-    var chain: std.ArrayList(shell.Segment) = .empty;
-    if (p.slug.len > 0) try chain.append(gpa, .{ .label = p.title, .href = try projectHref(gpa, p) });
-    _ = try collectAncestors(gpa, p.tree, route, &chain);
-
+    const chain = try projectFolderChain(gpa, p, route);
     if (chain.items.len == 1) {
         try out.append(gpa, chain.items[0]);
     } else if (chain.items.len > 1) {
@@ -418,6 +443,17 @@ pub fn breadcrumbSegments(gpa: Allocator, site: project.Site, p: project.Project
         try out.append(gpa, .{ .label = try std.fmt.allocPrint(gpa, "..{s}", .{nearest.label}), .href = nearest.href });
     }
     return out.toOwnedSlice(gpa);
+}
+
+/// The project + folder ancestry chain below root, root-to-leaf, for `p`'s
+/// page at `route` — shared by both `breadcrumbSegments` branches, which
+/// each compress it (to a "/"-prefixed or ".."-prefixed nearest entry)
+/// differently.
+fn projectFolderChain(gpa: Allocator, p: project.Project, route: []const u8) !std.ArrayList(shell.Segment) {
+    var chain: std.ArrayList(shell.Segment) = .empty;
+    if (p.slug.len > 0) try chain.append(gpa, .{ .label = p.title, .href = try projectHref(gpa, p) });
+    _ = try collectAncestors(gpa, p.tree, route, &chain);
+    return chain;
 }
 
 /// Walks `nodes` for the folder chain containing `active`, appending a
@@ -681,6 +717,27 @@ test "picker page sidebar nav links a project with no documents plainly" {
     try testing.expect(std.mem.indexOf(u8, page, "<nav class=\"sidebar-nav\"><ul class=\"nav-tree\"><li><a class=\"nav-doc\" href=\"/a\">A</a></li><li><a class=\"nav-doc\" href=\"/b\">B</a></li></ul></nav>") != null);
 }
 
+test "picker page brand picks up root: mode too, bold root only, no third segment" {
+    var projects = [_]project.Project{
+        .{ .slug = "a", .title = "A", .description = "", .season = "", .time = "", .width = "", .home = null, .tree = &.{}, .docs = &.{} },
+    };
+    const site: project.Site = .{
+        .title = "Weblog",
+        .season = "",
+        .time = "",
+        .width = "",
+        .base = "/weblog",
+        .root = "https://jake.example",
+        .root_label = "jake.example",
+        .projects = &projects,
+    };
+    const page = try renderPickerPage(testing.allocator, site);
+    defer testing.allocator.free(page);
+
+    try testing.expect(std.mem.indexOf(u8, page,
+        "<a class=\"brand-home\" href=\"https://jake.example\">jake.example</a><a class=\"brand-site\" href=\"/weblog\">/weblog</a>") != null);
+}
+
 test "picker page sidebar nav expands each project into its own tree" {
     var one = testDoc("/a/one", "One");
     var nested = testDoc("/a/sub/deep", "Deep");
@@ -875,7 +932,7 @@ test "the sidebar brand links to the current project's root" {
     try testing.expect(std.mem.indexOf(u8, root_page, "class=\"brand-home\" href=\"/\">Site</a>") != null);
 }
 
-test "breadcrumbSegments: root: fixes the brand to [external root, local root], ignoring depth" {
+test "breadcrumbSegments: root: fixes the brand to [external root, base, nearest folder], bold root only" {
     var deep_doc = testDoc("/weblog/reference/design/a", "A");
     var design_children = [_]project.NavNode{.{ .doc = &deep_doc }};
     var reference_children = [_]project.NavNode{
@@ -909,12 +966,22 @@ test "breadcrumbSegments: root: fixes the brand to [external root, local root], 
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
+
+    // Deep page: three segments, "/"-prefixed nearest folder, root bold only.
     const crumbs = try breadcrumbSegments(arena.allocator(), site, p, deep_doc.route);
-    try testing.expectEqual(@as(usize, 2), crumbs.len);
+    try testing.expectEqual(@as(usize, 3), crumbs.len);
     try testing.expectEqualStrings("jake.example", crumbs[0].label);
     try testing.expectEqualStrings("https://jake.example", crumbs[0].href.?);
-    try testing.expectEqualStrings("Weblog", crumbs[1].label);
+    try testing.expectEqual(true, crumbs[0].bold.?);
+    try testing.expectEqualStrings("/weblog", crumbs[1].label);
     try testing.expectEqualStrings("/weblog", crumbs[1].href.?);
+    try testing.expectEqual(false, crumbs[1].bold.?);
+    try testing.expectEqualStrings("/Design", crumbs[2].label);
+    try testing.expectEqual(false, crumbs[2].bold.?);
+
+    // The base route's own front page: no third segment.
+    const home_crumbs = try breadcrumbSegments(arena.allocator(), site, p, "/weblog");
+    try testing.expectEqual(@as(usize, 2), home_crumbs.len);
 }
 
 test "breadcrumbSegments: one folder deep shows it plainly; two or more collapses to '..nearest'" {

@@ -119,19 +119,25 @@ site's own `/` — for a site mounted as a subroute of a bigger personal site (`
 /weblog` under `jake.example`, say), where the reader's fastest click home should reach
 `jake.example`, not `jake.example/weblog`. It's only honored alongside `base:` (an
 external root link makes sense only for a site that *is* a subroute of something else)
-and only when it's an `http://`/`https://` URL — otherwise ignored, same fail-soft rule
-as every other key here.
+and only when it's either an `http://`/`https://` URL or a local absolute path
+(`/site-content`, say — for a dev server that shouldn't link out to the live domain
+while testing) — otherwise ignored, same fail-soft rule as every other key here. A local
+path additionally requires `root_label:` (there's no host to derive a default label
+from); an unlabeled local path is ignored like any other malformed value.
 
 Setting it doesn't strand the local site: it adds a second, always-present brand
-segment underneath — this site's own title, linking to its own `/` (or mount base) —
-so the brand becomes two fixed lines on every page, `root:`'s target on top and the
-local front page underneath, regardless of how deep the reader is. The project/folder
-breadcrumb chain (`nav: {breadcrumb: true}`'s "nearest thing below root" rule, above)
-doesn't apply in this mode — with the reader's own click home now two lines deep, the
-nav beside it, not the brand, carries the rest of "where am I."
+segment underneath — this site's own `base:` path, linking to its own `/` (or mount
+base) — and, on any page below that front page, a third segment for the current page's
+nearest project/folder (the same "nearest thing below root" compression `nav:
+{breadcrumb: true}` uses, above, but appended rather than replacing the fixed segments,
+and prefixed with a literal `/`). The root segment renders bold; the base and folder
+segments don't — so the brand reads as up to three lines, `root:`'s target on top and
+bold, the local front page and current folder underneath it in the reader's normal
+weight.
 
 `root_label:` names the first segment; unset, it defaults to the `root:` URL's host
-(`https://jake.example` → `jake.example`).
+(`https://jake.example` → `jake.example`) when `root:` is a URL, and is required (see
+above) when `root:` is a local path.
 
 ### Per-project — `docs/<project>/strike.yaml`
 
@@ -228,8 +234,8 @@ overrides a site file. No runtime theme fetch is needed.
 | `width` | site / project | Default content width in rem; an `.sxh` measure takes precedence |
 | `sidebar_width` | site / project | Default sidebar width: a bare rem number (clamped to the reader's `−`/`+` range if it overshoots) or `min`/`max` for that range's floor/ceiling |
 | `base` | site | Subpath the site is mounted under (`/docs`); links + serve routes carry it, export paths don't |
-| `root` | site | An external parent site's homepage the brand's root segment links to instead of this site's own `/`; ignored unless `base:` is also set and the value is an `http(s)://` URL |
-| `root_label` | site | Label for the `root:` segment; else the URL's host |
+| `root` | site | An external parent site's homepage (or, for dev, a local path) the brand's root segment links to instead of this site's own `/`; ignored unless `base:` is also set and the value is an `http(s)://` URL or a local absolute path |
+| `root_label` | site | Label for the `root:` segment; defaults to the URL's host for an `http(s)://` value, required for a local-path value |
 | `projects` | site | Explicit project order on the picker + nav |
 | `serve` | served dir | Default `strike serve` options (`watch`, `open`, `host`, `port`); flags win; not re-read by `--watch` |
 | `pdf` | site / project | PDF page size (`letter` or `a4`) and margin (points or inches); nearer config and CLI flags win |
@@ -273,10 +279,12 @@ says why and what to do instead. The brand's root segment itself *is* configurab
   root-project mode) or the page's nearest ancestor folder — `..`-compressed when
   there's more than one level between root and the page. `nav: {breadcrumb: false}`
   drops that second segment down to just the project. When `root:` is set, this whole
-  scheme is replaced by two fixed segments on every page — `root:`'s external link
-  first, then this site's own `/` (or mount base) — so a site living under a parent
-  site's subroute (e.g. `jake.example/weblog`) can send readers to the parent's
-  homepage without losing a one-click way back to its own front page.
+  scheme is replaced by two fixed segments — `root:`'s target first (bold), then this
+  site's own `/` (or mount base) — plus a third, optional segment on any page below that
+  front page, for the current page's nearest project/folder (`/`-prefixed, same
+  compression as above). A site living under a parent site's subroute (e.g.
+  `jake.example/weblog`) can send readers to the parent's homepage without losing a
+  one-click way back to its own front page, or "where am I" on a deep page.
 
 ## Supported YAML
 

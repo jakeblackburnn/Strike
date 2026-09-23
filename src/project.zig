@@ -129,12 +129,17 @@ pub const Site = struct {
     /// links to instead of this site's own `/`, from yaml `root:` — only
     /// honored when `base:` is also set (an external root link only makes
     /// sense for a site mounted as a subroute of that parent) and `root:` is
-    /// an `http(s)://` URL; otherwise "" (ignored, fail-soft). When set, a
-    /// second, always-present brand segment takes over the old root-anchored
-    /// link to this site's own `/` — see `site.breadcrumbSegments`.
+    /// either an `http(s)://` URL or a local absolute path (`/…`, for a dev
+    /// server that shouldn't link out to the live domain); otherwise ""
+    /// (ignored, fail-soft). When set, a second, always-present brand
+    /// segment takes over the old root-anchored link to this site's own
+    /// `/`, and a third, optional segment covers the current page's nearest
+    /// project/folder — see `site.breadcrumbSegments`.
     root: []const u8 = "",
     /// Label for the `root:` segment — yaml `root_label:`, else `root:`'s URL
-    /// host. "" unless `root` is also set.
+    /// host when `root:` is a URL. Required (and `root:` ignored without it)
+    /// when `root:` is a local path, since a bare path has no host to derive
+    /// a label from. "" unless `root` is also set.
     root_label: []const u8 = "",
     projects: []Project,
     /// A content-root `main.*` in picker mode (no root project): rendered at
@@ -190,16 +195,29 @@ const RootLink = struct { root: []const u8 = "", label: []const u8 = "" };
 
 /// Resolve `root:`/`root_label:` (site-scope only, `Site.root`'s doc comment
 /// says why): ignored — fail-soft, like every other yaml key here — unless
-/// `base` is non-empty and `root:` is an `http://`/`https://` URL.
+/// `base` is non-empty and `root:` is either an `http://`/`https://` URL or
+/// a local absolute path (`/…`). A local path additionally requires
+/// `root_label:` (no host to derive a default from); an unlabeled local path
+/// is ignored the same as any other malformed value.
 fn resolveRootLink(site_cfg: yaml.Value, base: []const u8) RootLink {
     if (base.len == 0) return .{};
     const root = site_cfg.getScalar("root") orelse "";
-    if (!isAbsoluteUrl(root)) return .{};
-    return .{ .root = root, .label = site_cfg.getScalar("root_label") orelse urlHost(root) };
+    if (isAbsoluteUrl(root)) {
+        return .{ .root = root, .label = site_cfg.getScalar("root_label") orelse urlHost(root) };
+    }
+    if (isLocalPath(root)) {
+        const label = site_cfg.getScalar("root_label") orelse return .{};
+        return .{ .root = root, .label = label };
+    }
+    return .{};
 }
 
 fn isAbsoluteUrl(s: []const u8) bool {
     return std.mem.startsWith(u8, s, "http://") or std.mem.startsWith(u8, s, "https://");
+}
+
+fn isLocalPath(s: []const u8) bool {
+    return std.mem.startsWith(u8, s, "/");
 }
 
 /// The `host[:port]` component of an `http(s)://` URL, for `root_label:`'s
@@ -1192,7 +1210,31 @@ test "root: is ignored without base:, honored with it, root_label: overrides the
         .data = "base: /weblog\nroot: not-a-url\n",
     });
     const bad_url_site = try load(testing.io, arena.allocator(), tmp.dir);
-    try testing.expectEqualStrings("", bad_url_site.root); // not http(s) -> ignored
+    try testing.expectEqualStrings("", bad_url_site.root); // not http(s)/local path -> ignored
+}
+
+test "root: also accepts a local absolute path, but only with root_label:" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "docs");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/a.md", .data = "body" });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "strike.yaml",
+        .data = "base: /weblog\nroot: /site-content\n",
+    });
+    const unlabeled_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqualStrings("", unlabeled_site.root); // local path without root_label: -> ignored
+
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "strike.yaml",
+        .data = "base: /weblog\nroot: /site-content\nroot_label: Dev Site\n",
+    });
+    const labeled_site = try load(testing.io, arena.allocator(), tmp.dir);
+    try testing.expectEqualStrings("/site-content", labeled_site.root);
+    try testing.expectEqualStrings("Dev Site", labeled_site.root_label);
 }
 
 test "site base: prefixes every route" {
