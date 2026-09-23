@@ -96,3 +96,45 @@ stays one click away in the nav beside it.
 projects — the escape hatch (`scope: project`) already exists; a future middle ground
 (e.g. collapsed-by-default *other* projects, expanded current one) would be a new `nav:`
 value, not a default change.
+
+## D4 · 2026-09-23 · `root:` — an external root link for a site mounted under a parent site
+
+**Decision:** `strike.yaml` `root:` (site-scope) points the sidebar brand's root segment
+at an external URL instead of this site's own `/` — but only when `base:` is also set,
+and only when `root:` is an `http://`/`https://` URL; any other combination is ignored,
+fail-soft, like every other yaml key. `root_label:` names that segment, defaulting to the
+URL's host. When active, the brand becomes exactly two fixed segments on *every* page —
+`root:`'s target first, then this site's own title linking to its own `/` (or mount
+base) — replacing D3's "root is always root, then at most one more segment for the
+nearest project/folder" scheme entirely for that page; there is no third segment for the
+page's own folder depth in this mode.
+
+**Why:** Jake is mounting a project (e.g. a weblog) as a subroute of a bigger personal
+site (`base: /weblog` under `jake.example`). The reader's fastest click home should reach
+the *parent* site, not loop back into the subroute — but the subroute still needs its own
+one-click front page, since the external root no longer serves that role. Gating on
+`base:` means an external root link only appears for a site that structurally *is* a
+subroute of something else; it can't be set (accidentally or not) on a site that owns its
+own domain root, where it would leave no path back to `/` at all. Dropping the
+project/folder chain (rather than appending it as a third segment) keeps the two-line
+brand shape D3 just set — the fastest way back to "where am I on this subsite" is already
+one click away in the full-site sidebar nav beside it, not the brand.
+
+**Rejected:**
+- Adding the local-root segment as a *third* line alongside the existing project/folder
+  chain: breaks D3's just-set two-segment cap (the reason for that cap — a design-note
+  page growing a four-segment brand — applies just as much with a third fixed segment
+  added on top), and Jake's own phrasing ("the second breadcrumb always to the root level
+  main.sx/md file") named exactly two segments.
+- Allowing `root:` without requiring `base:`: an external root link only makes sense
+  when this site is itself mounted as somebody else's subroute; without `base:` there'd
+  be no coherent "local front page" for the second segment to represent.
+- Requiring `root_label:` instead of defaulting it: the URL's host is almost always the
+  right label and free to derive, so requiring it would be yaml ceremony with no payoff
+  the common case needs.
+
+**Revisit if:** a reader loses too much "where am I" context on a deep page once the
+folder/project breadcrumb chain disappears — the sidebar nav is assumed to cover it, but
+if that assumption is wrong for a real site, the fix would be a third, folder-chain
+segment appended after the two fixed ones (not reverting to D3's original scheme, which
+still couldn't reach an external parent).
