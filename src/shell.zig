@@ -221,6 +221,7 @@ const head_pre_c_b =
 const head_pre_c = head_pre_c_a ++ theme_season_guard ++ "||s===\"custom\"" ++ head_pre_c_b;
 const head_pre_d_a =
     \\";if(w)d.style.setProperty("--content-width",w+"rem");
+    \\var sw=localStorage.getItem("sidebarwidth");if(sw)d.style.setProperty("--sidebar-width",sw+"rem");
     \\var fs=localStorage.getItem("fontsize");if(fs)d.style.setProperty("--font-size",fs+"px");
     \\var lh=localStorage.getItem("lineheight");if(lh)d.style.setProperty("--line-height",lh);
     \\var f=localStorage.getItem("font");if(
@@ -351,7 +352,7 @@ const head_post_a =
     \\    transition: padding-left .2s ease;
     \\  }
     \\  .content {
-    \\    max-width: var(--content-width, 44rem); margin: 3rem auto; padding: 0 1.25rem;
+    \\    max-width: var(--content-width, 44rem); margin: 3rem auto; padding: 0 1.25rem 8rem;
     \\    font-size: var(--font-size, 1rem); line-height: var(--line-height, 1.6);
     \\  }
 ++ font_rules ++
@@ -519,7 +520,7 @@ const head_post_a =
     \\     strip itself lights it accent, clicking toggles. Collapsed, the strip
     \\     slides to the screen's left edge and reopens the sidebar the same way. */
     \\  .sidebar-edge {
-    \\    position: fixed; top: 0; left: calc(var(--sidebar-width) - 1.25rem); width: 2.5rem; height: 100vh; z-index: 10;
+    \\    position: fixed; top: 0; left: calc(var(--sidebar-width) - 2rem); width: 4rem; height: 100vh; z-index: 10;
     \\    margin: 0; padding: 0; border: none; background: transparent; cursor: pointer;
     \\    transition: left .2s ease;
     \\  }
@@ -536,7 +537,7 @@ const head_post_a =
     \\    transform: translateX(-100%); visibility: hidden;
     \\    transition: transform .2s ease, visibility 0s .2s;
     \\  }
-    \\  :root[data-sidebar="collapsed"] .sidebar-edge { left: -1.25rem; }
+    \\  :root[data-sidebar="collapsed"] .sidebar-edge { left: -2rem; }
     \\  /* Settings: two plain-text triggers; each panel pops out OVER the sidebar
     \\     (absolutely positioned above the trigger row), keeping nav uncluttered. */
     \\  .sidebar-settings { position: relative; display: flex; gap: 1rem; }
@@ -614,6 +615,8 @@ const head_post_d_a =
     \\  <div class="sidebar-settings">
     \\    <button id="theme-toggle" class="settings-toggle" type="button" aria-expanded="false">Theme</button>
     \\    <button id="text-toggle" class="settings-toggle" type="button" aria-expanded="false">Text</button>
+    \\    <button id="sidebar-narrower" class="settings-toggle" type="button" aria-label="Narrower sidebar" title="Narrower sidebar">&minus;</button>
+    \\    <button id="sidebar-wider" class="settings-toggle" type="button" aria-label="Wider sidebar" title="Wider sidebar">+</button>
     \\    <div id="theme-panel" class="settings-panel" hidden>
     \\      <div class="opt-group" id="season-opts">
     \\        <span class="opt-label">Theme</span>
@@ -674,6 +677,24 @@ const page_tail =
     \\      edgeLabel();
     \\    });
     \\  }
+    \\
+    \\  // Sidebar width: stepped +/- buttons, not a drag handle. Today's default
+    \\  // width is the floor — a reader can only widen from here, never go below
+    \\  // the layout's baseline.
+    \\  var SIDEBAR_MIN = 14, SIDEBAR_MAX = 28, SIDEBAR_STEP = 2;
+    \\  function setSidebarWidth(v){
+    \\    v = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, v));
+    \\    d.style.setProperty("--sidebar-width", v + "rem");
+    \\    try { localStorage.setItem("sidebarwidth", v); } catch (e) {}
+    \\  }
+    \\  var narrower = document.getElementById("sidebar-narrower");
+    \\  var wider = document.getElementById("sidebar-wider");
+    \\  function curSidebarWidth(){
+    \\    var cur = parseFloat(getComputedStyle(d).getPropertyValue("--sidebar-width"));
+    \\    return isNaN(cur) ? SIDEBAR_MIN : cur;
+    \\  }
+    \\  if (narrower) narrower.addEventListener("click", function(){ setSidebarWidth(curSidebarWidth() - SIDEBAR_STEP); });
+    \\  if (wider) wider.addEventListener("click", function(){ setSidebarWidth(curSidebarWidth() + SIDEBAR_STEP); });
     \\
     \\  // Two settings pop-outs (theme, text); opening one closes the other.
     \\  var panels = [
@@ -809,7 +830,7 @@ test "wrapPage emits sidebar, settings panel and content body" {
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-toggle\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, page, "id=\"sidebar-open\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, page, ".sidebar:hover + .sidebar-edge::before") != null);
-    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar-edge { left: -1.25rem; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, ":root[data-sidebar=\"collapsed\"] .sidebar-edge { left: -2rem; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "localStorage.getItem(\"sidebar\")") != null);
     // The brand subtitle credits strike and opens in a new tab.
     try std.testing.expect(std.mem.indexOf(u8, page, "class=\"brand-repo\" href=\"" ++ project_url ++ "\"") != null);

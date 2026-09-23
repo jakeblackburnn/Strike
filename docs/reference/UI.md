@@ -13,6 +13,10 @@ wins.
   `STRIKE_YAML.md`.)
 - **Generated defaults are minimal.** In the absence of a `main.*`, a page is a heading,
   the project's `description:` if it has one, and a plain list of links. Nothing more.
+- **Every document ends with breathing room.** A fixed empty margin sits below the
+  content, so the last line never lands flush against the viewport's bottom edge.
+  It is chrome, not a document-authored `/spacer()` — no config exposes it, the same
+  way the top margin isn't configurable either.
 - **Chrome supplies the palette; it never overrides the author.** The themes
   define what `accent`, `muted` and `fg` *look like* — and document color roles resolve
   against exactly those tokens, so chrome and content share one palette by design. What
@@ -62,15 +66,23 @@ prominence in `main.*`.
 - **The right edge is the collapse control.** No arrow buttons: hovering the sidebar
   warms the edge line, hovering the edge itself lights it in the accent color, and
   clicking it toggles. The sidebar slides away; the edge strip slides to the screen's
-  left edge and reopens it the same way.
+  left edge and reopens it the same way. The edge's click target is generous —
+  wider than the hairline it draws — so the toggle is easy to hit without precision
+  aiming.
 - Collapsed means **gone**: zero width, no reserved margin — only the hairline edge
   strip remains to bring it back.
-- Settings stay out of the sidebar body. Two plain-text triggers at the bottom —
-  **Theme** and **Text** — each open their own panel that pops out *over* the sidebar
-  (opening one closes the other). Theme choices are selectable text links, not
-  dropdowns; Text holds reading settings: content width, font size, line height, and
-  font family (sans/serif/mono/humanist). Saved reader choices override the
-  document header's defaults.
+- **Sidebar width is stepped, not dragged.** Two plain-text controls — `−` and `+`
+  — widen or narrow the sidebar in fixed steps. Today's default width is the floor:
+  a reader can only widen from there, never narrow past it, so the nav's own layout
+  never breaks. There's a fixed ceiling too. No drag handle — a resize-by-dragging
+  affordance would fight the collapse edge for the same strip of screen.
+- Settings stay out of the sidebar body. Plain-text triggers at the bottom —
+  **Theme** and **Text** open their own panel that pops out *over* the sidebar
+  (opening one closes the other); `−`/`+` act immediately, with no panel. Theme
+  choices are selectable text links, not dropdowns; Text holds reading settings:
+  content width, font size, line height, and font family
+  (sans/serif/mono/humanist). Saved reader choices override the document header's
+  defaults.
 
 ## Themes
 
@@ -136,6 +148,7 @@ writing reader state uses these names.
 | `lineheight` | a number, unitless | `--line-height` |
 | `font` | `sans` / `serif` / `mono` / `humanist`; absent uses the header default | `data-font` |
 | `sidebar` | `collapsed` / `expanded` | `data-sidebar` |
+| `sidebarwidth` | a number, in `rem` | `--sidebar-width` |
 | `nav:<slug>/<path>` | `open` / `closed` | one nav folder's disclosure state |
 | `nav:<slug>` | `open` / `closed` | one *project's* node on the front page (no `/`, so it can't collide with a folder) |
 
