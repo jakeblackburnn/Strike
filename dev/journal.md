@@ -1,173 +1,168 @@
-# Journal · 2026-09-23 12:28 · slopbox · 9e85106
+# Journal · 2026-09-23 13:00 · slopbox · 199a827
 ## Start
-**State:** Sidebar width control (±, 14–28rem, localStorage-persisted), wider collapse
-hitbox, and default 8rem bottom document padding shipped in `abf2623` — build/test/
-headless-browser verified. `docs/reference/UI.md` up to date. Nothing uncommitted.
-**Since:** nothing — session opened with `/brief`, no new commits.
+**State:** Folder-hiding bug fixed, `sidebar_width:` and `root:`/`root_label:` yaml keys
+shipped in `0ead3a6` — build/test verified, docs updated. D4 recorded (root-link
+breadcrumb, two fixed segments, revises D3). Nothing uncommitted.
+**Since:** nothing — session opened with `/frame`, no new commits.
 **Next:** carried from the previous Close:
-1. Banner images (M) — draft `docs/reference/design/023-banner.md`, Jake dictates the
+1. Root link is implemented per D4's two-fixed-segment shape; if a real deep site loses
+   too much "where am I" context without the folder chain, D4's own "Revisit if" names
+   the fix (a third, folder-chain segment appended after the two fixed ones) — this is
+   now the task below, raised by Jake directly rather than found later.
+2. Banner images (M) — draft `docs/reference/design/023-banner.md`, Jake dictates the
    Decision before implementation.
-2. Design note 022 pagination policy (M) — blocked on Jake.
-3. PDF backend gaps (L) — unscoped.
+3. Design note 022 pagination policy (M) — blocked on Jake.
+4. PDF backend gaps (L) — unscoped.
 **Traps:**
 - `zig build test` prints benign `failed command: ...--listen=-` stderr even on full
   success — read the `Build Summary: N/N steps succeeded; M/M tests passed` line.
 - `strike render <file>` never reads the surrounding `strike.yaml` — build/serve a
-  directory to check `nav:`/theme/etc. wiring.
-- Full-site nav puts every project's whole doc list into every page's HTML — check
-  `nav: {scope: project}` before assuming a large site's page weight is acceptable.
-- A near-white/light theme accent needs its own `Palette.on_accent` override.
-- No headless-browser tooling installed; the iframe-wrapper `chromium --headless
-  --dump-dom` trick is how JS behavior got verified last session.
+  directory to check `nav:`/`root:`/`sidebar_width:`/etc. wiring.
+- The "skip empty folders" rule now applies at two levels (`scan()` for subfolders,
+  `loadProject` for top-level project folders) — if a third layer of folder-like
+  grouping is ever added, it needs the same check.
+- No headless-browser tooling installed; reading the built HTML directly (`grep`/Python
+  regex on the output file) was enough to verify last session's changes.
 **Pointers:**
-- `src/shell.zig`: sidebar-width buttons/handlers sit right after the `sidebar-edge`
-  toggle script in `page_tail`; `SIDEBAR_MIN`/`SIDEBAR_MAX`/`SIDEBAR_STEP` (14/28/2) are
-  the only place those numbers live.
-- `src/shell.zig` head_pre_d_a: pre-paint `--sidebar-width` restore sits right after the
-  `--content-width` restore — same no-flash pattern.
-- `dev/DECISIONS.md` D3 — root-anchored, two-segment-max breadcrumb; unaffected by last
-  session, directly relevant to this session's root-link task below.
+- `src/project.zig`: `resolveRootLink`/`isAbsoluteUrl`/`urlHost` (site-scope `root:`
+  resolution) sit right after `resolveNavConfig`.
+- `src/shell.zig`: `sidebarWidthToken` sits by `safeDecimal`. `writeBrand` (~205-223)
+  assigns `brand-home`/`brand-site` by position (last = bold); CSS at ~530-534.
+- `src/site.zig`: `breadcrumbSegments`'s `root:` early return (394-400) sits before the
+  existing chain-collapsing logic (401-420), which calls `collectAncestors` (422-437) —
+  currently unreachable once `root:` short-circuits.
+- `dev/DECISIONS.md` D4 — the root-link decision; D3 is still the reference for the
+  no-`root:` default case and the no-separator stacked-line brand.
 
-## Task: strike.yaml customization — folder hiding, external root link, sidebar width default · 12:28
-**Goal:** Give `strike.yaml` three more levers Jake wants for a personal-site deployment:
-hide non-doc folders from nav, let the sidebar root link out to a parent site, and set a
-site/project default sidebar width.
+## Task: three-segment root-link breadcrumb (revising D4) · 13:00
+**Goal:** When `root:`+`base:` are set, show an optional third breadcrumb segment for the
+current subfolder, with the external root link styled as the bold/prominent one —
+matching Jake's weblog-under-a-parent-site layout.
 **Now:**
-- `hidden:` (`project.zig:537-544`, `STRIKE_YAML.md:130`) already excludes named paths —
-  files or folders — from nav and routes (404). Folders holding zero `.md`/`.sx` files
-  are *already* excluded from nav with no config at all (`project.zig:371`, "skip empty
-  folders") — confirmed against the asset-copy test at `main.zig:767-787`: an `img/`
-  folder of only images never enters nav, but its files still get copied to static
-  output on `strike build` (needed for `![]()` refs — that's correct, not a bug).
-- `breadcrumbSegments` (`site.zig:382-404`) hardcodes the brand's first segment to
-  `homeHref(site.base)` (local `/` or mount base). "Root is always root" is **D3**
-  (`dev/DECISIONS.md`, dictated by Jake 2026-09-22), restated in `UI.md:48-65` and
-  `STRIKE_YAML.md:218-221` ("no yaml key... no per-site repo link") /
-  `STRIKE_YAML.md:239-244`.
-- Sidebar width: `SIDEBAR_MIN/MAX/STEP` (`shell.zig:684`, 14/28/2) are compile-time
-  constants; the reader's default (14rem) has no `strike.yaml` wiring, purely client
-  `localStorage`. Content `width:` already has the exact pattern this would mirror
-  (yaml key → `Options.width` → spliced into the no-flash JS bootstrap's unset-
-  preference fallback; `project.zig:332`, `shell.zig` ~198-224).
+- D4 (`dev/DECISIONS.md:100-139`) made `root:` mode render exactly two fixed segments —
+  root target, then site title → `homeHref(base)` — dropping the project/folder chain
+  entirely on every page (`site.zig:394-400`).
+- `writeBrand` (`shell.zig:205-223`) gives only the *last* segment `brand-home` (bold,
+  inherits color); every earlier segment gets `brand-site` (muted, `.85em`,
+  `shell.zig:530-534`). In `root:` mode today that makes the root segment small/muted
+  and the local site title bold — the opposite of what Jake wants now.
+- D3's stacked-line brand deliberately has no `/` separator between segments
+  (`shell.zig:1027-1031` test) — each segment is its own block line. Jake's ask
+  ("`/weblog`", "one extra breadcrumb with a slash `/`") implies a different, path-style
+  joiner for segments 2-3.
+- The chain-compression helper (`collectAncestors`, `site.zig:422-437`) that would
+  produce a subfolder segment already exists and is used in the non-`root:` path
+  (`site.zig:408-419`) — it's just unreachable once `root:` short-circuits.
+- D4's own "Revisit if" (`dev/DECISIONS.md:136-139`) named exactly this case; last
+  session's journal Next #1 flagged it as something to watch once the weblog is live.
 **Scope:**
-- In: (1) confirm/close the folder-hiding gap, if any. (2) a `strike.yaml` key for the
-  sidebar's default width. (3) workshop + decide the external-root-link mechanism;
-  implement only after Jake's Decision.
-- Out: banner images, design note 022, PDF backend gaps (still on the Next list,
-  untouched by this task).
+- In: extend `breadcrumbSegments`'s `root:` branch to optionally append a third,
+  compressed subfolder segment; restyle which segment(s) are bold vs. muted; widen
+  `root:`'s accepted value (see wrinkle below).
+- Out: `sidebar_width`, folder-hiding (both closed last session).
 **Constraints:**
-- Toolkit-side (UI/config), not language — no `docs/reference/design/NNN` note needed
-  (`DESIGN.md:50-52`); once decided, record via `/decide` into `dev/DECISIONS.md`.
-- Fail-soft yaml handling throughout (`resolveNavConfig` is the template): unknown/
-  malformed values fall back to defaults, never error.
-- `hidden:`/`labels:`/`order:` are project-relative, exact-path matches, no globs today
-  — new syntax should stay consistent with that unless Jake asks for globs.
-- The root-link change **revises D3** ("root is always root") — must be recorded as a
-  decision update, not slipped in quietly.
+- This revises D4 (which itself revised D3) — record via `/decide` before implementing,
+  not slipped in quietly.
+- Reuse `collectAncestors`'s existing compression rather than a new chain-walk.
+- Don't regress D3's plain 2-segment case (no `root:`) — its "last segment = bold" rule
+  still needs to hold there.
 **Approach:**
-- Root link: needs (a) the yaml surface — one absolute-URL key, e.g. `root:
-  https://jake.example` (label default: hostname, or a paired `root_label:`) — and (b)
-  once segment 1 points away, how a reader gets back to the project's own top
-  (`/weblog`). Two candidate shapes to bring Jake: insert a new, always-present local-
-  root segment (D3's 2-segment cap becomes 3 when `root:` is set), or fold the local
-  root into the existing second segment (today's project/folder segment demotes to a
-  third only when present). Worked brand examples for each before deciding.
-- Sidebar width: add a `sidebar_width:` (name TBD) key resolved like `width:`, threaded
-  through `Options`/`Shell`, spliced into the JS bootstrap's
-  `localStorage.getItem("sidebarwidth")||"<default>"` fallback, clamped to
-  `SIDEBAR_MIN..SIDEBAR_MAX`. Jake's `max` example is probably the ceiling (28rem today)
-  rather than a literal keyword — default to a bare rem number for consistency with
-  `width:` unless told otherwise.
-- Folder hiding: likely no code change — pending Jake's answer to Open #1, at most a
-  `STRIKE_YAML.md` clarification that folder-hiding already works today.
-**Risks:**
-- Implementing the root-link mechanism before Jake decides re-litigates D3 silently —
-  exactly what `CLAUDE.md` says not to do.
-- Guessing "max" as a keyword instead of confirming ships a yaml key whose shape has to
-  change later.
-**Done when:**
-- Folder hiding: Jake confirms today's behavior covers the ask, or a named gap is fixed.
-- Sidebar width: the new key sets `--sidebar-width`'s no-flash default on first paint (no
-  saved `localStorage.sidebarwidth`); a reader's own resize still overrides it;
-  `zig build test` passes; verified in a built page the way the width slider was last
-  session.
-- Root link: a Decision is recorded in `dev/DECISIONS.md` (via `/decide`) naming the
-  yaml surface and breadcrumb shape before any implementation lands.
-**Open:**
-1. Folder hiding — is there a concrete case today's `hidden:` + auto-skip doesn't cover,
-   or was this ask already satisfied and just needed confirming?
-2. Root link — is `root:` (absolute URL + optional label) the right yaml shape, and
-   should the local mount's own top gain a *permanent* extra breadcrumb segment, or
-   fold into the existing second segment?
-3. Sidebar width — bare rem number (matches `width:`) or a `max`/`min` keyword alias?
+- Third segment: reuse `collectAncestors` (`site.zig:422-437`) inside the `root:`
+  branch, appended only when the chain is non-empty — i.e. omitted on the base route's
+  own front page (`/weblog` itself), same trigger the non-`root:` path already uses.
+- Styling: role-based, not position-based — root segment always gets the bold/prominent
+  style; base + subfolder both get today's muted `brand-site` style. Gate this on
+  `root:` mode specifically so D3's plain case is untouched.
+- Separator: bake `/` into each non-root segment's label text (e.g. label `/weblog`,
+  `/notes`) rather than a new CSS glyph — cheapest, avoids reopening D3's
+  wrap-avoidance rationale.
+**Risks:** a blanket change to `writeBrand`'s bold/muted logic could regress D3's
+existing 2-segment brand if not gated specifically to `root:` mode.
+**Done when:** a Decision is recorded in `dev/DECISIONS.md` (via `/decide`) naming the
+three-segment shape, the styling split, and the separator convention; then implemented,
+`zig build test` green, and verified against a 3-deep scratch site with `root:`+`base:`
+set (root bold, `/weblog` and `/subfolder` muted with slashes, no third segment on the
+`/weblog` front page itself).
+**Resolved (Jake, this session):**
+1. Styling split — root bold, base + subfolder both muted (as recommended).
+2. Separator — literal `/` baked into label text (as recommended).
+3. `base:` gating — confirmed already correct: `resolveRootLink` (`project.zig:194-199`)
+   only requires `base.len > 0`; only `root:` itself is checked against
+   `isAbsoluteUrl` (`project.zig:201-203`). `base:` was always a plain local path
+   (e.g. `/weblog`), never URL-checked — no fix needed, just don't add a spurious URL
+   check on `base` when wiring the third segment.
 
-## Close · 2026-09-23 12:52 · 9e85106..0ead3a6
-- **changed:** `src/project.zig`: `loadProject` now skips a top-level folder with
-  zero `.md`/`.sx` anywhere in it (`scan()` already did this one level down —
-  the actual bug Jake hit testing folder hiding); added `sidebar_width:` (site/
-  project) and `root:`/`root_label:` (site-scope) yaml keys.
-  `src/shell.zig`: `sidebarWidthToken` resolves `min`/`max`/bare-rem into the
-  bootstrap's `sidebarwidth` fallback, clamped to 14–28. `src/site.zig`:
-  `breadcrumbSegments` short-circuits to two fixed segments (`root:`'s target,
-  then this site's own front page) whenever `root:` is set, replacing the
-  project/folder chain entirely in that mode. Docs updated: `README.md`,
-  `STRIKE_YAML.md`, `UI.md`.
-- **why:** three `strike.yaml` customization asks from Jake's personal-site
-  deployment (`/frame`'d this session): the folder-hiding ask turned out to be
-  a real bug, not a missing feature; sidebar width and root link were net-new
-  keys, root link answered by Jake mid-session (root:+base:, two fixed
-  segments, no third folder-chain segment) — recorded as **D4** since it
-  revises D3's breadcrumb rule.
-- **verified:** `zig build test` → `Build Summary: 39/39 steps succeeded;
-  1869/1869 tests passed`. `strike build` against scratch content dirs,
-  inspected the output HTML directly: an images-only top-level folder no
-  longer appears in the picker/nav (still copied as a static asset);
-  `sidebar_width: max` produced
-  `localStorage.getItem("sidebarwidth")||"28"` in a built page; `root:
-  https://jake.example` + `base: /weblog` produced a two-segment brand
-  (`jake.example` → external URL, `Weblog` → `/weblog`) on a page 3 folders
-  deep, with no `..`-compressed third segment.
+**Wrinkle (Jake, this session): `root:` needs a local-path form for dev.** Jake doesn't
+want the dev server linking out to the live domain — wants `root: /` or `root:
+/site-content` to work. Conflicts with D4 as recorded: `resolveRootLink`
+(`project.zig:194-203`) only activates `root:` for `http://`/`https://`; any other value
+is silently ignored (fail-soft) — so `root: /` today just falls back to normal
+breadcrumb behavior, not a local link. Two options:
+1. **(Jake's pick)** Widen the gate to `isAbsoluteUrl(root) or startsWith(root, "/")`.
+   `root_label:` becomes *required* in the local-path case (no `urlHost()`-style default
+   exists for a bare path) — `http(s)` case keeps today's free host-derived default.
+2. Leave `root:` URL-only (matches D4's "external root link" framing) and have Jake
+   swap the yaml value by hand between dev and prod — no code change.
+Jake confirmed option 1 in chat (2026-09-23). This is a second amendment to D4, same as
+the three-segment shape above — both belong in the same `/decide` update.
+**Open:** none — ready for `/decide` then implementation.
+
+## Close · 2026-09-23 13:10 · 199a827..0d2fbfc
+- **changed:** `src/site.zig`: `breadcrumbSegments`'s `root:` branch grows an optional
+  third segment (current page's nearest project/folder, `/`-prefixed, reusing
+  `collectAncestors` via new shared helper `projectFolderChain`); segment 2's label is
+  now the literal `base:` path, not `site.title`; root segment is bold, base/folder
+  segments muted. Also fixed `renderPickerPage`, which hardcoded its own single crumb
+  and so silently dropped `root:` mode's brand entirely on a picker-mode site's own
+  front page. `src/shell.zig`: `Segment` gained an optional `bold` field so `writeBrand`
+  can mark the first segment bold instead of its D3 default (last segment). `src/
+  project.zig`: `resolveRootLink` now also accepts a local absolute path (`/…`) for
+  `root:`, requiring `root_label:` in that case. Docs (`STRIKE_YAML.md`, `UI.md`)
+  updated to match.
+- **why:** Jake's weblog-under-`fake_example.dev` deployment (`/frame`'d this session)
+  needed the sidebar brand to read root-first (bold) with the local mount and current
+  folder as secondary lines, and needed `root:` usable on a dev server without linking
+  out to the live domain — both amend D4, recorded as **D5**/**D6** via `/decide` before
+  implementing.
+- **verified:** `zig build test` → `Build Summary: 39/39 steps succeeded; 1876/1876
+  tests passed`. `strike build` against a scratch 3-deep site with `root:`+`base:` set:
+  root bold linking out, `/weblog` and `/Design`/`/Reference` muted with slashes, no
+  third segment on the base route's own front page, correct brand on the picker's own
+  front page (the bug fix), unlabeled local-path `root:` correctly falls back to the
+  default breadcrumb.
 - **by:** claude
-- `0ead3a6` Empty top-level folders no longer become picker projects; sidebar_width and root: yaml keys
-- 6 files, +315 −23
+- `0d2fbfc` Three-segment root-link breadcrumb; root: accepts a local path (D5, D6)
+- 5 files, +177 −50
 
 ### Next
-1. Root link is implemented per D4's two-fixed-segment shape; if a real deep
-   site loses too much "where am I" context without the folder chain, D4's
-   own "Revisit if" names the fix (a third, folder-chain segment appended
-   after the two fixed ones) — not blocking, just watch for it once Jake's
-   weblog is live.
-2. Banner images (M) — draft `docs/reference/design/023-banner.md`, Jake
-   dictates the Decision before implementation. Still deferred, untouched
-   this session.
+1. If Jake wants segment 2 to show a human title (`Weblog`) instead of the raw `base:`
+   path (`/weblog`) in `root:` mode, that's a further change to what shipped this
+   session — needs its own `/decide`, not a quiet edit (raised in chat, not yet asked
+   for).
+2. Banner images (M) — draft `docs/reference/design/023-banner.md`, Jake dictates the
+   Decision before implementation. Still deferred.
 3. Design note 022 pagination policy (M) — still blocked on Jake.
 4. PDF backend gaps (L) — still unscoped.
 
 ### Traps
-- `zig build test` prints benign `failed command: ...--listen=-` stderr even
-  on full success — read the `Build Summary: N/N steps succeeded; M/M tests
-  passed` line.
-- `strike render <file>` never reads the surrounding `strike.yaml` — build/
-  serve a directory to check `nav:`/`root:`/`sidebar_width:`/etc. wiring.
-- The "skip empty folders" rule now applies at two levels (`scan()` for
-  subfolders, `loadProject` for top-level project folders) — if a third
-  layer of folder-like grouping is ever added, it needs the same check; it's
-  easy to add a new grouping construct and forget this.
-- No headless-browser tooling installed; reading the built HTML directly
-  (`grep`/Python regex on the output file) was enough to verify this
-  session's changes — no need for the iframe/chromium trick unless testing
-  live JS interaction (e.g. the `−`/`+` sidebar buttons) again.
+- `zig build test` prints benign `failed command: ...--listen=-` stderr even on full
+  success — read the `Build Summary: N/N steps succeeded; M/M tests passed` line.
+- `strike render <file>` never reads the surrounding `strike.yaml` — build/serve a
+  directory to check `nav:`/`root:`/`sidebar_width:`/etc. wiring.
+- A root `main.*` alone does **not** create a root project — a content root with only
+  subfolders (no loose `.md`/`.sx` files directly in it) is picker mode, and the root
+  `main.*` becomes the picker's own content, not a project home (`STRIKE_YAML.md:178-
+  198`). This is exactly what made the picker-mode `root:` bug (fixed this session) easy
+  to hit by accident when testing.
+- No per-environment yaml profile exists — toggling `root:` between a live URL (prod)
+  and a local path (dev) is a manual yaml edit; nothing in strike swaps it automatically.
 
 ### Pointers
-- `src/project.zig`: `resolveRootLink`/`isAbsoluteUrl`/`urlHost` (site-scope
-  `root:` resolution) sit right after `resolveNavConfig`; the top-level empty-
-  folder skip is one guard clause in `loadProject`, right after `scan()`
-  returns.
-- `src/shell.zig`: `sidebarWidthToken` sits by `safeDecimal`; its two hardcoded
-  constants (`sidebar_min`/`sidebar_max` = 14/28) mirror — by hand, not a
-  shared source — the JS `SIDEBAR_MIN`/`SIDEBAR_MAX` in `page_tail`'s stepper.
-  Keep both in sync if that range ever changes.
-- `src/site.zig`: `breadcrumbSegments`'s `root:` early return sits right at
-  the top of the function, before the existing chain-collapsing logic.
-- `dev/DECISIONS.md` D4 — the root-link decision Jake dictated this session;
-  D3 is still the reference for the no-`root:` default case.
+- `src/site.zig`: `breadcrumbSegments` (`root:` branch ~396-411), `projectFolderChain`
+  (the shared chain-building helper, ~424-430), `renderPickerPage` (~155-177, now calls
+  `breadcrumbSegments` with a dummy empty `Project` instead of hardcoding its crumb).
+- `src/shell.zig`: `Segment.bold` (optional, `null` = old last-segment-bold default),
+  `writeBrand` (~205-227).
+- `src/project.zig`: `resolveRootLink`/`isAbsoluteUrl`/`isLocalPath` (~189-216).
+- `dev/DECISIONS.md` D5 (three-segment shape + bold styling), D6 (`root:` local-path
+  form) — both amend D4; D4 is still the reference for the plain two-segment case.

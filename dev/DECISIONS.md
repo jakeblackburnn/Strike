@@ -138,3 +138,53 @@ folder/project breadcrumb chain disappears — the sidebar nav is assumed to cov
 if that assumption is wrong for a real site, the fix would be a third, folder-chain
 segment appended after the two fixed ones (not reverting to D3's original scheme, which
 still couldn't reach an external parent).
+
+## D5 · 2026-09-23 · A third, optional subfolder segment in `root:` mode, styled root-first
+
+**Decision:** `root:` mode's brand grows an optional third segment appended after D4's
+two fixed ones, for the current page's nearest project/folder — reusing the same
+chain-compression `collectAncestors` already walks in the non-`root:` path, omitted when
+that chain is empty (i.e. on the base route's own front page). Styling flips from D4's
+position-based rule: the root segment is now always the bold/prominent one
+(`brand-home`-style), and both the base segment and the subfolder segment are muted
+(`brand-site`-style), each with a literal `/` baked into its label text (`/weblog`,
+`/notes`) rather than a separate separator glyph.
+
+**Why:** Jake is mounting a project under a parent site he wants to feel like "home" —
+the root link should read as the dominant brand element, with the local mount and its
+current subfolder as secondary wayfinding beneath it. This is exactly the case D4's own
+"Revisit if" named in advance: a deep page losing "where am I" context without the
+folder chain.
+
+**Rejected:**
+- Giving the base segment its own intermediate weight distinct from the subfolder
+  segment: adds a third visual tier for no signal it needs to carry — reader only needs
+  "root vs. everything below it."
+- A CSS-drawn separator glyph between segments: D3 deliberately avoids inter-segment
+  glyphs to keep the stacked brand from wrapping; baking `/` into the label text gets
+  the path-like look Jake wants without reopening that rationale.
+
+**Revisit if:** a site with `root:` set but very deep nesting still wants more than one
+folder-chain segment — today's compression still caps it at one, same as D3.
+
+## D6 · 2026-09-23 · `root:` also accepts a local absolute path, not just `http(s)://`
+
+**Decision:** `resolveRootLink`'s gate widens from `isAbsoluteUrl(root)` to
+`isAbsoluteUrl(root) or root` starting with `/` — a bare local path like `root: /` or
+`root: /site-content` now activates `root:` mode too. `root_label:` becomes *required*
+when `root:` is a local path (no `urlHost()`-style default exists for a bare path); the
+`http(s)` case keeps its existing free host-derived default.
+
+**Why:** Jake's dev server shouldn't hyperlink out to the live production domain while
+testing — he wants the same `root:`/`base:` breadcrumb shape to work locally by pointing
+`root:` at a local path instead.
+
+**Rejected:**
+- Leaving `root:` URL-only and having Jake hand-edit the yaml value between dev and
+  prod: no code change, but reintroduces exactly the kind of manual toggling `root:`/
+  `base:` were built to avoid, and risks a real URL accidentally shipping in a dev
+  config or vice versa.
+
+**Revisit if:** a local `root:` path and `base:` ever collide or overlap in a way that
+makes the two fixed segments link to the same place — not expected given `base:` is
+always relative to this site's own mount, but untested.
